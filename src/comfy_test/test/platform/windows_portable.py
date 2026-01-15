@@ -186,8 +186,14 @@ class WindowsPortableTestPlatform(TestPlatform):
         """Get the latest release tag from GitHub API."""
         self._log("Fetching latest release version...")
 
+        # Use GITHUB_TOKEN if available (raises rate limit from 60 to 1000/hr)
+        headers = {}
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"token {github_token}"
+
         try:
-            response = requests.get(PORTABLE_LATEST_API, timeout=30)
+            response = requests.get(PORTABLE_LATEST_API, headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
             tag = data.get("tag_name", "")
@@ -206,8 +212,14 @@ class WindowsPortableTestPlatform(TestPlatform):
         url = PORTABLE_RELEASE_URL.format(version=version)
         self._log(f"Downloading portable ComfyUI from {url}...")
 
+        # Use GITHUB_TOKEN if available for release asset downloads
+        headers = {}
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"token {github_token}"
+
         try:
-            response = requests.get(url, stream=True, timeout=300)
+            response = requests.get(url, headers=headers, stream=True, timeout=300)
             response.raise_for_status()
 
             total_size = int(response.headers.get("content-length", 0))
