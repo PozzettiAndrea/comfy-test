@@ -224,14 +224,17 @@ class WindowsPortableTestPlatform(TestPlatform):
 
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
+            last_logged = 0
 
             with open(dest, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
                     downloaded += len(chunk)
                     if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        self._log(f"  Downloaded: {percent:.1f}%")
+                        percent = int((downloaded / total_size) * 100)
+                        if percent >= last_logged + 10:
+                            self._log(f"  Downloaded: {percent}%")
+                            last_logged = percent
 
             self._log(f"Downloaded to {dest}")
 
