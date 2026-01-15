@@ -24,6 +24,8 @@ class ValidationResult:
     errors: List[ValidationError] = field(default_factory=list)
     warnings: List[ValidationError] = field(default_factory=list)
     executable_nodes: List[int] = field(default_factory=list)
+    executed_nodes: List[int] = field(default_factory=list)
+    execution_errors: Dict[int, str] = field(default_factory=dict)
 
     @property
     def is_valid(self) -> bool:
@@ -72,6 +74,9 @@ class WorkflowValidator:
 
         # Level 2: Graph validation
         result.errors.extend(self._validate_graph(workflow))
+
+        # Level 3: Node introspection
+        result.errors.extend(self._validate_introspection(workflow))
 
         # Level 4: Find executable prefix (nodes before CUDA)
         if not result.errors:
@@ -321,6 +326,83 @@ class WorkflowValidator:
 
         return None
 
+    def _validate_introspection(self, workflow: Dict[str, Any]) -> List[ValidationError]:
+        """Level 3: Validate node introspection data from object_info.
+
+        Checks that each node in the workflow has valid:
+        - input: dict with required/optional structure
+        - output: list of output types
+        - output_name: list of output names (matching output length)
+        - name: internal function name
+        """
+        errors = []
+
+        for node in workflow.get("nodes", []):
+            node_id = node.get("id", 0)
+            node_type = node.get("type", "unknown")
+
+            if node_type not in self.object_info:
+                # Already caught in Level 1
+                continue
+
+            schema = self.object_info[node_type]
+
+            # Check input structure
+            inputs = schema.get("input", {})
+            if not isinstance(inputs, dict):
+                errors.append(ValidationError(
+                    node_id, node_type,
+                    f"INPUT_TYPES returned invalid type: {type(inputs).__name__}",
+                    "introspection"
+                ))
+                continue
+
+            # Check required inputs have valid structure
+            required = inputs.get("required", {})
+            if required and not isinstance(required, dict):
+                errors.append(ValidationError(
+                    node_id, node_type,
+                    f"INPUT_TYPES 'required' is not a dict",
+                    "introspection"
+                ))
+
+            # Check optional inputs have valid structure
+            optional = inputs.get("optional", {})
+            if optional and not isinstance(optional, dict):
+                errors.append(ValidationError(
+                    node_id, node_type,
+                    f"INPUT_TYPES 'optional' is not a dict",
+                    "introspection"
+                ))
+
+            # Check output types
+            outputs = schema.get("output", [])
+            output_names = schema.get("output_name", [])
+
+            if not isinstance(outputs, list):
+                errors.append(ValidationError(
+                    node_id, node_type,
+                    f"RETURN_TYPES is not a list: {type(outputs).__name__}",
+                    "introspection"
+                ))
+            elif output_names and len(outputs) != len(output_names):
+                errors.append(ValidationError(
+                    node_id, node_type,
+                    f"RETURN_TYPES ({len(outputs)}) doesn't match RETURN_NAMES ({len(output_names)})",
+                    "introspection"
+                ))
+
+            # Check function name exists
+            func_name = schema.get("name")
+            if not func_name:
+                errors.append(ValidationError(
+                    node_id, node_type,
+                    f"Node has no FUNCTION defined",
+                    "introspection"
+                ))
+
+        return errors
+
     def _get_executable_prefix(self, workflow: Dict[str, Any]) -> List[int]:
         """Level 4: Get node IDs that can execute without CUDA.
 
@@ -374,3 +456,168 @@ class WorkflowValidator:
                 executable.append(node_id)
 
         return executable
+
+    def execute_prefix(
+        self,
+        workflow: Dict[str, Any],
+        api: Any,  # ComfyUIAPI
+        timeout: int = 60,
+    ) -> ValidationResult:
+        """Level 4: Execute the non-CUDA prefix of a workflow.
+
+        This method attempts to execute all nodes that don't require CUDA
+        and don't depend on CUDA node outputs.
+
+        Args:
+            workflow: Parsed workflow JSON (litegraph format)
+            api: ComfyUIAPI instance for executing the workflow
+            timeout: Execution timeout in seconds
+
+        Returns:
+            ValidationResult with executed_nodes and execution_errors
+        """
+        import time
+
+        result = ValidationResult()
+        result.executable_nodes = self._get_executable_prefix(workflow)
+
+        if not result.executable_nodes:
+            return result
+
+        # Convert litegraph workflow to API format (prompt)
+        prompt = self._workflow_to_prompt(workflow, result.executable_nodes)
+
+        if not prompt:
+            return result
+
+        try:
+            # Queue the partial workflow
+            prompt_id = api.queue_prompt(prompt)
+
+            # Wait for execution to complete
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                history = api.get_history(prompt_id)
+                if history:
+                    status = history.get("status", {})
+                    if status.get("completed", False):
+                        # Check for execution errors
+                        outputs = history.get("outputs", {})
+                        for node_id_str, output in outputs.items():
+                            node_id = int(node_id_str)
+                            if "error" in output:
+                                result.execution_errors[node_id] = output["error"]
+                            else:
+                                result.executed_nodes.append(node_id)
+                        break
+                    elif status.get("status_str") == "error":
+                        # Workflow execution failed
+                        messages = status.get("messages", [])
+                        for msg in messages:
+                            if isinstance(msg, list) and len(msg) >= 2:
+                                msg_type, msg_data = msg[0], msg[1]
+                                if msg_type == "execution_error":
+                                    node_id = msg_data.get("node_id", 0)
+                                    error = msg_data.get("exception_message", "Unknown error")
+                                    result.execution_errors[node_id] = error
+                        break
+                time.sleep(0.5)
+            else:
+                # Timeout
+                result.warnings.append(ValidationError(
+                    0, "workflow",
+                    f"Partial execution timed out after {timeout}s",
+                    "execution"
+                ))
+
+        except Exception as e:
+            result.warnings.append(ValidationError(
+                0, "workflow",
+                f"Partial execution failed: {str(e)}",
+                "execution"
+            ))
+
+        return result
+
+    def _workflow_to_prompt(
+        self,
+        workflow: Dict[str, Any],
+        node_ids: List[int]
+    ) -> Dict[str, Any]:
+        """Convert litegraph workflow format to ComfyUI prompt format.
+
+        Args:
+            workflow: Litegraph format workflow
+            node_ids: List of node IDs to include
+
+        Returns:
+            ComfyUI prompt format (dict of node_id -> node_config)
+        """
+        prompt = {}
+        nodes = workflow.get("nodes", [])
+        links = workflow.get("links", [])
+
+        # Build link lookup: link_id -> (from_node, from_slot, to_node, to_slot, type)
+        link_map = {}
+        for link in links:
+            if isinstance(link, list) and len(link) >= 6:
+                link_id = link[0]
+                link_map[link_id] = link[1:6]
+
+        # Build node lookup
+        nodes_by_id = {n.get("id"): n for n in nodes}
+        node_ids_set = set(node_ids)
+
+        for node_id in node_ids:
+            node = nodes_by_id.get(node_id)
+            if not node:
+                continue
+
+            node_type = node.get("type", "")
+            if node_type not in self.object_info:
+                continue
+
+            schema = self.object_info[node_type]
+            inputs_def = schema.get("input", {})
+            required = inputs_def.get("required", {})
+            optional = inputs_def.get("optional", {})
+            all_inputs = {**required, **optional}
+
+            # Build inputs dict for this node
+            node_inputs = {}
+            widgets_values = node.get("widgets_values", [])
+            widget_idx = 0
+
+            # Get node's input links
+            node_input_links = node.get("inputs", [])
+
+            for input_name, input_spec in all_inputs.items():
+                if not isinstance(input_spec, (list, tuple)) or len(input_spec) < 1:
+                    continue
+
+                input_type = input_spec[0]
+
+                # Check if this is a connection type (uppercase)
+                if isinstance(input_type, str) and input_type.isupper():
+                    # Find the link for this input
+                    for inp in node_input_links:
+                        if inp.get("name") == input_name:
+                            link_id = inp.get("link")
+                            if link_id and link_id in link_map:
+                                from_node, from_slot, _, _, _ = link_map[link_id]
+                                # Only include if source is in our subset
+                                if from_node in node_ids_set:
+                                    node_inputs[input_name] = [str(from_node), from_slot]
+                            break
+                else:
+                    # Widget value
+                    if widget_idx < len(widgets_values):
+                        node_inputs[input_name] = widgets_values[widget_idx]
+                        widget_idx += 1
+
+            prompt[str(node_id)] = {
+                "class_type": node_type,
+                "inputs": node_inputs,
+            }
+
+        return prompt

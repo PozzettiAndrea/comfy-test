@@ -171,9 +171,24 @@ class TestManager:
                                 f"Workflow has {len(validation_result.errors)} validation error(s)",
                                 validation_result.errors
                             )
-                        self._log(f"Workflow validation passed!")
+                        self._log(f"Workflow validation passed (Level 1-3)!")
+
+                        # Level 4: Try partial execution of non-CUDA prefix
                         if validation_result.executable_nodes:
-                            self._log(f"  ({len(validation_result.executable_nodes)} nodes can execute without CUDA)")
+                            self._log(f"\n[Step 3c/4] Partial execution ({len(validation_result.executable_nodes)} non-CUDA nodes)...")
+                            import json
+                            with open(workflow_path) as f:
+                                workflow = json.load(f)
+                            exec_result = validator.execute_prefix(workflow, api, timeout=30)
+
+                            if exec_result.executed_nodes:
+                                self._log(f"  Executed {len(exec_result.executed_nodes)} nodes successfully")
+                            if exec_result.execution_errors:
+                                for node_id, error in exec_result.execution_errors.items():
+                                    self._log(f"  [WARN] Node {node_id} failed: {error}")
+                            if exec_result.warnings:
+                                for warn in exec_result.warnings:
+                                    self._log(f"  [WARN] {warn}")
 
                     # Run workflow if configured and not skipped
                     if self.config.workflow.file and not platform_config.skip_workflow:
