@@ -2,7 +2,9 @@
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
+from typing import Optional
 
 from .test.config import TestLevel
 from .test.config_file import discover_config, load_config, CONFIG_FILE_NAMES
@@ -106,6 +108,7 @@ def cmd_info(args) -> int:
         print(f"  Python Version: {config.python_version}")
         print(f"  CPU Only: {config.cpu_only}")
         print(f"  Timeout: {config.timeout}s")
+        print(f"  Levels: {', '.join(l.value for l in config.levels)}")
         print()
         print("Platforms:")
         print(f"  Linux: {'enabled' if config.linux.enabled else 'disabled'}")
@@ -196,6 +199,167 @@ def cmd_download_portable(args) -> int:
     return 0
 
 
+def cmd_screenshot(args) -> int:
+    """Generate workflow screenshots."""
+    try:
+        # Import screenshot module (requires optional dependencies)
+        try:
+            from .screenshot import (
+                WorkflowScreenshot,
+                capture_workflows,
+                check_dependencies,
+                ScreenshotError,
+            )
+            check_dependencies()
+        except ImportError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            print("Install with: pip install comfy-test[screenshot]", file=sys.stderr)
+            return 1
+
+        # Load config to get workflow files
+        if args.config:
+            config = load_config(args.config)
+            node_dir = Path(args.config).parent
+        else:
+            try:
+                config = discover_config()
+                node_dir = Path.cwd()
+            except ConfigError:
+                config = None
+                node_dir = Path.cwd()
+
+        # Determine which workflows to capture
+        workflow_files = []
+
+        if args.workflow:
+            # Specific workflow provided
+            workflow_path = Path(args.workflow)
+            if not workflow_path.is_absolute():
+                workflow_path = node_dir / workflow_path
+            workflow_files = [workflow_path]
+        elif config and config.workflow.files:
+            # Use workflows from config
+            workflow_files = config.workflow.files
+        else:
+            # Auto-discover from workflows/ directory
+            workflows_dir = node_dir / "workflows"
+            if workflows_dir.exists():
+                workflow_files = list(workflows_dir.glob("*.json"))
+
+        if not workflow_files:
+            print("No workflow files found.", file=sys.stderr)
+            print("Specify a workflow file or configure workflows in comfy-test.toml", file=sys.stderr)
+            return 1
+
+        # Determine output directory
+        output_dir = Path(args.output) if args.output else None
+
+        # Determine server URL
+        if args.server is True:
+            # --server flag without URL, use default
+            server_url = "http://localhost:8188"
+            use_existing_server = True
+        elif args.server:
+            # --server with custom URL
+            server_url = args.server
+            use_existing_server = True
+        else:
+            # No --server flag, need to start our own server
+            server_url = "http://127.0.0.1:8188"
+            use_existing_server = False
+
+        # Dry run mode
+        if args.dry_run:
+            print("Would capture screenshots for:")
+            for wf in workflow_files:
+                if output_dir:
+                    out_path = output_dir / wf.with_suffix(".png").name
+                else:
+                    out_path = wf.with_suffix(".png")
+                print(f"  {wf} -> {out_path}")
+            if use_existing_server:
+                print(f"Using existing server at: {server_url}")
+            else:
+                print("Would start ComfyUI server for screenshots")
+            return 0
+
+        # Log function
+        def log(msg: str) -> None:
+            print(msg)
+
+        # Capture screenshots
+        if use_existing_server:
+            # Connect to existing server
+            log(f"Connecting to existing server at {server_url}...")
+            results = capture_workflows(
+                workflow_files,
+                output_dir=output_dir,
+                server_url=server_url,
+                log_callback=log,
+            )
+        else:
+            # Start our own server (requires full test environment)
+            if not config:
+                print("Error: No config file found.", file=sys.stderr)
+                print("Use --server to connect to an existing ComfyUI server,", file=sys.stderr)
+                print("or create a comfy-test.toml config file.", file=sys.stderr)
+                return 1
+
+            log("Setting up ComfyUI environment for screenshots...")
+            from .test.platform import get_platform
+            from .test.comfy_env import get_cuda_packages
+            from .comfyui.server import ComfyUIServer
+
+            platform = get_platform(log_callback=log)
+
+            with tempfile.TemporaryDirectory(prefix="comfy_screenshot_") as work_dir:
+                work_path = Path(work_dir)
+
+                # Setup ComfyUI
+                log("Setting up ComfyUI...")
+                paths = platform.setup_comfyui(config, work_path)
+
+                # Install the node
+                log("Installing custom node...")
+                platform.install_node(paths, node_dir)
+
+                # Get CUDA packages to mock
+                cuda_packages = get_cuda_packages(node_dir)
+
+                # Start server
+                log("Starting ComfyUI server...")
+                with ComfyUIServer(
+                    platform, paths, config,
+                    cuda_mock_packages=cuda_packages,
+                    log_callback=log,
+                ) as server:
+                    results = capture_workflows(
+                        workflow_files,
+                        output_dir=output_dir,
+                        server_url=server.base_url,
+                        log_callback=log,
+                    )
+
+        # Report results
+        print(f"\nCaptured {len(results)} screenshot(s)")
+        for path in results:
+            print(f"  {path}")
+
+        return 0
+
+    except ScreenshotError as e:
+        print(f"Screenshot error: {e.message}", file=sys.stderr)
+        if e.details:
+            print(f"Details: {e.details}", file=sys.stderr)
+        return 1
+    except (ConfigError, TestError) as e:
+        print(f"Error: {e.message}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        return 1
+
+
 def main(args=None) -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -220,8 +384,8 @@ def main(args=None) -> int:
     )
     run_parser.add_argument(
         "--level", "-l",
-        choices=["install", "registration", "instantiation", "validation"],
-        help="Stop at a specific test level (default: run all levels + workflows)",
+        choices=["syntax", "install", "registration", "instantiation", "validation", "execution"],
+        help="Run only up to this level (overrides config)",
     )
     run_parser.add_argument(
         "--dry-run",
@@ -285,6 +449,38 @@ def main(args=None) -> int:
         help="Output directory",
     )
     download_parser.set_defaults(func=cmd_download_portable)
+
+    # screenshot command
+    screenshot_parser = subparsers.add_parser(
+        "screenshot",
+        help="Generate workflow screenshots with embedded metadata",
+    )
+    screenshot_parser.add_argument(
+        "workflow",
+        nargs="?",
+        help="Specific workflow file to screenshot (default: all from config)",
+    )
+    screenshot_parser.add_argument(
+        "--config", "-c",
+        help="Path to config file",
+    )
+    screenshot_parser.add_argument(
+        "--output", "-o",
+        help="Output directory for screenshots (default: same as workflow)",
+    )
+    screenshot_parser.add_argument(
+        "--server", "-s",
+        nargs="?",
+        const=True,
+        default=False,
+        help="Use existing ComfyUI server (default: localhost:8188, or specify URL)",
+    )
+    screenshot_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be captured without doing it",
+    )
+    screenshot_parser.set_defaults(func=cmd_screenshot)
 
     parsed_args = parser.parse_args(args)
     return parsed_args.func(parsed_args)

@@ -10,6 +10,7 @@ Example:
     name = "ComfyUI-MyNode"
     python_version = "3.10"
     cpu_only = true
+    levels = ["syntax", "install", "registration", "instantiation", "validation", "execution"]
 
     [test.workflows]
     files = ["workflows/basic.json", "workflows/advanced.json"]
@@ -29,7 +30,7 @@ else:
     except ImportError:
         tomllib = None  # type: ignore
 
-from .config import TestConfig, WorkflowConfig, PlatformTestConfig
+from .config import TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig
 from ..errors import ConfigError
 
 
@@ -139,6 +140,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         python_version = "3.10"
         cpu_only = true
         timeout = 300
+        levels = ["syntax", "install", "registration", "instantiation", "validation", "execution"]
 
         [test.platforms]
         linux = true
@@ -186,6 +188,10 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     cpu_only = test_section.get("cpu_only", True)
     timeout = test_section.get("timeout", 300)
 
+    # Parse levels - default to all levels
+    levels_raw = test_section.get("levels", ["syntax", "install", "registration", "instantiation", "validation", "execution"])
+    levels = [TestLevel(l) for l in levels_raw]
+
     # Parse platforms section
     platforms = test_section.get("platforms", {})
 
@@ -222,6 +228,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             python_version=python_version,
             cpu_only=cpu_only,
             timeout=timeout,
+            levels=levels,
             workflow=workflow,
             linux=linux_config,
             windows=windows_config,

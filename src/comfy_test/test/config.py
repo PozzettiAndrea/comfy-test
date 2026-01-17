@@ -7,32 +7,62 @@ from typing import Optional, List
 
 
 class TestLevel(str, Enum):
-    """Test levels for progressive testing.
+    """Test levels - each is explicit, run what's in the list.
 
-    Each level includes all previous levels:
+    - syntax: Check project structure (pyproject.toml vs requirements.txt)
     - install: Setup ComfyUI, install node, install deps
-    - registration: Start server, check nodes in object_info
-    - instantiation: Call each node's constructor, verify no errors
-    - validation: Load workflows, validate schema + graph + types
+    - registration: Start server, check nodes in object_info (requires install)
+    - instantiation: Call each node's constructor (requires install)
+    - validation: Validate workflows (requires install)
+    - execution: Run workflows end-to-end (requires install)
+
+    Dependencies:
+    - syntax: standalone
+    - install: standalone
+    - registration, instantiation, validation, execution: all require install
     """
+    SYNTAX = "syntax"
     INSTALL = "install"
     REGISTRATION = "registration"
     INSTANTIATION = "instantiation"
     VALIDATION = "validation"
+    EXECUTION = "execution"
 
     @classmethod
-    def includes(cls, level: "TestLevel", check: "TestLevel") -> bool:
-        """Check if a level includes another level.
-
-        Args:
-            level: The level being run
-            check: The level to check if included
+    def get_dependencies(cls, level: "TestLevel") -> List["TestLevel"]:
+        """Get levels that must run before this level.
 
         Returns:
-            True if running 'level' includes 'check'
+            List of prerequisite levels (not including the level itself)
         """
-        order = [cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.VALIDATION]
-        return order.index(level) >= order.index(check)
+        deps = {
+            cls.SYNTAX: [],
+            cls.INSTALL: [],
+            cls.REGISTRATION: [cls.INSTALL],
+            cls.INSTANTIATION: [cls.INSTALL],
+            cls.VALIDATION: [cls.INSTALL],
+            cls.EXECUTION: [cls.INSTALL],
+        }
+        return deps.get(level, [])
+
+    @classmethod
+    def resolve_dependencies(cls, levels: List["TestLevel"]) -> List["TestLevel"]:
+        """Add any missing dependencies to a list of levels.
+
+        Args:
+            levels: Levels the user wants to run
+
+        Returns:
+            Levels with dependencies added, in execution order
+        """
+        all_levels = set(levels)
+        for level in levels:
+            for dep in cls.get_dependencies(level):
+                all_levels.add(dep)
+
+        # Return in execution order
+        order = [cls.SYNTAX, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.VALIDATION, cls.EXECUTION]
+        return [l for l in order if l in all_levels]
 
 
 @dataclass
@@ -92,6 +122,7 @@ class TestConfig:
         python_version: Python version for venv (e.g., "3.10")
         cpu_only: Use --cpu flag (no GPU required)
         timeout: Global timeout in seconds for setup operations
+        levels: List of test levels to run (install, registration, instantiation, validation)
         workflow: Optional workflow to execute for end-to-end testing
         linux: Linux-specific test configuration
         windows: Windows-specific test configuration
@@ -100,6 +131,7 @@ class TestConfig:
     Example:
         config = TestConfig(
             name="ComfyUI-MyNode",
+            levels=[TestLevel.INSTALL, TestLevel.REGISTRATION],
             workflow=WorkflowConfig(files=[Path("workflows/basic.json")]),
         )
     """
@@ -109,6 +141,7 @@ class TestConfig:
     python_version: str = "3.10"
     cpu_only: bool = True
     timeout: int = 300
+    levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows: PlatformTestConfig = field(default_factory=PlatformTestConfig)
@@ -126,6 +159,13 @@ class TestConfig:
         # Validate timeout
         if self.timeout <= 0:
             raise ValueError(f"Timeout must be positive, got {self.timeout}")
+
+        # Ensure levels are TestLevel enums
+        if self.levels:
+            self.levels = [
+                TestLevel(l) if isinstance(l, str) else l
+                for l in self.levels
+            ]
 
         # Ensure workflow is WorkflowConfig
         if isinstance(self.workflow, dict):
