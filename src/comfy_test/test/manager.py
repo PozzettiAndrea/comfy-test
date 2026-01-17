@@ -520,7 +520,7 @@ print(json.dumps(result))
 
         result = subprocess.run(
             [str(paths.python), "-c", script],
-            cwd=str(paths.comfyui),
+            cwd=str(paths.comfyui_dir),
             capture_output=True,
             text=True,
             timeout=60,
