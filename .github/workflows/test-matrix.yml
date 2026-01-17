@@ -15,6 +15,10 @@ on:
         description: "Python version for testing"
         type: string
         default: "3.10"
+      comfy-test-ref:
+        description: "Git ref for comfy-test (branch, tag, or SHA)"
+        type: string
+        default: "main"
 
 jobs:
   test-linux:
@@ -26,8 +30,8 @@ jobs:
       - name: Checkout comfy-test
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.action_repository }}
-          ref: ${{ github.action_ref }}
+          repository: PozzettiAndrea/comfy-test
+          ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
 
       - name: Setup Python
@@ -61,8 +65,8 @@ jobs:
       - name: Checkout comfy-test
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.action_repository }}
-          ref: ${{ github.action_ref }}
+          repository: PozzettiAndrea/comfy-test
+          ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
 
       - name: Setup Python
@@ -96,8 +100,8 @@ jobs:
       - name: Checkout comfy-test
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.action_repository }}
-          ref: ${{ github.action_ref }}
+          repository: PozzettiAndrea/comfy-test
+          ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
 
       - name: Setup Python
