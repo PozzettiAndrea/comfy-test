@@ -5,6 +5,13 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python version to use'
+        required: false
+        default: '3.10'
+        type: string
 
 jobs:
   bump-and-publish:
@@ -21,12 +28,12 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ inputs.python-version || '3.10' }}
 
       - name: Get current version
         id: get_version
         run: |
-          current=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          current=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
           echo "current=$current" >> $GITHUB_OUTPUT
 
       - name: Bump patch version
