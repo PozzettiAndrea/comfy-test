@@ -19,10 +19,15 @@ on:
         description: "Git ref for comfy-test (branch, tag, or SHA)"
         type: string
         default: "main"
+      timeout-minutes:
+        description: "Job timeout in minutes (default: 60)"
+        type: number
+        default: 60
 
 jobs:
   test-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
@@ -58,6 +63,7 @@ jobs:
 
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
@@ -93,6 +99,7 @@ jobs:
 
   test-windows-portable:
     runs-on: windows-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
