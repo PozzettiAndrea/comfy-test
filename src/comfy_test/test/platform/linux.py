@@ -50,7 +50,7 @@ class LinuxTestPlatform(TestPlatform):
         clone_args = ["git", "clone", "--depth", "1"]
         if config.comfyui_version != "latest":
             clone_args.extend(["--branch", config.comfyui_version])
-        clone_args.extend([COMFYUI_REPO, str(comfyui_dir)])
+        clone_args.extend([COMFYUI_REPO, comfyui_dir.name])
 
         self._run_command(clone_args, cwd=work_dir)
 
