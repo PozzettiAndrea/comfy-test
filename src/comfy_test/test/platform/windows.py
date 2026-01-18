@@ -36,7 +36,7 @@ class WindowsTestPlatform(TestPlatform):
         3. Install requirements
         4. Install PyTorch (CPU)
         """
-        work_dir = Path(work_dir)
+        work_dir = Path(work_dir).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
         comfyui_dir = work_dir / "ComfyUI"
@@ -50,7 +50,7 @@ class WindowsTestPlatform(TestPlatform):
         clone_args = ["git", "clone", "--depth", "1"]
         if config.comfyui_version != "latest":
             clone_args.extend(["--branch", config.comfyui_version])
-        clone_args.extend([COMFYUI_REPO, comfyui_dir.name])
+        clone_args.extend([COMFYUI_REPO, str(comfyui_dir)])
 
         self._run_command(clone_args, cwd=work_dir)
 

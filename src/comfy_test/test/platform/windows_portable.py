@@ -39,7 +39,7 @@ class WindowsPortableTestPlatform(TestPlatform):
         2. Download 7z archive from GitHub releases
         3. Extract with py7zr
         """
-        work_dir = Path(work_dir)
+        work_dir = Path(work_dir).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
         # Get portable version
