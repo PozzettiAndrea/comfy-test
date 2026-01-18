@@ -283,13 +283,17 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     if "file" in data:
         file_path = base_dir / data["file"]
 
-    return WorkflowConfig(
-        run=run,
-        screenshot=screenshot,
-        timeout=data.get("timeout"),  # None = no timeout
-        files=files,
-        file=file_path,
-    )
+    # Only pass timeout if explicitly set in config
+    kwargs = {
+        "run": run,
+        "screenshot": screenshot,
+        "files": files,
+        "file": file_path,
+    }
+    if "timeout" in data:
+        kwargs["timeout"] = data["timeout"]
+
+    return WorkflowConfig(**kwargs)
 
 
 def _parse_platform_config(data: Dict[str, Any], enabled: bool = True) -> PlatformTestConfig:
