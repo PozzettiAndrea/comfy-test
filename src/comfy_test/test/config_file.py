@@ -286,7 +286,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     return WorkflowConfig(
         run=run,
         screenshot=screenshot,
-        timeout=data.get("timeout", 120),
+        timeout=data.get("timeout"),  # None = no timeout
         files=files,
         file=file_path,
     )

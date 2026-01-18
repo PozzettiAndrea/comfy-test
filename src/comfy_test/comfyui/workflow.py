@@ -33,13 +33,13 @@ class WorkflowRunner:
     def run_workflow(
         self,
         workflow_file: Path,
-        timeout: int = 120,
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Run a workflow and wait for completion.
 
         Args:
             workflow_file: Path to workflow JSON file
-            timeout: Maximum seconds to wait for completion
+            timeout: Maximum seconds to wait for completion (None = no timeout)
 
         Returns:
             Execution result with status and outputs
@@ -70,14 +70,14 @@ class WorkflowRunner:
     def run_prompt(
         self,
         prompt: Dict[str, Any],
-        timeout: int = 120,
+        timeout: Optional[int] = None,
         workflow_name: str = "workflow",
     ) -> Dict[str, Any]:
         """Run a prompt and wait for completion.
 
         Args:
             prompt: Workflow prompt definition
-            timeout: Maximum seconds to wait
+            timeout: Maximum seconds to wait (None = no timeout)
             workflow_name: Name for logging
 
         Returns:
@@ -99,14 +99,14 @@ class WorkflowRunner:
     def _wait_for_completion(
         self,
         prompt_id: str,
-        timeout: int,
+        timeout: Optional[int],
         workflow_name: str,
     ) -> Dict[str, Any]:
         """Wait for workflow to complete.
 
         Args:
             prompt_id: ID of queued prompt
-            timeout: Maximum seconds to wait
+            timeout: Maximum seconds to wait (None = no timeout)
             workflow_name: Name for error messages
 
         Returns:
@@ -116,11 +116,22 @@ class WorkflowRunner:
             WorkflowError: If workflow fails
             TimeoutError: If workflow doesn't complete
         """
-        self._log(f"Waiting for workflow completion (timeout: {timeout}s)...")
+        if timeout is not None:
+            self._log(f"Waiting for workflow completion (timeout: {timeout}s)...")
+        else:
+            self._log("Waiting for workflow completion...")
 
         start_time = time.time()
 
-        while time.time() - start_time < timeout:
+        while True:
+            # Check timeout if specified
+            if timeout is not None and time.time() - start_time >= timeout:
+                self.api.interrupt()
+                raise TimeoutError(
+                    f"Workflow did not complete within {timeout} seconds",
+                    timeout_seconds=timeout,
+                )
+
             history = self.api.get_history(prompt_id)
 
             if history is None:
@@ -168,13 +179,6 @@ class WorkflowRunner:
             elapsed = int(time.time() - start_time)
             self._log(f"  Running... ({elapsed}s elapsed)")
             time.sleep(2)
-
-        # Timeout
-        self.api.interrupt()
-        raise TimeoutError(
-            f"Workflow did not complete within {timeout} seconds",
-            timeout_seconds=timeout,
-        )
 
     def _format_error_messages(self, messages: list) -> str:
         """Format error messages from workflow execution."""

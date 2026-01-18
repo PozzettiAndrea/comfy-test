@@ -72,14 +72,14 @@ class WorkflowConfig:
     Args:
         run: Workflows to execute end-to-end
         screenshot: Workflows to capture screenshots of
-        timeout: Timeout in seconds for workflow execution
+        timeout: Timeout in seconds for workflow execution (None = no timeout)
         files: Deprecated - use run instead
         file: Deprecated - use run instead
     """
 
     run: List[Path] = field(default_factory=list)
     screenshot: List[Path] = field(default_factory=list)
-    timeout: int = 120
+    timeout: Optional[int] = None  # None = no timeout
     files: List[Path] = field(default_factory=list)  # Deprecated
     file: Optional[Path] = None  # Deprecated
 
@@ -100,7 +100,7 @@ class WorkflowConfig:
         self.screenshot = [Path(f) for f in self.screenshot]
         self.files = [Path(f) for f in self.files]
 
-        if self.timeout <= 0:
+        if self.timeout is not None and self.timeout <= 0:
             raise ValueError(f"Timeout must be positive, got {self.timeout}")
 
 
