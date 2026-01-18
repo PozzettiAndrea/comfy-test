@@ -70,6 +70,10 @@ class WindowsPortableTestPlatform(TestPlatform):
                 f"Searched in: {extract_dir}"
             )
 
+        # Create custom_nodes directory (may not exist in portable archive)
+        custom_nodes_dir = comfyui_dir / "custom_nodes"
+        custom_nodes_dir.mkdir(exist_ok=True)
+
         # Find embedded Python
         python_embeded = extract_dir / "python_embeded"
         if not python_embeded.exists():
@@ -97,9 +101,6 @@ class WindowsPortableTestPlatform(TestPlatform):
                 exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             for dll in python_embeded.glob("*.dll"):
                 dll.chmod(dll.stat().st_mode | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-
-        custom_nodes_dir = comfyui_dir / "custom_nodes"
-        custom_nodes_dir.mkdir(exist_ok=True)
 
         return TestPaths(
             work_dir=work_dir,
