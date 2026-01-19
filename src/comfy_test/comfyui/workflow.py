@@ -6,7 +6,41 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Callable
 
 from .api import ComfyUIAPI
+from .workflow_converter import WorkflowConverter, set_object_info
 from ..errors import WorkflowError, TimeoutError
+
+
+def is_litegraph_format(workflow: Dict[str, Any]) -> bool:
+    """Check if workflow is in litegraph format (frontend format)."""
+    return not WorkflowConverter.is_api_format(workflow)
+
+
+def litegraph_to_prompt(
+    workflow: Dict[str, Any],
+    object_info: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Convert litegraph workflow format to ComfyUI prompt format.
+
+    Uses Seth Robinson's battle-tested converter that handles:
+    - Subgraphs (including nested)
+    - GetNode/SetNode routing
+    - PrimitiveNode value injection
+    - Reroute passthrough
+    - Bypassed/muted nodes
+    - And many more edge cases
+
+    Args:
+        workflow: Litegraph format workflow (frontend save format)
+        object_info: Node definitions from /object_info API
+
+    Returns:
+        ComfyUI prompt format (dict of node_id -> node_config)
+    """
+    # Set the object_info for the converter to use
+    set_object_info(object_info)
+
+    # Use the full-featured converter
+    return WorkflowConverter.convert_to_api(workflow)
 
 
 class WorkflowRunner:
@@ -62,6 +96,11 @@ class WorkflowRunner:
         # Workflow files can have either just the prompt, or a full structure
         if "prompt" in workflow_data:
             prompt = workflow_data["prompt"]
+        elif is_litegraph_format(workflow_data):
+            # Convert litegraph format (frontend save) to prompt format (API)
+            self._log("Converting litegraph workflow to prompt format...")
+            object_info = self.api.get_object_info()
+            prompt = litegraph_to_prompt(workflow_data, object_info)
         else:
             prompt = workflow_data
 
