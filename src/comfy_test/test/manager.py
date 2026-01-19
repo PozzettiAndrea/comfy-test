@@ -984,6 +984,29 @@ print(json.dumps(result))
                             )
                             self._log(f"    Status: {result['status']}")
 
+                    # === EXECUTION SCREENSHOTS ===
+                    # Capture screenshots after executing workflows (shows preview outputs)
+                    if self.config.workflow.execution_screenshot:
+                        self._log("\n[EXECUTION SCREENSHOTS]")
+                        self._log("-" * 40)
+                        try:
+                            from ..screenshot import WorkflowScreenshot, check_dependencies
+                            check_dependencies()
+
+                            total_screenshots = len(self.config.workflow.execution_screenshot)
+                            self._log(f"Capturing {total_screenshots} execution screenshot(s)...")
+
+                            with WorkflowScreenshot(server.base_url, log_callback=self._log) as ws:
+                                for idx, workflow_file in enumerate(self.config.workflow.execution_screenshot, 1):
+                                    self._log(f"  [{idx}/{total_screenshots}] {workflow_file.name}")
+                                    ws.capture_after_execution(
+                                        workflow_file,
+                                        timeout=self.config.workflow.timeout,
+                                    )
+                            self._log("Execution screenshots captured successfully")
+                        except ImportError:
+                            self._log("Skipping execution screenshots (playwright not installed)")
+
             self._log(f"[{level.value.upper()}] PASSED")
             return TestResult(platform_name, True)
 

@@ -57,7 +57,10 @@ jobs:
         run: pip install uv
 
       - name: Install comfy-test
-        run: pip install ./.comfy-test-src
+        run: pip install "./.comfy-test-src[screenshot]"
+
+      - name: Install Playwright
+        run: playwright install chromium
 
       - name: Syntax
         id: syntax
@@ -96,6 +99,16 @@ jobs:
           path: .comfy-test/
           if-no-files-found: ignore
 
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-linux
+          path: |
+            ${{ inputs.node-path }}/workflows/*.png
+            ${{ inputs.node-path }}/workflows/**/*.png
+          if-no-files-found: ignore
+
   test-windows:
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
@@ -119,7 +132,10 @@ jobs:
         run: pip install uv
 
       - name: Install comfy-test
-        run: pip install ./.comfy-test-src
+        run: pip install "./.comfy-test-src[screenshot]"
+
+      - name: Install Playwright
+        run: playwright install chromium
 
       - name: Syntax
         id: syntax
@@ -158,6 +174,16 @@ jobs:
           path: .comfy-test/
           if-no-files-found: ignore
 
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows
+          path: |
+            ${{ inputs.node-path }}/workflows/*.png
+            ${{ inputs.node-path }}/workflows/**/*.png
+          if-no-files-found: ignore
+
   test-windows-portable:
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
@@ -178,7 +204,10 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Install comfy-test
-        run: pip install ./.comfy-test-src
+        run: pip install "./.comfy-test-src[screenshot]"
+
+      - name: Install Playwright
+        run: playwright install chromium
 
       - name: Syntax
         id: syntax
@@ -215,4 +244,14 @@ jobs:
         with:
           name: test-logs-windows-portable
           path: .comfy-test/
+          if-no-files-found: ignore
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-windows-portable
+          path: |
+            ${{ inputs.node-path }}/workflows/*.png
+            ${{ inputs.node-path }}/workflows/**/*.png
           if-no-files-found: ignore
