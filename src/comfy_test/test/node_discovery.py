@@ -105,9 +105,17 @@ def discover_nodes_subprocess(
         SetupError: If import fails or NODE_CLASS_MAPPINGS not found
     """
     # Build the discovery script
+    # Use verbose logging with flush to diagnose crashes in native libraries
     script = '''
 import sys
 import json
+
+def log(msg):
+    """Print diagnostic message and flush to ensure output on crash."""
+    print(f"[node_discovery] {{msg}}", file=sys.stderr)
+    sys.stderr.flush()
+
+log("Starting node discovery...")
 
 # Mock CUDA packages if needed
 cuda_packages = {cuda_packages_json}
@@ -115,9 +123,13 @@ for pkg in cuda_packages:
     if pkg not in sys.modules:
         import types
         sys.modules[pkg] = types.ModuleType(pkg)
+        log(f"Mocked CUDA package: {{pkg}}")
 
+log("Importing folder_paths...")
 # Import ComfyUI's folder_paths to set up paths
 import folder_paths
+
+log("folder_paths imported successfully")
 
 # Find and import the node module
 import importlib.util
@@ -138,11 +150,16 @@ if spec is None or spec.loader is None:
 module = importlib.util.module_from_spec(spec)
 sys.modules["test_node"] = module
 
+log(f"Importing custom node from {{init_file}}...")
 try:
     spec.loader.exec_module(module)
 except Exception as e:
-    print(json.dumps({{"success": False, "error": "Import error: " + str(e)}}))
+    import traceback
+    tb = traceback.format_exc()
+    print(json.dumps({{"success": False, "error": "Import error: " + str(e), "traceback": tb}}))
     sys.exit(1)
+
+log("Custom node imported successfully")
 
 # Get NODE_CLASS_MAPPINGS
 if not hasattr(module, "NODE_CLASS_MAPPINGS"):
@@ -154,6 +171,7 @@ if not isinstance(mappings, dict):
     print(json.dumps({{"success": False, "error": "NODE_CLASS_MAPPINGS is not a dict, got " + type(mappings).__name__}}))
     sys.exit(1)
 
+log(f"Found {{len(mappings)}} nodes")
 result = {{
     "success": True,
     "nodes": list(mappings.keys()),
@@ -165,9 +183,10 @@ print(json.dumps(result))
     )
 
     # Run the script in the test venv
+    # Use -u for unbuffered output to capture output even on crashes
     try:
         result = subprocess.run(
-            [str(python_path), "-c", script],
+            [str(python_path), "-u", "-c", script],
             cwd=str(comfyui_dir),
             capture_output=True,
             text=True,
