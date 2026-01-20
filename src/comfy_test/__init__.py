@@ -50,7 +50,12 @@ Add this workflow to your repository:
           config-file: "comfy-test.toml"
 """
 
-__version__ = "0.0.3"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("comfy-test")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 from .test.config import TestConfig, WorkflowConfig, PlatformTestConfig
 from .test.config_file import load_config, discover_config, CONFIG_FILE_NAMES
@@ -63,7 +68,7 @@ from .errors import (
     ServerError,
     WorkflowError,
     VerificationError,
-    TimeoutError,
+    TestTimeoutError,
     DownloadError,
 )
 
@@ -90,7 +95,7 @@ __all__ = [
     "ServerError",
     "WorkflowError",
     "VerificationError",
-    "TimeoutError",
+    "TestTimeoutError",
     "DownloadError",
     # Convenience
     "run_tests",

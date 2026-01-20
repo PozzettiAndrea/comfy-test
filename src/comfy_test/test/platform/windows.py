@@ -75,7 +75,7 @@ class WindowsTestPlatform(TestPlatform):
         self._log("Installing PyTorch (CPU)...")
         self._run_command(
             ["uv", "pip", "install", "--python", str(python),
-             "torch", "torchvision", "torchaudio",
+             "torch==2.8.0", "torchvision", "torchaudio",
              "--index-url", PYTORCH_CPU_INDEX],
             cwd=work_dir,
         )

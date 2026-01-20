@@ -10,6 +10,58 @@ from typing import Callable, Optional
 ACT_IMAGE = "catthehacker/ubuntu:act-22.04"
 
 
+def split_log_by_workflow(log_file: Path, logs_dir: Path) -> int:
+    """Extract per-workflow sections from main log file.
+
+    Parses the main log and creates individual log files for each workflow,
+    containing the full ComfyUI output during that workflow's execution.
+
+    Args:
+        log_file: Path to main log file
+        logs_dir: Directory to write per-workflow logs
+
+    Returns:
+        Number of workflow logs created
+    """
+    if not log_file.exists():
+        return 0
+
+    content = log_file.read_text()
+    lines = content.splitlines()
+
+    # Pattern to match workflow start: [time] |   [N/total] RUNNING... name.json
+    workflow_start = re.compile(r'\[\d+/\d+\] RUNNING.*?(\S+)\.json')
+    # Pattern to match workflow end: Status: success or FAILED
+    workflow_end = re.compile(r'Status: (success|FAILED)')
+
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    current_workflow = None
+    current_lines = []
+    count = 0
+
+    for line in lines:
+        # Check for workflow start
+        match = workflow_start.search(line)
+        if match:
+            # Save previous workflow if any (shouldn't happen normally)
+            if current_workflow and current_lines:
+                (logs_dir / f"{current_workflow}.log").write_text("\n".join(current_lines))
+                count += 1
+            current_workflow = match.group(1)
+            current_lines = [line]
+        elif current_workflow:
+            current_lines.append(line)
+            # Check for workflow end
+            if workflow_end.search(line):
+                (logs_dir / f"{current_workflow}.log").write_text("\n".join(current_lines))
+                count += 1
+                current_workflow = None
+                current_lines = []
+
+    return count
+
+
 def run_local(
     node_dir: Path,
     output_dir: Path,
@@ -49,6 +101,9 @@ def run_local(
 
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create main log file (sibling to output_dir, not inside it)
+    log_file = output_dir.parent / f"{output_dir.name}.log"
 
     # Set up local workflow with test-matrix-local.yml
     local_comfy_test = Path.home() / "utils" / "comfy-test"
@@ -128,21 +183,25 @@ def run_local(
     )
 
     try:
-        while True:
-            if process.stdout:
-                line = process.stdout.readline()
-                if line:
-                    # Strip noise: emojis and job prefix
-                    clean_line = emoji_pattern.sub('', line.rstrip())
-                    clean_line = job_prefix_pattern.sub('', clean_line)
-                    elapsed = int(time.time() - start_time)
-                    mins, secs = divmod(elapsed, 60)
-                    timer = f"[{mins:02d}:{secs:02d}]"
-                    log(f"{timer} {clean_line}")
-                elif process.poll() is not None:
+        with open(log_file, "w") as f:
+            while True:
+                if process.stdout:
+                    line = process.stdout.readline()
+                    if line:
+                        # Strip noise: emojis and job prefix
+                        clean_line = emoji_pattern.sub('', line.rstrip())
+                        clean_line = job_prefix_pattern.sub('', clean_line)
+                        elapsed = int(time.time() - start_time)
+                        mins, secs = divmod(elapsed, 60)
+                        timer = f"[{mins:02d}:{secs:02d}]"
+                        formatted = f"{timer} {clean_line}"
+                        log(formatted)
+                        f.write(formatted + "\n")
+                        f.flush()
+                    elif process.poll() is not None:
+                        break
+                else:
                     break
-            else:
-                break
     except KeyboardInterrupt:
         process.kill()
         process.wait()
@@ -155,13 +214,24 @@ def run_local(
         log("\nTest cancelled")
         return 130
 
+    # Split main log into per-workflow logs
+    # Clear any Docker-created logs first (they're owned by root)
+    logs_dir = output_dir / "logs"
+    if logs_dir.exists():
+        subprocess.run(["sudo", "rm", "-rf", str(logs_dir)], capture_output=True)
+    workflow_logs = split_log_by_workflow(log_file, logs_dir)
+
     # Report output
     screenshots_dir = output_dir / "screenshots"
     screenshot_files = list(screenshots_dir.glob("*.png")) if screenshots_dir.exists() else []
     results_file = output_dir / "results.json"
 
-    if screenshot_files or results_file.exists():
+    if screenshot_files or results_file.exists() or log_file.exists():
         log(f"\nOutput: {output_dir}")
+        if log_file.exists():
+            log(f"  Log: {log_file.name}")
+        if workflow_logs:
+            log(f"  Workflow logs: {workflow_logs}")
         if screenshot_files:
             log(f"  Screenshots: {len(screenshot_files)}")
         if results_file.exists():

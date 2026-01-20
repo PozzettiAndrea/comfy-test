@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Callable, List, TYPE_CHECKING
 
 from .api import ComfyUIAPI
-from ..errors import ServerError, TimeoutError
+from ..errors import ServerError, TestTimeoutError
 
 if TYPE_CHECKING:
     from ..test.platform.base import TestPaths, TestPlatform
@@ -66,7 +66,7 @@ class ComfyUIServer:
 
         Raises:
             ServerError: If server fails to start
-            TimeoutError: If server doesn't become ready in time
+            TestTimeoutError: If server doesn't become ready in time
         """
         if self._process is not None:
             raise ServerError("Server already started")
@@ -129,7 +129,7 @@ class ComfyUIServer:
             timeout: Maximum seconds to wait
 
         Raises:
-            TimeoutError: If server doesn't respond in time
+            TestTimeoutError: If server doesn't respond in time
             ServerError: If server process dies
         """
         self._log(f"Waiting for server to be ready (timeout: {timeout}s)...")
@@ -165,7 +165,7 @@ class ComfyUIServer:
 
         # Timeout reached
         api.close()
-        raise TimeoutError(
+        raise TestTimeoutError(
             f"Server did not become ready within {timeout} seconds",
             timeout_seconds=timeout,
         )

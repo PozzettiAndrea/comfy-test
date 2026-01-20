@@ -83,7 +83,7 @@ class LinuxTestPlatform(TestPlatform):
 
         self._run_command(
             ["uv", "pip", "install", "--python", str(python),
-             "torch", "torchvision", "torchaudio",
+             "torch==2.8.0", "torchvision", "torchaudio",
              "--index-url", pytorch_index],
             cwd=work_dir,
         )

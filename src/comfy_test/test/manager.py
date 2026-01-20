@@ -16,7 +16,7 @@ from .platform import get_platform, TestPlatform, TestPaths
 from ..comfyui.server import ComfyUIServer
 from ..comfyui.validator import WorkflowValidator
 from ..comfyui.workflow import WorkflowRunner
-from ..errors import TestError, VerificationError, WorkflowValidationError, WorkflowExecutionError, WorkflowError, TimeoutError
+from ..errors import TestError, VerificationError, WorkflowValidationError, WorkflowExecutionError, WorkflowError, TestTimeoutError
 from ..screenshot import ScreenshotError
 
 
@@ -403,6 +403,13 @@ class TestManager:
                         else:
                             self._log(f"Running {total_workflows} workflow(s)...")
 
+                        # Create a log capture wrapper that writes to both main log and current workflow log
+                        current_workflow_log = []
+
+                        def capture_log(msg):
+                            self._log(msg)
+                            current_workflow_log.append(msg)
+
                         # Initialize browser only if any workflow needs screenshots
                         ws = None
                         screenshots_dir = None
@@ -410,7 +417,7 @@ class TestManager:
                             try:
                                 from ..screenshot import WorkflowScreenshot, check_dependencies
                                 check_dependencies()
-                                ws = WorkflowScreenshot(server.base_url, log_callback=self._log)
+                                ws = WorkflowScreenshot(server.base_url, log_callback=capture_log)
                                 ws.start()
                                 # Create screenshots output directory
                                 screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
@@ -425,10 +432,11 @@ class TestManager:
                         logs_dir.mkdir(parents=True, exist_ok=True)
 
                         try:
-                            runner = WorkflowRunner(api, self._log)
+                            runner = WorkflowRunner(api, capture_log)
                             all_errors = []
                             for idx, workflow_file in enumerate(self.config.workflow.run, 1):
-                                workflow_log = []
+                                # Reset workflow log for this workflow
+                                current_workflow_log.clear()
                                 start_time = time.time()
                                 status = "pass"
                                 error_msg = None
@@ -436,39 +444,27 @@ class TestManager:
                                 try:
                                     if workflow_file in screenshot_set and ws:
                                         # Execute via browser + capture screenshot
-                                        log_msg = f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
+                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
                                         output_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
                                         ws.capture_after_execution(
                                             workflow_file,
                                             output_path=output_path,
                                             timeout=self.config.workflow.timeout,
                                         )
-                                        log_msg = f"    Status: success"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
+                                        capture_log(f"    Status: success")
                                     else:
                                         # Execute via API only (faster)
-                                        log_msg = f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
+                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
                                         result = runner.run_workflow(
                                             workflow_file,
                                             timeout=self.config.workflow.timeout,
                                         )
-                                        log_msg = f"    Status: {result['status']}"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
-                                except (WorkflowError, TimeoutError, ScreenshotError) as e:
+                                        capture_log(f"    Status: {result['status']}")
+                                except (WorkflowError, TestTimeoutError, ScreenshotError) as e:
                                     status = "fail"
                                     error_msg = str(e.message)
-                                    log_msg = f"    Status: FAILED"
-                                    self._log(log_msg)
-                                    workflow_log.append(log_msg)
-                                    log_msg = f"    Error: {e.message}"
-                                    self._log(log_msg)
-                                    workflow_log.append(log_msg)
+                                    capture_log(f"    Status: FAILED")
+                                    capture_log(f"    Error: {e.message}")
                                     all_errors.append((workflow_file.name, str(e.message)))
 
                                 duration = time.time() - start_time
@@ -479,8 +475,8 @@ class TestManager:
                                     "error": error_msg
                                 })
 
-                                # Save per-workflow log
-                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(workflow_log))
+                                # Save per-workflow log (copy the list since we clear it)
+                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log))
                         finally:
                             if ws:
                                 ws.stop()
@@ -1069,6 +1065,13 @@ print(json.dumps(result))
                         else:
                             self._log(f"Running {total_workflows} workflow(s)...")
 
+                        # Create a log capture wrapper that writes to both main log and current workflow log
+                        current_workflow_log = []
+
+                        def capture_log(msg):
+                            self._log(msg)
+                            current_workflow_log.append(msg)
+
                         # Initialize browser only if any workflow needs screenshots
                         ws = None
                         screenshots_dir = None
@@ -1076,7 +1079,7 @@ print(json.dumps(result))
                             try:
                                 from ..screenshot import WorkflowScreenshot, check_dependencies
                                 check_dependencies()
-                                ws = WorkflowScreenshot(server.base_url, log_callback=self._log)
+                                ws = WorkflowScreenshot(server.base_url, log_callback=capture_log)
                                 ws.start()
                                 # Create screenshots output directory
                                 screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
@@ -1091,10 +1094,11 @@ print(json.dumps(result))
                         logs_dir.mkdir(parents=True, exist_ok=True)
 
                         try:
-                            runner = WorkflowRunner(api, self._log)
+                            runner = WorkflowRunner(api, capture_log)
                             all_errors = []
                             for idx, workflow_file in enumerate(self.config.workflow.run, 1):
-                                workflow_log = []
+                                # Reset workflow log for this workflow
+                                current_workflow_log.clear()
                                 start_time = time.time()
                                 status = "pass"
                                 error_msg = None
@@ -1102,39 +1106,27 @@ print(json.dumps(result))
                                 try:
                                     if workflow_file in screenshot_set and ws:
                                         # Execute via browser + capture screenshot
-                                        log_msg = f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
+                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
                                         output_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
                                         ws.capture_after_execution(
                                             workflow_file,
                                             output_path=output_path,
                                             timeout=self.config.workflow.timeout,
                                         )
-                                        log_msg = f"    Status: success"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
+                                        capture_log(f"    Status: success")
                                     else:
                                         # Execute via API only (faster)
-                                        log_msg = f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
+                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
                                         result = runner.run_workflow(
                                             workflow_file,
                                             timeout=self.config.workflow.timeout,
                                         )
-                                        log_msg = f"    Status: {result['status']}"
-                                        self._log(log_msg)
-                                        workflow_log.append(log_msg)
-                                except (WorkflowError, TimeoutError, ScreenshotError) as e:
+                                        capture_log(f"    Status: {result['status']}")
+                                except (WorkflowError, TestTimeoutError, ScreenshotError) as e:
                                     status = "fail"
                                     error_msg = str(e.message)
-                                    log_msg = f"    Status: FAILED"
-                                    self._log(log_msg)
-                                    workflow_log.append(log_msg)
-                                    log_msg = f"    Error: {e.message}"
-                                    self._log(log_msg)
-                                    workflow_log.append(log_msg)
+                                    capture_log(f"    Status: FAILED")
+                                    capture_log(f"    Error: {e.message}")
                                     all_errors.append((workflow_file.name, str(e.message)))
 
                                 duration = time.time() - start_time
@@ -1145,8 +1137,8 @@ print(json.dumps(result))
                                     "error": error_msg
                                 })
 
-                                # Save per-workflow log
-                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(workflow_log))
+                                # Save per-workflow log (copy the list since we clear it)
+                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log))
                         finally:
                             if ws:
                                 ws.stop()

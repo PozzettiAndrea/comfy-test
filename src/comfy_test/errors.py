@@ -59,7 +59,7 @@ class WorkflowError(TestError):
         super().__init__(message, details)
 
 
-class TimeoutError(TestError):
+class TestTimeoutError(TestError):
     """Operation timed out."""
 
     def __init__(self, message: str, timeout_seconds: int):

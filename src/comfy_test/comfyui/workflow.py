@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Callable
 
 from .api import ComfyUIAPI
 from .workflow_converter import WorkflowConverter, set_object_info
-from ..errors import WorkflowError, TimeoutError
+from ..errors import WorkflowError, TestTimeoutError
 
 
 def is_litegraph_format(workflow: Dict[str, Any]) -> bool:
@@ -80,7 +80,7 @@ class WorkflowRunner:
 
         Raises:
             WorkflowError: If workflow fails or has errors
-            TimeoutError: If workflow doesn't complete in time
+            TestTimeoutError: If workflow doesn't complete in time
             FileNotFoundError: If workflow file doesn't exist
         """
         workflow_file = Path(workflow_file)
@@ -124,7 +124,7 @@ class WorkflowRunner:
 
         Raises:
             WorkflowError: If workflow fails
-            TimeoutError: If workflow doesn't complete in time
+            TestTimeoutError: If workflow doesn't complete in time
         """
         self._log(f"Queuing workflow: {workflow_name}...")
 
@@ -153,7 +153,7 @@ class WorkflowRunner:
 
         Raises:
             WorkflowError: If workflow fails
-            TimeoutError: If workflow doesn't complete
+            TestTimeoutError: If workflow doesn't complete
         """
         if timeout is not None:
             self._log(f"Waiting for workflow completion (timeout: {timeout}s)...")
@@ -166,7 +166,7 @@ class WorkflowRunner:
             # Check timeout if specified
             if timeout is not None and time.time() - start_time >= timeout:
                 self.api.interrupt()
-                raise TimeoutError(
+                raise TestTimeoutError(
                     f"Workflow did not complete within {timeout} seconds",
                     timeout_seconds=timeout,
                 )
