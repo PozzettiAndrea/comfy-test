@@ -86,3 +86,14 @@ class WorkflowValidationError(TestError):
         if self.validation_errors:
             details = "\n".join(str(e) for e in self.validation_errors)
         super().__init__(message, details)
+
+
+class WorkflowExecutionError(TestError):
+    """Error during workflow execution (one or more workflows failed)."""
+
+    def __init__(self, message: str, errors: list | None = None):
+        self.execution_errors = errors or []
+        details = None
+        if self.execution_errors:
+            details = "\n".join(str(e) for e in self.execution_errors)
+        super().__init__(message, details)

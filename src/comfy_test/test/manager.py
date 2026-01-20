@@ -14,7 +14,8 @@ from .platform import get_platform, TestPlatform, TestPaths
 from ..comfyui.server import ComfyUIServer
 from ..comfyui.validator import WorkflowValidator
 from ..comfyui.workflow import WorkflowRunner
-from ..errors import TestError, VerificationError, WorkflowValidationError
+from ..errors import TestError, VerificationError, WorkflowValidationError, WorkflowExecutionError, WorkflowError, TimeoutError
+from ..screenshot import ScreenshotError
 
 
 @dataclass
@@ -402,39 +403,56 @@ class TestManager:
 
                         # Initialize browser only if any workflow needs screenshots
                         ws = None
+                        screenshots_dir = None
                         if screenshot_set:
                             try:
                                 from ..screenshot import WorkflowScreenshot, check_dependencies
                                 check_dependencies()
                                 ws = WorkflowScreenshot(server.base_url, log_callback=self._log)
                                 ws.start()
+                                # Create screenshots output directory
+                                screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
+                                screenshots_dir.mkdir(parents=True, exist_ok=True)
                             except ImportError:
                                 self._log("WARNING: Screenshots disabled (playwright not installed)")
                                 screenshot_set = set()  # Disable screenshots
 
                         try:
                             runner = WorkflowRunner(api, self._log)
+                            all_errors = []
                             for idx, workflow_file in enumerate(self.config.workflow.run, 1):
-                                if workflow_file in screenshot_set and ws:
-                                    # Execute via browser + capture screenshot
-                                    self._log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
-                                    ws.capture_after_execution(
-                                        workflow_file,
-                                        timeout=self.config.workflow.timeout,
-                                    )
-                                    self._log(f"    Status: success")
-                                else:
-                                    # Execute via API only (faster)
-                                    self._log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
-                                    result = runner.run_workflow(
-                                        workflow_file,
-                                        timeout=self.config.workflow.timeout,
-                                    )
-                                    self._log(f"    Status: {result['status']}")
+                                try:
+                                    if workflow_file in screenshot_set and ws:
+                                        # Execute via browser + capture screenshot
+                                        self._log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
+                                        output_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
+                                        ws.capture_after_execution(
+                                            workflow_file,
+                                            output_path=output_path,
+                                            timeout=self.config.workflow.timeout,
+                                        )
+                                        self._log(f"    Status: success")
+                                    else:
+                                        # Execute via API only (faster)
+                                        self._log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
+                                        result = runner.run_workflow(
+                                            workflow_file,
+                                            timeout=self.config.workflow.timeout,
+                                        )
+                                        self._log(f"    Status: {result['status']}")
+                                except (WorkflowError, TimeoutError, ScreenshotError) as e:
+                                    self._log(f"    Status: FAILED")
+                                    self._log(f"    Error: {e.message}")
+                                    all_errors.append((workflow_file.name, str(e.message)))
                         finally:
                             if ws:
                                 ws.stop()
 
+                        if all_errors:
+                            raise WorkflowExecutionError(
+                                f"Workflow execution failed ({len(all_errors)} error(s))",
+                                [f"{name}: {err}" for name, err in all_errors]
+                            )
                         self._log_level_done(TestLevel.EXECUTION, "PASSED")
 
             self._log(f"\n{platform_name}: PASSED")
@@ -999,38 +1017,56 @@ print(json.dumps(result))
 
                         # Initialize browser only if any workflow needs screenshots
                         ws = None
+                        screenshots_dir = None
                         if screenshot_set:
                             try:
                                 from ..screenshot import WorkflowScreenshot, check_dependencies
                                 check_dependencies()
                                 ws = WorkflowScreenshot(server.base_url, log_callback=self._log)
                                 ws.start()
+                                # Create screenshots output directory
+                                screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
+                                screenshots_dir.mkdir(parents=True, exist_ok=True)
                             except ImportError:
                                 self._log("WARNING: Screenshots disabled (playwright not installed)")
                                 screenshot_set = set()  # Disable screenshots
 
                         try:
                             runner = WorkflowRunner(api, self._log)
+                            all_errors = []
                             for idx, workflow_file in enumerate(self.config.workflow.run, 1):
-                                if workflow_file in screenshot_set and ws:
-                                    # Execute via browser + capture screenshot
-                                    self._log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
-                                    ws.capture_after_execution(
-                                        workflow_file,
-                                        timeout=self.config.workflow.timeout,
-                                    )
-                                    self._log(f"    Status: success")
-                                else:
-                                    # Execute via API only (faster)
-                                    self._log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
-                                    result = runner.run_workflow(
-                                        workflow_file,
-                                        timeout=self.config.workflow.timeout,
-                                    )
-                                    self._log(f"    Status: {result['status']}")
+                                try:
+                                    if workflow_file in screenshot_set and ws:
+                                        # Execute via browser + capture screenshot
+                                        self._log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
+                                        output_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
+                                        ws.capture_after_execution(
+                                            workflow_file,
+                                            output_path=output_path,
+                                            timeout=self.config.workflow.timeout,
+                                        )
+                                        self._log(f"    Status: success")
+                                    else:
+                                        # Execute via API only (faster)
+                                        self._log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
+                                        result = runner.run_workflow(
+                                            workflow_file,
+                                            timeout=self.config.workflow.timeout,
+                                        )
+                                        self._log(f"    Status: {result['status']}")
+                                except (WorkflowError, TimeoutError, ScreenshotError) as e:
+                                    self._log(f"    Status: FAILED")
+                                    self._log(f"    Error: {e.message}")
+                                    all_errors.append((workflow_file.name, str(e.message)))
                         finally:
                             if ws:
                                 ws.stop()
+
+                        if all_errors:
+                            raise WorkflowExecutionError(
+                                f"Workflow execution failed ({len(all_errors)} error(s))",
+                                [f"{name}: {err}" for name, err in all_errors]
+                            )
 
             self._log(f"[{level.value.upper()}] PASSED")
             return TestResult(platform_name, True)

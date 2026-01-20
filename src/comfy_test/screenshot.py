@@ -174,7 +174,10 @@ class WorkflowScreenshot:
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(headless=True)
-        self._page = self._browser.new_page(viewport={"width": self.width, "height": self.height})
+        self._page = self._browser.new_page(
+            viewport={"width": self.width, "height": self.height},
+            device_scale_factor=2,  # HiDPI for crisp screenshots
+        )
 
     def stop(self) -> None:
         """Stop the headless browser."""
@@ -272,17 +275,20 @@ class WorkflowScreenshot:
         except Exception:
             pass  # Best effort
 
+        # Close any open modals (like Templates popup)
+        try:
+            self._page.keyboard.press("Escape")
+            self._page.wait_for_timeout(200)
+        except Exception:
+            pass
+
         # Take screenshot with a temp file first
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            # Try to screenshot just the canvas, fall back to full page
-            canvas = self._page.locator("canvas").first
-            if canvas.is_visible():
-                canvas.screenshot(path=str(tmp_path))
-            else:
-                self._page.screenshot(path=str(tmp_path))
+            # Full viewport screenshot (1920x1080 at 2x scale)
+            self._page.screenshot(path=str(tmp_path))
 
             # Embed workflow metadata into PNG
             self._embed_workflow(tmp_path, output_path, workflow)
@@ -469,17 +475,20 @@ class WorkflowScreenshot:
         except Exception:
             pass  # Best effort
 
+        # Close any open modals (like Templates popup)
+        try:
+            self._page.keyboard.press("Escape")
+            self._page.wait_for_timeout(200)
+        except Exception:
+            pass
+
         # Take screenshot with a temp file first
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 
         try:
-            # Try to screenshot just the canvas, fall back to full page
-            canvas = self._page.locator("canvas").first
-            if canvas.is_visible():
-                canvas.screenshot(path=str(tmp_path))
-            else:
-                self._page.screenshot(path=str(tmp_path))
+            # Full viewport screenshot (1920x1080 at 2x scale)
+            self._page.screenshot(path=str(tmp_path))
 
             # Embed workflow metadata into PNG
             self._embed_workflow(tmp_path, output_path, workflow)
