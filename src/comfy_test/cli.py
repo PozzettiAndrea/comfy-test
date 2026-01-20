@@ -515,6 +515,20 @@ def main(args=None) -> int:
         action="store_true",
         help="Show what would be done without doing it",
     )
+    run_parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Run tests locally via act (Docker) instead of directly",
+    )
+    run_parser.add_argument(
+        "--output-dir", "-o",
+        help="Output directory for screenshots/logs/results.json (with --local)",
+    )
+    run_parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Enable GPU passthrough (with --local)",
+    )
     run_parser.set_defaults(func=cmd_run)
 
     # verify command
