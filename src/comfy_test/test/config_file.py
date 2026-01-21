@@ -8,18 +8,17 @@ Config file: comfy-test.toml
 Example:
     [test]
     name = "ComfyUI-MyNode"
-    python_version = "3.10"
-    levels = ["syntax", "install", "registration", "instantiation", "execution"]
+    levels = ["syntax", "install", "registration", "instantiation", "static_capture", "execution"]
 
     [test.workflows]
     timeout = 120
 
     # Workflows to run end-to-end (execution level)
-    # Filenames are resolved from the workflows/ folder
     run = ["basic.json"]
 
-    # Workflows to capture screenshots of
-    # Can be a list or "all" to auto-discover from workflows/ folder
+    # Workflows to screenshot:
+    # - static_capture level: takes static screenshot (no execution)
+    # - execution level: if also in 'run', captures with outputs visible
     screenshot = "all"
 """
 
@@ -189,11 +188,11 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     # Get basic test config
     name = test_section.get("name", base_dir.name)
     comfyui_version = test_section.get("comfyui_version", "latest")
-    python_version = test_section.get("python_version", "3.10")
+    python_version = test_section.get("python_version")  # None = random selection
     timeout = test_section.get("timeout", 300)
 
     # Parse levels - default to all levels
-    levels_raw = test_section.get("levels", ["syntax", "install", "registration", "instantiation", "validation", "execution"])
+    levels_raw = test_section.get("levels", ["syntax", "install", "registration", "instantiation", "static_capture", "execution"])
     levels = [TestLevel(l) for l in levels_raw]
 
     # Parse platforms section
@@ -226,17 +225,21 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     )
 
     try:
-        return TestConfig(
-            name=name,
-            comfyui_version=comfyui_version,
-            python_version=python_version,
-            timeout=timeout,
-            levels=levels,
-            workflow=workflow,
-            linux=linux_config,
-            windows=windows_config,
-            windows_portable=windows_portable_config,
-        )
+        # Build kwargs, only include python_version if explicitly set
+        kwargs = {
+            "name": name,
+            "comfyui_version": comfyui_version,
+            "timeout": timeout,
+            "levels": levels,
+            "workflow": workflow,
+            "linux": linux_config,
+            "windows": windows_config,
+            "windows_portable": windows_portable_config,
+        }
+        if python_version is not None:
+            kwargs["python_version"] = python_version
+
+        return TestConfig(**kwargs)
     except ValueError as e:
         raise ConfigError("Invalid configuration", str(e))
 
@@ -245,8 +248,9 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     """Parse workflow configuration section.
 
     Supports:
-      - New format: run = [...] or run = "all", screenshot = [...] or screenshot = "all"
-      - New format: execution_screenshot = [...] or "all" (execute and capture with outputs)
+      - run = [...] or run = "all" - workflows to execute
+      - screenshot = [...] or screenshot = "all" - workflows to screenshot
+        (static_capture level: static only; execution level: with outputs if also in run)
       - Legacy format: files = [...] → maps to run
       - Legacy format: file = "..." → maps to run
 
@@ -254,7 +258,6 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     """
     run = []
     screenshot = []
-    execution_screenshot = []
     files = []
 
     # Helper to resolve "all" or list of paths
@@ -267,13 +270,11 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
             return []
         return [workflows_dir / f for f in value]
 
-    # New format: run = [...] or "all", screenshot = [...] or "all"
+    # Parse run and screenshot
     if "run" in data:
         run = resolve_workflows(data["run"])
     if "screenshot" in data:
         screenshot = resolve_workflows(data["screenshot"])
-    if "execution_screenshot" in data:
-        execution_screenshot = resolve_workflows(data["execution_screenshot"])
 
     # Legacy format: files = [...] → maps to run
     if "files" in data:
@@ -290,7 +291,6 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     kwargs = {
         "run": run,
         "screenshot": screenshot,
-        "execution_screenshot": execution_screenshot,
         "files": files,
         "file": file_path,
     }

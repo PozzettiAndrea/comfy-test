@@ -1,9 +1,18 @@
 """Configuration dataclasses for installation tests."""
 
+import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List
+
+# Supported Python versions for random selection
+PYTHON_VERSIONS = ["3.11", "3.12", "3.13"]
+
+
+def _random_python_version() -> str:
+    """Select a random Python version for testing."""
+    return random.choice(PYTHON_VERSIONS)
 
 
 class TestLevel(str, Enum):
@@ -13,17 +22,19 @@ class TestLevel(str, Enum):
     - install: Setup ComfyUI, install node, install deps
     - registration: Start server, check nodes in object_info (requires install)
     - instantiation: Call each node's constructor (requires install)
-    - execution: Run workflows end-to-end (requires install)
+    - static_capture: Take static screenshots of workflows (requires install)
+    - execution: Run workflows end-to-end, capture with outputs (requires install)
 
     Dependencies:
     - syntax: standalone
     - install: standalone
-    - registration, instantiation, execution: all require install
+    - registration, instantiation, static_capture, execution: all require install
     """
     SYNTAX = "syntax"
     INSTALL = "install"
     REGISTRATION = "registration"
     INSTANTIATION = "instantiation"
+    STATIC_CAPTURE = "static_capture"
     EXECUTION = "execution"
 
     @classmethod
@@ -38,6 +49,7 @@ class TestLevel(str, Enum):
             cls.INSTALL: [],
             cls.REGISTRATION: [cls.INSTALL],
             cls.INSTANTIATION: [cls.INSTALL],
+            cls.STATIC_CAPTURE: [cls.INSTALL],
             cls.EXECUTION: [cls.INSTALL],
         }
         return deps.get(level, [])
@@ -58,7 +70,7 @@ class TestLevel(str, Enum):
                 all_levels.add(dep)
 
         # Return in execution order
-        order = [cls.SYNTAX, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.VALIDATION, cls.EXECUTION]
+        order = [cls.SYNTAX, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.STATIC_CAPTURE, cls.EXECUTION]
         return [l for l in order if l in all_levels]
 
 
@@ -68,9 +80,9 @@ class WorkflowConfig:
 
     Args:
         run: Workflows to execute end-to-end
-        screenshot: Workflows to capture screenshots of (static graph only)
-        execution_screenshot: Workflows to execute and then capture screenshots of
-                             (shows preview outputs with actual rendered content)
+        screenshot: Workflows to capture screenshots of. Behavior depends on level:
+                   - static_capture level: takes static screenshot (no execution)
+                   - execution level: if workflow is also in 'run', captures with outputs
         timeout: Timeout in seconds for workflow execution (None = no timeout)
         files: Deprecated - use run instead
         file: Deprecated - use run instead
@@ -78,7 +90,6 @@ class WorkflowConfig:
 
     run: List[Path] = field(default_factory=list)
     screenshot: List[Path] = field(default_factory=list)
-    execution_screenshot: List[Path] = field(default_factory=list)
     timeout: int = 3600  # Default 60 minutes
     files: List[Path] = field(default_factory=list)  # Deprecated
     file: Optional[Path] = None  # Deprecated
@@ -98,7 +109,6 @@ class WorkflowConfig:
         # Normalize to Path objects
         self.run = [Path(f) for f in self.run]
         self.screenshot = [Path(f) for f in self.screenshot]
-        self.execution_screenshot = [Path(f) for f in self.execution_screenshot]
         self.files = [Path(f) for f in self.files]
 
         if self.timeout <= 0:
@@ -130,7 +140,7 @@ class TestConfig:
     Args:
         name: Test suite name (usually node package name)
         comfyui_version: ComfyUI version ("latest", tag, or commit hash)
-        python_version: Python version for venv (e.g., "3.10")
+        python_version: Python version for venv (default: random from 3.11-3.13)
         timeout: Global timeout in seconds for setup operations
         levels: List of test levels to run (install, registration, instantiation, validation)
         workflow: Optional workflow to execute for end-to-end testing
@@ -148,7 +158,7 @@ class TestConfig:
 
     name: str
     comfyui_version: str = "latest"
-    python_version: str = "3.10"
+    python_version: str = field(default_factory=_random_python_version)
     timeout: int = 300
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)

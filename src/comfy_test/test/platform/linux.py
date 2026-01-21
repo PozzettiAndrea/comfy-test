@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 
 COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
-PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYTORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
+PYPI_INDEX = "https://pypi.org/simple"
 
 
 class LinuxTestPlatform(TestPlatform):
@@ -31,6 +31,19 @@ class LinuxTestPlatform(TestPlatform):
     @property
     def executable_suffix(self) -> str:
         return ""
+
+    def _pip_install_requirements(self, requirements_file: Path, cwd: Path) -> None:
+        """Install requirements with proper PyTorch index for GPU/CPU mode."""
+        gpu_mode = os.environ.get("COMFY_TEST_GPU")
+
+        cmd = ["uv", "pip", "install", "--system"]
+        if gpu_mode:
+            # GPU mode: prioritize CUDA index, fallback to PyPI
+            cmd.extend(["--index-url", PYTORCH_CUDA_INDEX])
+            cmd.extend(["--extra-index-url", PYPI_INDEX])
+        cmd.extend(["-r", str(requirements_file)])
+
+        self._run_command(cmd, cwd=cwd)
 
     def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
         """
@@ -64,31 +77,11 @@ class LinuxTestPlatform(TestPlatform):
         # Use system Python
         python = Path(sys.executable)
 
-        # Install PyTorch (CUDA if GPU mode, otherwise CPU)
-        gpu_mode = os.environ.get("COMFY_TEST_GPU")
-        if gpu_mode:
-            self._log("Installing PyTorch (CUDA 12.8)...")
-            pytorch_index = PYTORCH_CUDA_INDEX
-        else:
-            self._log("Installing PyTorch (CPU)...")
-            pytorch_index = PYTORCH_CPU_INDEX
-
-        self._run_command(
-            ["uv", "pip", "install", "--system",
-             "torch==2.8.0", "torchvision", "torchaudio",
-             "--index-url", pytorch_index],
-            cwd=work_dir,
-        )
-
-        # Install ComfyUI requirements
+        # Install ComfyUI requirements (uses CUDA index in GPU mode)
         self._log("Installing ComfyUI requirements...")
         requirements_file = comfyui_dir / "requirements.txt"
         if requirements_file.exists():
-            self._run_command(
-                ["uv", "pip", "install", "--system",
-                 "-r", str(requirements_file)],
-                cwd=work_dir,
-            )
+            self._pip_install_requirements(requirements_file, work_dir)
 
         return TestPaths(
             work_dir=work_dir,
@@ -124,11 +117,7 @@ class LinuxTestPlatform(TestPlatform):
         requirements_file = node_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
-            self._run_command(
-                ["uv", "pip", "install", "--system",
-                 "-r", str(requirements_file)],
-                cwd=node_dir,
-            )
+            self._pip_install_requirements(requirements_file, node_dir)
 
         # Run install.py if present
         install_py = node_dir / "install.py"
@@ -213,11 +202,7 @@ class LinuxTestPlatform(TestPlatform):
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log(f"  Installing {name} requirements...")
-            self._run_command(
-                ["uv", "pip", "install", "--system",
-                 "-r", str(requirements_file)],
-                cwd=target_dir,
-            )
+            self._pip_install_requirements(requirements_file, target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"

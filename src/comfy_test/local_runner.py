@@ -2,6 +2,7 @@
 
 import subprocess
 import shutil
+import tempfile
 import time
 import re
 import sys
@@ -97,167 +98,212 @@ def run_local(
     # Create main log file (sibling to output_dir, not inside it)
     log_file = output_dir.parent / f"{output_dir.name}.log"
 
-    # Set up local workflow with test-matrix-local.yml
+    # Local paths
     local_comfy_test = Path.home() / "utils" / "comfy-test"
+    local_comfy_env = Path.home() / "utils" / "comfy-env"
     local_workflow = local_comfy_test / ".github" / "workflows" / "test-matrix-local.yml"
 
-    if local_workflow.exists():
-        node_workflow_dir = node_dir / ".github" / "workflows"
-        node_workflow_dir.mkdir(parents=True, exist_ok=True)
-        target = node_workflow_dir / "test-matrix.yml"
-
-        workflow_content = local_workflow.read_text()
-        repo_suffix = node_dir.name.replace("ComfyUI-", "").lower()
-        workflow_content = workflow_content.replace("test-linux:", f"test-linux-{repo_suffix}:")
-        workflow_content = workflow_content.replace("test-windows:", f"test-windows-{repo_suffix}:")
-
-        if target.exists() or target.is_symlink():
-            target.unlink()
-        target.write_text(workflow_content)
-
-        comfy_test_yml = node_workflow_dir / "comfy-test.yml"
-        if comfy_test_yml.exists():
-            content = comfy_test_yml.read_text()
-            patched = re.sub(
-                r'uses:\s*PozzettiAndrea/comfy-test/\.github/workflows/test-matrix\.yml@\w+',
-                'uses: ./.github/workflows/test-matrix.yml',
-                content
-            )
-            if patched != content:
-                comfy_test_yml.write_text(patched)
-
-    # Build container options
-    local_comfy_env = Path.home() / "utils" / "comfy-env"
-    container_opts = [
-        f"-v {output_dir}:{node_dir}/.comfy-test",
-        "--network bridge",
-    ]
-    if local_comfy_test.exists():
-        container_opts.append(f"-v {local_comfy_test}:/local-comfy-test")
-    if local_comfy_env.exists():
-        container_opts.append(f"-v {local_comfy_env}:/local-comfy-env")
-    if gpu:
-        container_opts.append("--gpus all")
-
-    # Build command
-    cmd = [
-        "stdbuf", "-oL",
-        "act",
-        "-P", f"ubuntu-latest={ACT_IMAGE}",
-        "--pull=false",
-        "--rm",
-        "-j", "test",
-        "--container-options", " ".join(container_opts),
-        "--env", "PYTHONUNBUFFERED=1",
-    ]
-    if gpu:
-        cmd.extend(["--env", "COMFY_TEST_GPU=1"])
-
-    # Patterns to strip from output
-    emoji_pattern = re.compile(r'[⭐🚀🐳✅❌🏁⬇️📜✏️❓🧪🔧💬⚙️🚧☁️]')
-    job_prefix_pattern = re.compile(r'\[test/[^\]]+\]\s*')
-
-    start_time = time.time()
-
-    # Run with unbuffered output
-    process = subprocess.Popen(
-        cmd,
-        cwd=node_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=1,
-        universal_newlines=True,
-    )
-
-    # Track steps for summary mode
-    current_step = None
-    current_step_output: List[str] = []
-    completed_steps: List[Tuple[str, bool, List[str]]] = []
+    # Create isolated temp directory for full isolation
+    temp_dir = tempfile.mkdtemp(prefix="comfy-test-")
+    work_dir = Path(temp_dir) / node_dir.name
 
     try:
-        with open(log_file, "w") as f:
-            while True:
-                if process.stdout:
-                    line = process.stdout.readline()
-                    if line:
-                        # Strip noise: emojis and job prefix
-                        clean_line = emoji_pattern.sub('', line.rstrip())
-                        clean_line = job_prefix_pattern.sub('', clean_line)
-                        elapsed = int(time.time() - start_time)
-                        mins, secs = divmod(elapsed, 60)
-                        timer = f"[{mins:02d}:{secs:02d}]"
-                        formatted = f"{timer} {clean_line}"
-
-                        # Always write to log file
-                        f.write(formatted + "\n")
-                        f.flush()
-
-                        if verbose:
-                            # Verbose mode: stream everything
-                            log(formatted)
-                        else:
-                            # Summary mode: track steps
-                            if match := STEP_START.search(clean_line):
-                                current_step = match.group(1)
-                                current_step_output = []
-                                # Print step name without newline
-                                sys.stdout.write(f"  {current_step}... ")
-                                sys.stdout.flush()
-                            elif match := STEP_SUCCESS.search(clean_line):
-                                step_name = match.group(1)
-                                print("[OK]")
-                                completed_steps.append((step_name, True, []))
-                                current_step = None
-                            elif match := STEP_FAILURE.search(clean_line):
-                                step_name = match.group(1)
-                                print("[ERROR]")
-                                completed_steps.append((step_name, False, current_step_output.copy()))
-                                current_step = None
-
-                            # Capture output for error context
-                            if current_step and clean_line.strip():
-                                current_step_output.append(clean_line)
-                                if len(current_step_output) > 20:
-                                    current_step_output.pop(0)
-                    elif process.poll() is not None:
-                        break
-                else:
-                    break
-    except KeyboardInterrupt:
-        process.kill()
-        process.wait()
-        subprocess.run(
-            f"docker kill $(docker ps -q --filter ancestor={ACT_IMAGE}) 2>/dev/null",
-            shell=True,
-            capture_output=True,
+        # Copy node to temp dir
+        log(f"Copying node to isolated environment...")
+        shutil.copytree(
+            node_dir, work_dir,
+            ignore=shutil.ignore_patterns(
+                '__pycache__', '*.pyc', '.git', '.venv', '*.egg-info',
+                '.comfy-test-env', '.comfy-test', '_env_*'
+            )
         )
-        log("\nTest cancelled")
-        return 130
 
-    # Show error context for failed steps
-    if not verbose:
-        for step_name, success, output in completed_steps:
-            if not success and output:
-                log(f"\n  Error in {step_name}:")
-                for line in output[-5:]:
-                    log(f"    {line}")
+        # Set up local workflow
+        if local_workflow.exists():
+            work_workflow_dir = work_dir / ".github" / "workflows"
+            work_workflow_dir.mkdir(parents=True, exist_ok=True)
+            target = work_workflow_dir / "test-matrix.yml"
 
-    # Split main log into per-workflow logs
-    logs_dir = output_dir / "logs"
-    if logs_dir.exists():
-        subprocess.run(["sudo", "rm", "-rf", str(logs_dir)], capture_output=True)
-    workflow_logs = split_log_by_workflow(log_file, logs_dir)
+            workflow_content = local_workflow.read_text()
+            repo_suffix = node_dir.name.replace("ComfyUI-", "").lower()
+            workflow_content = workflow_content.replace("test-linux:", f"test-linux-{repo_suffix}:")
+            workflow_content = workflow_content.replace("test-windows:", f"test-windows-{repo_suffix}:")
 
-    # Report output
-    screenshots_dir = output_dir / "screenshots"
-    screenshot_files = list(screenshots_dir.glob("*.png")) if screenshots_dir.exists() else []
-    results_file = output_dir / "results.json"
+            target.write_text(workflow_content)
 
-    if screenshot_files or results_file.exists() or log_file.exists():
-        log(f"\nLog: {log_file}")
-        if workflow_logs:
-            log(f"Workflow logs: {workflow_logs}")
-        if screenshot_files:
-            log(f"Screenshots: {len(screenshot_files)}")
+            comfy_test_yml = work_workflow_dir / "comfy-test.yml"
+            if comfy_test_yml.exists():
+                content = comfy_test_yml.read_text()
+                patched = re.sub(
+                    r'uses:\s*PozzettiAndrea/comfy-test/\.github/workflows/test-matrix\.yml@\w+',
+                    'uses: ./.github/workflows/test-matrix.yml',
+                    content
+                )
+                if patched != content:
+                    comfy_test_yml.write_text(patched)
 
-    return process.returncode or 0
+        # Pre-build wheels on host (avoids hatchling issues in Docker)
+        wheel_dir = work_dir / ".wheels"
+        wheel_dir.mkdir(exist_ok=True)
+
+        if local_comfy_test.exists():
+            log(f"Building comfy-test wheel...")
+            subprocess.run(
+                ["pip", "wheel", str(local_comfy_test) + "[screenshot]", "--no-deps", "-w", str(wheel_dir)],
+                capture_output=True, check=True
+            )
+
+        if local_comfy_env.exists():
+            log(f"Building comfy-env wheel...")
+            subprocess.run(
+                ["pip", "wheel", str(local_comfy_env), "--no-deps", "-w", str(wheel_dir)],
+                capture_output=True, check=True
+            )
+
+        # Use unique toolcache volume per run (allows parallel runs, cleaned up after)
+        toolcache_volume = f"act-toolcache-{Path(temp_dir).name}"
+
+        # Build container options - mount output dir and unique toolcache
+        container_opts = [
+            f"-v {output_dir}:{work_dir}/.comfy-test",
+            f"-v {toolcache_volume}:/opt/hostedtoolcache",
+            "--network bridge",
+        ]
+        if gpu:
+            container_opts.append("--gpus all")
+
+        # Build command (use temp dir for action cache to avoid stale state)
+        action_cache_dir = Path(temp_dir) / ".act-cache"
+        cmd = [
+            "stdbuf", "-oL",
+            "act",
+            "-P", f"ubuntu-latest={ACT_IMAGE}",
+            "--pull=false",
+            "--rm",
+            "-j", "test",
+            "--action-cache-path", str(action_cache_dir),
+            "--container-options", " ".join(container_opts),
+            "--env", "PYTHONUNBUFFERED=1",
+        ]
+        if gpu:
+            cmd.extend(["--env", "COMFY_TEST_GPU=1"])
+
+        # Patterns to strip from output
+        emoji_pattern = re.compile(r'[⭐🚀🐳✅❌🏁⬇️📜✏️❓🧪🔧💬⚙️🚧☁️]')
+        job_prefix_pattern = re.compile(r'\[test/[^\]]+\]\s*')
+
+        start_time = time.time()
+
+        # Run with unbuffered output from isolated work_dir
+        process = subprocess.Popen(
+            cmd,
+            cwd=work_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+            universal_newlines=True,
+        )
+
+        # Track steps for summary mode
+        current_step = None
+        current_step_output: List[str] = []
+        completed_steps: List[Tuple[str, bool, List[str]]] = []
+        return_code = 0
+
+        try:
+            with open(log_file, "w") as f:
+                while True:
+                    if process.stdout:
+                        line = process.stdout.readline()
+                        if line:
+                            # Strip noise: emojis and job prefix
+                            clean_line = emoji_pattern.sub('', line.rstrip())
+                            clean_line = job_prefix_pattern.sub('', clean_line)
+                            elapsed = int(time.time() - start_time)
+                            mins, secs = divmod(elapsed, 60)
+                            timer = f"[{mins:02d}:{secs:02d}]"
+                            formatted = f"{timer} {clean_line}"
+
+                            # Always write to log file
+                            f.write(formatted + "\n")
+                            f.flush()
+
+                            if verbose:
+                                # Verbose mode: stream everything
+                                log(formatted)
+                            else:
+                                # Summary mode: track steps
+                                if match := STEP_START.search(clean_line):
+                                    current_step = match.group(1)
+                                    current_step_output = []
+                                    # Print step name without newline
+                                    sys.stdout.write(f"  {current_step}... ")
+                                    sys.stdout.flush()
+                                elif match := STEP_SUCCESS.search(clean_line):
+                                    step_name = match.group(1)
+                                    print("[OK]")
+                                    completed_steps.append((step_name, True, []))
+                                    current_step = None
+                                elif match := STEP_FAILURE.search(clean_line):
+                                    step_name = match.group(1)
+                                    print("[ERROR]")
+                                    completed_steps.append((step_name, False, current_step_output.copy()))
+                                    current_step = None
+
+                                # Capture output for error context
+                                if current_step and clean_line.strip():
+                                    current_step_output.append(clean_line)
+                                    if len(current_step_output) > 20:
+                                        current_step_output.pop(0)
+                        elif process.poll() is not None:
+                            break
+                    else:
+                        break
+        except KeyboardInterrupt:
+            process.kill()
+            process.wait()
+            subprocess.run(
+                f"docker kill $(docker ps -q --filter ancestor={ACT_IMAGE}) 2>/dev/null",
+                shell=True,
+                capture_output=True,
+            )
+            log("\nTest cancelled")
+            return_code = 130
+
+        # Show error context for failed steps
+        if not verbose and return_code != 130:
+            for step_name, success, output in completed_steps:
+                if not success and output:
+                    log(f"\n  Error in {step_name}:")
+                    for line in output[-5:]:
+                        log(f"    {line}")
+
+        # Split main log into per-workflow logs
+        logs_dir = output_dir / "logs"
+        if logs_dir.exists():
+            subprocess.run(["sudo", "rm", "-rf", str(logs_dir)], capture_output=True)
+        workflow_logs = split_log_by_workflow(log_file, logs_dir)
+
+        # Report output
+        screenshots_dir = output_dir / "screenshots"
+        screenshot_files = list(screenshots_dir.glob("*.png")) if screenshots_dir.exists() else []
+        results_file = output_dir / "results.json"
+
+        if screenshot_files or results_file.exists() or log_file.exists():
+            log(f"\nLog: {log_file}")
+            if workflow_logs:
+                log(f"Workflow logs: {workflow_logs}")
+            if screenshot_files:
+                log(f"Screenshots: {len(screenshot_files)}")
+
+        if return_code != 0:
+            return return_code
+        return process.returncode or 0
+
+    finally:
+        # Clean up temp directory and toolcache volume
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        subprocess.run(
+            ["docker", "volume", "rm", "-f", toolcache_volume],
+            capture_output=True
+        )

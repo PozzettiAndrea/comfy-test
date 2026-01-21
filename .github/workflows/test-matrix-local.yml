@@ -15,10 +15,6 @@ on:
         description: "Path to comfy-test.toml config file"
         type: string
         default: "comfy-test.toml"
-      python-version:
-        description: "Python version for testing"
-        type: string
-        default: "3.10"
       comfy-test-ref:
         description: "Git ref for comfy-test (branch, tag, or SHA)"
         type: string
@@ -29,7 +25,29 @@ on:
         default: 60
 
 jobs:
+  parse-config:
+    runs-on: ubuntu-latest
+    outputs:
+      python-version: ${{ steps.config.outputs.python-version }}
+    steps:
+      - name: Checkout node
+        uses: actions/checkout@v4
+
+      - name: Parse python version from config
+        id: config
+        run: |
+          if [ -f "${{ inputs.config-file }}" ]; then
+            version=$(grep -E "^python_version\s*=" "${{ inputs.config-file }}" 2>/dev/null | sed "s/.*=\s*[\"']\?\([^\"']*\)[\"']\?/\1/" | tr -d ' ')
+          fi
+          if [ -z "$version" ]; then
+            versions=("3.11" "3.12" "3.13")
+            version=${versions[$RANDOM % 3]}
+          fi
+          echo "python-version=$version" >> $GITHUB_OUTPUT
+          echo "Selected Python version: $version"
+
   test-linux:
+    needs: parse-config
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
@@ -56,16 +74,20 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ needs.parse-config.outputs.python-version }}
 
       - name: Install uv
         run: pip install uv
 
       - name: Install comfy-test
         run: |
-          if [ -d "/local-comfy-test" ]; then
-            echo "Installing comfy-test from local mount: /local-comfy-test"
-            pip install "/local-comfy-test[screenshot]"
+          if ls .wheels/comfy_test-*.whl 1>/dev/null 2>&1; then
+            echo "Installing comfy-test from pre-built wheel"
+            pip install .wheels/comfy_test-*.whl
+            pip install playwright pillow  # screenshot extras
+          elif [ -d ".local-comfy-test" ]; then
+            echo "Installing comfy-test from local copy"
+            pip install ".local-comfy-test[screenshot]"
           else
             pip install "./.comfy-test-src[screenshot]"
           fi
@@ -77,9 +99,12 @@ jobs:
 
       - name: Install local comfy-env
         run: |
-          if [ -d "/local-comfy-env" ]; then
-            echo "Installing comfy-env from local mount: /local-comfy-env"
-            pip install /local-comfy-env
+          if ls .wheels/comfy_env-*.whl 1>/dev/null 2>&1; then
+            echo "Installing comfy-env from pre-built wheel"
+            pip install .wheels/comfy_env-*.whl
+          elif [ -d ".local-comfy-env" ]; then
+            echo "Installing comfy-env from local copy"
+            pip install .local-comfy-env
           fi
 
       - name: Syntax

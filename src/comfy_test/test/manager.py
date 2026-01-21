@@ -99,7 +99,7 @@ class TestManager:
     # All possible levels in order
     ALL_LEVELS = [
         TestLevel.SYNTAX, TestLevel.INSTALL, TestLevel.REGISTRATION,
-        TestLevel.INSTANTIATION, TestLevel.EXECUTION
+        TestLevel.INSTANTIATION, TestLevel.STATIC_CAPTURE, TestLevel.EXECUTION
     ]
 
     def __init__(
@@ -186,7 +186,7 @@ class TestManager:
         requested_levels = self.config.levels
         if level:
             order = [TestLevel.SYNTAX, TestLevel.INSTALL, TestLevel.REGISTRATION,
-                     TestLevel.INSTANTIATION, TestLevel.EXECUTION]
+                     TestLevel.INSTANTIATION, TestLevel.STATIC_CAPTURE, TestLevel.EXECUTION]
             max_idx = order.index(level)
             requested_levels = [l for l in requested_levels if order.index(l) <= max_idx]
 
@@ -217,7 +217,7 @@ class TestManager:
             # Check if we need install level for later levels
             needs_install = any(l in config_levels for l in [
                 TestLevel.INSTALL, TestLevel.REGISTRATION,
-                TestLevel.INSTANTIATION, TestLevel.EXECUTION
+                TestLevel.INSTANTIATION, TestLevel.STATIC_CAPTURE, TestLevel.EXECUTION
             ])
             run_workflows = self.config.workflow.run
 
@@ -315,6 +315,40 @@ class TestManager:
                         self._log(f"All {len(registered_nodes)} node(s) instantiated successfully!")
                         self._log_level_done(TestLevel.INSTANTIATION, "PASSED")
 
+                    # === STATIC_CAPTURE LEVEL ===
+                    if TestLevel.STATIC_CAPTURE not in config_levels:
+                        self._log_level_skip(TestLevel.STATIC_CAPTURE)
+                    elif not self.config.workflow.screenshot:
+                        self._log_level_start(TestLevel.STATIC_CAPTURE, TestLevel.STATIC_CAPTURE in requested_levels)
+                        self._log("No workflows configured for static capture")
+                        self._log_level_done(TestLevel.STATIC_CAPTURE, "PASSED (no workflows)")
+                    else:
+                        self._log_level_start(TestLevel.STATIC_CAPTURE, TestLevel.STATIC_CAPTURE in requested_levels)
+                        total_screenshots = len(self.config.workflow.screenshot)
+                        self._log(f"Capturing {total_screenshots} static screenshot(s)...")
+
+                        try:
+                            from ..screenshot import WorkflowScreenshot, check_dependencies
+                            check_dependencies()
+
+                            screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
+                            screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+                            ws = WorkflowScreenshot(server.base_url, log_callback=self._log)
+                            ws.start()
+                            try:
+                                for idx, workflow_file in enumerate(self.config.workflow.screenshot, 1):
+                                    self._log(f"  [{idx}/{total_screenshots}] STATIC {workflow_file.name}")
+                                    output_path = screenshots_dir / f"{workflow_file.stem}.png"
+                                    ws.capture(workflow_file, output_path=output_path)
+                            finally:
+                                ws.stop()
+
+                            self._log_level_done(TestLevel.STATIC_CAPTURE, "PASSED")
+                        except ImportError:
+                            self._log("WARNING: Screenshots disabled (playwright not installed)")
+                            self._log_level_done(TestLevel.STATIC_CAPTURE, "SKIPPED (no playwright)")
+
                     # === EXECUTION LEVEL ===
                     if TestLevel.EXECUTION not in config_levels:
                         self._log_level_skip(TestLevel.EXECUTION)
@@ -330,8 +364,8 @@ class TestManager:
                         self._log_level_start(TestLevel.EXECUTION, TestLevel.EXECUTION in requested_levels)
                         total_workflows = len(self.config.workflow.run)
 
-                        # Determine which workflows need screenshots (smart execution mode)
-                        screenshot_set = set(self.config.workflow.execution_screenshot or [])
+                        # Determine which workflows need screenshots (intersection of run and screenshot lists)
+                        screenshot_set = set(self.config.workflow.screenshot or [])
                         screenshot_count = len([w for w in self.config.workflow.run if w in screenshot_set])
 
                         if screenshot_count:
@@ -929,6 +963,32 @@ print(json.dumps(result))
                     self._test_instantiation(platform, paths, registered_nodes, state.cuda_packages)
                     self._log(f"All {len(registered_nodes)} node(s) instantiated successfully!")
 
+                elif level == TestLevel.STATIC_CAPTURE:
+                    if not self.config.workflow.screenshot:
+                        self._log("No workflows configured for static capture")
+                    else:
+                        total_screenshots = len(self.config.workflow.screenshot)
+                        self._log(f"Capturing {total_screenshots} static screenshot(s)...")
+
+                        try:
+                            from ..screenshot import WorkflowScreenshot, check_dependencies
+                            check_dependencies()
+
+                            screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
+                            screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+                            ws = WorkflowScreenshot(server.base_url, log_callback=self._log)
+                            ws.start()
+                            try:
+                                for idx, workflow_file in enumerate(self.config.workflow.screenshot, 1):
+                                    self._log(f"  [{idx}/{total_screenshots}] STATIC {workflow_file.name}")
+                                    output_path = screenshots_dir / f"{workflow_file.stem}.png"
+                                    ws.capture(workflow_file, output_path=output_path)
+                            finally:
+                                ws.stop()
+                        except ImportError:
+                            self._log("WARNING: Screenshots disabled (playwright not installed)")
+
                 elif level == TestLevel.EXECUTION:
                     if not self.config.workflow.run:
                         self._log("No workflows configured for execution")
@@ -937,8 +997,8 @@ print(json.dumps(result))
                     else:
                         total_workflows = len(self.config.workflow.run)
 
-                        # Determine which workflows need screenshots (smart execution mode)
-                        screenshot_set = set(self.config.workflow.execution_screenshot or [])
+                        # Determine which workflows need screenshots (intersection of run and screenshot lists)
+                        screenshot_set = set(self.config.workflow.screenshot or [])
                         screenshot_count = len([w for w in self.config.workflow.run if w in screenshot_set])
 
                         if screenshot_count:

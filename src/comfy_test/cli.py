@@ -166,16 +166,11 @@ def cmd_info(args) -> int:
             print("  Run (execution): none configured")
         if config.workflow.screenshot:
             print(f"  Screenshot: {len(config.workflow.screenshot)} workflow(s)")
+            print("    (static_capture: static; execution: with outputs if also in run)")
             for wf in config.workflow.screenshot:
                 print(f"    - {wf}")
         else:
             print("  Screenshot: none configured")
-        if config.workflow.execution_screenshot:
-            print(f"  Execution Screenshot: {len(config.workflow.execution_screenshot)} workflow(s)")
-            for wf in config.workflow.execution_screenshot:
-                print(f"    - {wf}")
-        else:
-            print("  Execution Screenshot: none configured")
 
         return 0
 

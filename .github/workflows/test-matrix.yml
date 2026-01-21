@@ -11,10 +11,6 @@ on:
         description: "Path to comfy-test.toml config file"
         type: string
         default: "comfy-test.toml"
-      python-version:
-        description: "Python version for testing"
-        type: string
-        default: "3.10"
       comfy-test-ref:
         description: "Git ref for comfy-test (branch, tag, or SHA)"
         type: string
@@ -25,7 +21,29 @@ on:
         default: 60
 
 jobs:
+  parse-config:
+    runs-on: ubuntu-latest
+    outputs:
+      python-version: ${{ steps.config.outputs.python-version }}
+    steps:
+      - name: Checkout node
+        uses: actions/checkout@v4
+
+      - name: Parse python version from config
+        id: config
+        run: |
+          if [ -f "${{ inputs.config-file }}" ]; then
+            version=$(grep -E "^python_version\s*=" "${{ inputs.config-file }}" 2>/dev/null | sed "s/.*=\s*[\"']\?\([^\"']*\)[\"']\?/\1/" | tr -d ' ')
+          fi
+          if [ -z "$version" ]; then
+            versions=("3.11" "3.12" "3.13")
+            version=${versions[$RANDOM % 3]}
+          fi
+          echo "python-version=$version" >> $GITHUB_OUTPUT
+          echo "Selected Python version: $version"
+
   test-linux:
+    needs: parse-config
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
@@ -51,7 +69,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ needs.parse-config.outputs.python-version }}
 
       - name: Install uv
         run: pip install uv
@@ -115,6 +133,7 @@ jobs:
           exclude_assets: ''
 
   test-windows:
+    needs: parse-config
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
@@ -133,7 +152,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ needs.parse-config.outputs.python-version }}
 
       - name: Install uv
         run: pip install uv
@@ -189,6 +208,7 @@ jobs:
           if-no-files-found: ignore
 
   test-windows-portable:
+    needs: parse-config
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
@@ -207,7 +227,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ needs.parse-config.outputs.python-version }}
 
       - name: Install comfy-test
         run: pip install "./.comfy-test-src[screenshot]"

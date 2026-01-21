@@ -1,0 +1,12 @@
+[test]
+levels = ["syntax", "install", "registration", "instantiation", "execution"]
+
+[test.workflows]
+run = "all"
+screenshot = "all"
+timeout = 300
+
+[test.platforms]
+linux = true
+windows = true
+windows_portable = true
