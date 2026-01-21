@@ -105,7 +105,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Publish to gh-pages
-        if: always() && steps.execution.outcome == 'success'
+        if: always() && steps.install.outcome == 'success'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
