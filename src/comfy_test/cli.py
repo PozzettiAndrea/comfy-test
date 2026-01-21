@@ -217,8 +217,8 @@ python_version = "3.10"
 
 [test.workflows]
 timeout = 120
-run = ["workflows/basic.json"]
-screenshot = ["workflows/basic.json"]
+run = ["basic.json"]  # Resolved from workflows/ folder
+screenshot = ["basic.json"]
 ''')
 
     return 0

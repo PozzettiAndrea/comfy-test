@@ -99,7 +99,7 @@ class TestManager:
     # All possible levels in order
     ALL_LEVELS = [
         TestLevel.SYNTAX, TestLevel.INSTALL, TestLevel.REGISTRATION,
-        TestLevel.INSTANTIATION, TestLevel.VALIDATION, TestLevel.EXECUTION
+        TestLevel.INSTANTIATION, TestLevel.EXECUTION
     ]
 
     def __init__(
@@ -186,11 +186,11 @@ class TestManager:
         requested_levels = self.config.levels
         if level:
             order = [TestLevel.SYNTAX, TestLevel.INSTALL, TestLevel.REGISTRATION,
-                     TestLevel.INSTANTIATION, TestLevel.VALIDATION, TestLevel.EXECUTION]
+                     TestLevel.INSTANTIATION, TestLevel.EXECUTION]
             max_idx = order.index(level)
             requested_levels = [l for l in requested_levels if order.index(l) <= max_idx]
 
-        # Resolve dependencies (e.g., validation needs install)
+        # Resolve dependencies (e.g., execution needs install)
         config_levels = TestLevel.resolve_dependencies(requested_levels)
 
         # Calculate total levels for progress display
@@ -217,7 +217,7 @@ class TestManager:
             # Check if we need install level for later levels
             needs_install = any(l in config_levels for l in [
                 TestLevel.INSTALL, TestLevel.REGISTRATION,
-                TestLevel.INSTANTIATION, TestLevel.VALIDATION
+                TestLevel.INSTANTIATION, TestLevel.EXECUTION
             ])
             run_workflows = self.config.workflow.run
 
@@ -255,7 +255,7 @@ class TestManager:
                 # Check if we need server for remaining levels
                 needs_server = any(l in config_levels for l in [
                     TestLevel.REGISTRATION, TestLevel.INSTANTIATION,
-                    TestLevel.VALIDATION, TestLevel.EXECUTION
+                    TestLevel.EXECUTION
                 ])
 
                 if not needs_server:
@@ -314,70 +314,6 @@ class TestManager:
                         self._test_instantiation(platform, paths, registered_nodes, cuda_packages)
                         self._log(f"All {len(registered_nodes)} node(s) instantiated successfully!")
                         self._log_level_done(TestLevel.INSTANTIATION, "PASSED")
-
-                    # === VALIDATION LEVEL ===
-                    if TestLevel.VALIDATION not in config_levels:
-                        self._log_level_skip(TestLevel.VALIDATION)
-                    else:
-                        self._log_level_start(TestLevel.VALIDATION, TestLevel.VALIDATION in requested_levels)
-                        # Always auto-discover ALL workflows in workflows/ folder
-                        workflows_dir = self.node_dir / "workflows"
-                        workflow_files = sorted(workflows_dir.glob("*.json")) if workflows_dir.exists() else []
-
-                        if workflow_files:
-                            self._log(f"Validating {len(workflow_files)} workflow(s)...")
-                            object_info = api.get_object_info()
-                            validator = WorkflowValidator(
-                                object_info,
-                                cuda_packages=cuda_packages,
-                                cuda_node_types=set(),
-                            )
-
-                            all_errors = []
-                            total_workflows = len(workflow_files)
-                            for idx, workflow_path in enumerate(workflow_files, 1):
-                                self._log(f"  [{idx}/{total_workflows}] VALIDATING {workflow_path.name}")
-                                validation_result = validator.validate_file(workflow_path)
-
-                                if not validation_result.is_valid:
-                                    for err in validation_result.errors:
-                                        self._log(f"    [ERROR] {err}")
-                                        all_errors.append((workflow_path.name, err))
-                                else:
-                                    self._log(f"    Schema: OK")
-                                    self._log(f"    Graph: OK")
-                                    self._log(f"    Introspection: OK")
-
-                                # Try partial execution of non-CUDA prefix
-                                if validation_result.executable_nodes:
-                                    with open(workflow_path) as f:
-                                        workflow = json.load(f)
-                                    exec_result = validator.execute_prefix(workflow, api, timeout=self.config.workflow.timeout)
-
-                                    if exec_result.executed_nodes:
-                                        self._log(f"    Execution: {len(exec_result.executed_nodes)} nodes executed")
-                                    else:
-                                        self._log(f"    Execution: OK (no non-CUDA nodes)")
-                                    if exec_result.execution_errors:
-                                        for node_id, error in exec_result.execution_errors.items():
-                                            self._log(f"      [WARN] Node {node_id}: {error}")
-                                else:
-                                    self._log(f"    Execution: Skipped (all nodes require CUDA)")
-
-                                # Free memory between workflows to prevent accumulation
-                                api.free_memory()
-                                self._log("\n\n")  # Blank lines between workflows
-
-                            if all_errors:
-                                raise WorkflowValidationError(
-                                    f"Workflow validation failed ({len(all_errors)} error(s))",
-                                    [err for _, err in all_errors]
-                                )
-                            self._log(f"All {len(workflow_files)} workflow(s) validated!")
-                            self._log_level_done(TestLevel.VALIDATION, "PASSED")
-                        else:
-                            self._log("No workflows configured")
-                            self._log_level_done(TestLevel.VALIDATION, "PASSED (no workflows)")
 
                     # === EXECUTION LEVEL ===
                     if TestLevel.EXECUTION not in config_levels:
@@ -544,8 +480,6 @@ class TestManager:
                     self._log("  Verify nodes in object_info")
                 elif test_level == TestLevel.INSTANTIATION:
                     self._log("  Test node constructors")
-                elif test_level == TestLevel.VALIDATION:
-                    self._log("  Validate workflows (schema + graph + types)")
                 elif test_level == TestLevel.EXECUTION:
                     if self.config.workflow.run:
                         self._log(f"  Run {len(self.config.workflow.run)} workflow(s):")
@@ -926,7 +860,7 @@ print(json.dumps(result))
                 self._log(f"[{level.value.upper()}] PASSED")
                 return TestResult(platform_name, True)
 
-            # === LEVELS REQUIRING SERVER (registration, instantiation, validation, execution) ===
+            # === LEVELS REQUIRING SERVER (registration, instantiation, execution) ===
             if not work_dir:
                 raise TestError(
                     "work_dir required",
@@ -989,62 +923,6 @@ print(json.dumps(result))
                     registered_nodes = list(object_info.keys())
                     self._test_instantiation(platform, paths, registered_nodes, state.cuda_packages)
                     self._log(f"All {len(registered_nodes)} node(s) instantiated successfully!")
-
-                elif level == TestLevel.VALIDATION:
-                    workflows_dir = self.node_dir / "workflows"
-                    workflow_files = sorted(workflows_dir.glob("*.json")) if workflows_dir.exists() else []
-
-                    if workflow_files:
-                        self._log(f"Validating {len(workflow_files)} workflow(s)...")
-                        object_info = api.get_object_info()
-                        validator = WorkflowValidator(
-                            object_info,
-                            cuda_packages=state.cuda_packages,
-                            cuda_node_types=set(),
-                        )
-
-                        all_errors = []
-                        total_workflows = len(workflow_files)
-                        for idx, workflow_path in enumerate(workflow_files, 1):
-                            self._log(f"  [{idx}/{total_workflows}] VALIDATING {workflow_path.name}")
-                            validation_result = validator.validate_file(workflow_path)
-
-                            if not validation_result.is_valid:
-                                for err in validation_result.errors:
-                                    self._log(f"    [ERROR] {err}")
-                                    all_errors.append((workflow_path.name, err))
-                            else:
-                                self._log(f"    Schema: OK")
-                                self._log(f"    Graph: OK")
-                                self._log(f"    Introspection: OK")
-
-                            # Try partial execution of non-CUDA prefix
-                            if validation_result.executable_nodes:
-                                with open(workflow_path) as f:
-                                    workflow = json.load(f)
-                                exec_result = validator.execute_prefix(workflow, api, timeout=self.config.workflow.timeout)
-
-                                if exec_result.executed_nodes:
-                                    self._log(f"    Execution: {len(exec_result.executed_nodes)} nodes executed")
-                                else:
-                                    self._log(f"    Execution: OK (no non-CUDA nodes)")
-                                if exec_result.execution_errors:
-                                    for node_id, error in exec_result.execution_errors.items():
-                                        self._log(f"      [WARN] Node {node_id}: {error}")
-                            else:
-                                self._log(f"    Execution: Skipped (all nodes require CUDA)")
-
-                            # Free memory between workflows to prevent accumulation
-                            api.free_memory()
-
-                        if all_errors:
-                            raise WorkflowValidationError(
-                                f"Workflow validation failed ({len(all_errors)} error(s))",
-                                [err for _, err in all_errors]
-                            )
-                        self._log(f"All {len(workflow_files)} workflow(s) validated!")
-                    else:
-                        self._log("No workflows configured")
 
                 elif level == TestLevel.EXECUTION:
                     if not self.config.workflow.run:

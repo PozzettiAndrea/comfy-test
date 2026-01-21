@@ -10,14 +10,14 @@ Example:
     name = "ComfyUI-MyNode"
     python_version = "3.10"
     cpu_only = true
-    levels = ["syntax", "install", "registration", "instantiation", "validation", "execution"]
+    levels = ["syntax", "install", "registration", "instantiation", "execution"]
 
     [test.workflows]
     timeout = 120
 
     # Workflows to run end-to-end (execution level)
-    # Can be a list or "all" to auto-discover from workflows/ folder
-    run = ["workflows/basic.json"]
+    # Filenames are resolved from the workflows/ folder
+    run = ["basic.json"]
 
     # Workflows to capture screenshots of
     # Can be a list or "all" to auto-discover from workflows/ folder
@@ -147,7 +147,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         python_version = "3.10"
         cpu_only = true
         timeout = 300
-        levels = ["syntax", "install", "registration", "instantiation", "validation", "execution"]
+        levels = ["syntax", "install", "registration", "instantiation", "execution"]
 
         [test.platforms]
         linux = true
@@ -156,12 +156,12 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
 
         [test.workflows]
         timeout = 120
-        run = ["workflows/basic.json"]
-        screenshot = ["workflows/basic.json", "workflows/advanced.json"]
+        run = ["basic.json"]  # Resolved from workflows/ folder
+        screenshot = ["basic.json", "advanced.json"]
 
         # Legacy format (still supported):
-        # files = ["workflows/basic.json"]  # maps to 'run'
-        # file = "workflow.json"  # maps to 'run'
+        # files = ["basic.json"]  # maps to 'run'
+        # file = "basic.json"  # maps to 'run'
 
         [test.linux]
         skip_workflow = false
@@ -262,13 +262,14 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     files = []
 
     # Helper to resolve "all" or list of paths
+    # Workflows are always resolved relative to the workflows/ folder
     def resolve_workflows(value):
+        workflows_dir = base_dir / "workflows"
         if value == "all":
-            workflows_dir = base_dir / "workflows"
             if workflows_dir.exists():
                 return sorted(workflows_dir.glob("*.json"))
             return []
-        return [base_dir / f for f in value]
+        return [workflows_dir / f for f in value]
 
     # New format: run = [...] or "all", screenshot = [...] or "all"
     if "run" in data:
@@ -280,12 +281,14 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
 
     # Legacy format: files = [...] → maps to run
     if "files" in data:
-        files = [base_dir / f for f in data["files"]]
+        workflows_dir = base_dir / "workflows"
+        files = [workflows_dir / f for f in data["files"]]
 
     # Legacy format: file = "..." → maps to run
     file_path = None
     if "file" in data:
-        file_path = base_dir / data["file"]
+        workflows_dir = base_dir / "workflows"
+        file_path = workflows_dir / data["file"]
 
     # Only pass timeout if explicitly set in config
     kwargs = {

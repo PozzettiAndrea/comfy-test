@@ -83,11 +83,6 @@ jobs:
         if: always() && steps.install.outcome == 'success'
         run: comfy-test run --platform linux --only-level instantiation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file }}
 
-      - name: Validation
-        id: validation
-        if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform linux --only-level validation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file }}
-
       - name: Execution
         id: execution
         if: always() && steps.install.outcome == 'success'
@@ -168,11 +163,6 @@ jobs:
         if: always() && steps.install.outcome == 'success'
         run: comfy-test run --platform windows --only-level instantiation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file }}
 
-      - name: Validation
-        id: validation
-        if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows --only-level validation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file }}
-
       - name: Execution
         id: execution
         if: always() && steps.install.outcome == 'success'
@@ -241,11 +231,6 @@ jobs:
         id: instantiation
         if: always() && steps.install.outcome == 'success'
         run: comfy-test run --platform windows-portable --only-level instantiation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file }}
-
-      - name: Validation
-        id: validation
-        if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows-portable --only-level validation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file }}
 
       - name: Execution
         id: execution

@@ -30,8 +30,8 @@ Create comfy-test.toml in your custom node directory:
     [test]
     name = "MyNode"
 
-    [test.workflow]
-    file = "tests/workflows/smoke_test.json"
+    [test.workflows]
+    run = ["smoke_test.json"]  # Resolved from workflows/ folder
 
 Nodes are auto-discovered from NODE_CLASS_MAPPINGS in your __init__.py.
 

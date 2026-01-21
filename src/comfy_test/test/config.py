@@ -13,19 +13,17 @@ class TestLevel(str, Enum):
     - install: Setup ComfyUI, install node, install deps
     - registration: Start server, check nodes in object_info (requires install)
     - instantiation: Call each node's constructor (requires install)
-    - validation: Validate workflows (requires install)
     - execution: Run workflows end-to-end (requires install)
 
     Dependencies:
     - syntax: standalone
     - install: standalone
-    - registration, instantiation, validation, execution: all require install
+    - registration, instantiation, execution: all require install
     """
     SYNTAX = "syntax"
     INSTALL = "install"
     REGISTRATION = "registration"
     INSTANTIATION = "instantiation"
-    VALIDATION = "validation"
     EXECUTION = "execution"
 
     @classmethod
@@ -40,7 +38,6 @@ class TestLevel(str, Enum):
             cls.INSTALL: [],
             cls.REGISTRATION: [cls.INSTALL],
             cls.INSTANTIATION: [cls.INSTALL],
-            cls.VALIDATION: [cls.INSTALL],
             cls.EXECUTION: [cls.INSTALL],
         }
         return deps.get(level, [])
@@ -146,7 +143,7 @@ class TestConfig:
         config = TestConfig(
             name="ComfyUI-MyNode",
             levels=[TestLevel.INSTALL, TestLevel.REGISTRATION],
-            workflow=WorkflowConfig(run=[Path("workflows/basic.json")]),
+            workflow=WorkflowConfig(run=[Path("basic.json")]),  # Resolved from workflows/
         )
     """
 
