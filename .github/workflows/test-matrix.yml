@@ -117,6 +117,8 @@ jobs:
   test-windows:
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
@@ -189,6 +191,8 @@ jobs:
   test-windows-portable:
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
