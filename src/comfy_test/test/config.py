@@ -131,7 +131,6 @@ class TestConfig:
         name: Test suite name (usually node package name)
         comfyui_version: ComfyUI version ("latest", tag, or commit hash)
         python_version: Python version for venv (e.g., "3.10")
-        cpu_only: Use --cpu flag (no GPU required)
         timeout: Global timeout in seconds for setup operations
         levels: List of test levels to run (install, registration, instantiation, validation)
         workflow: Optional workflow to execute for end-to-end testing
@@ -150,7 +149,6 @@ class TestConfig:
     name: str
     comfyui_version: str = "latest"
     python_version: str = "3.10"
-    cpu_only: bool = True
     timeout: int = 300
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)

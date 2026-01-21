@@ -160,7 +160,7 @@ class LinuxTestPlatform(TestPlatform):
 
         # Use CPU mode unless GPU mode is explicitly enabled
         gpu_mode = os.environ.get("COMFY_TEST_GPU")
-        if config.cpu_only and not gpu_mode:
+        if not gpu_mode:
             cmd.append("--cpu")
 
         # Set environment

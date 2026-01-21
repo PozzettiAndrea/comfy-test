@@ -9,7 +9,6 @@ Example:
     [test]
     name = "ComfyUI-MyNode"
     python_version = "3.10"
-    cpu_only = true
     levels = ["syntax", "install", "registration", "instantiation", "execution"]
 
     [test.workflows]
@@ -145,7 +144,6 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         name = "MyNode"
         comfyui_version = "latest"
         python_version = "3.10"
-        cpu_only = true
         timeout = 300
         levels = ["syntax", "install", "registration", "instantiation", "execution"]
 
@@ -192,7 +190,6 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     name = test_section.get("name", base_dir.name)
     comfyui_version = test_section.get("comfyui_version", "latest")
     python_version = test_section.get("python_version", "3.10")
-    cpu_only = test_section.get("cpu_only", True)
     timeout = test_section.get("timeout", 300)
 
     # Parse levels - default to all levels
@@ -233,7 +230,6 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             name=name,
             comfyui_version=comfyui_version,
             python_version=python_version,
-            cpu_only=cpu_only,
             timeout=timeout,
             levels=levels,
             workflow=workflow,

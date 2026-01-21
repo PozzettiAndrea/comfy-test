@@ -145,7 +145,6 @@ def cmd_info(args) -> int:
         print(f"  Name: {config.name}")
         print(f"  ComfyUI Version: {config.comfyui_version}")
         print(f"  Python Version: {config.python_version}")
-        print(f"  CPU Only: {config.cpu_only}")
         print(f"  Timeout: {config.timeout}s")
         print(f"  Levels: {', '.join(l.value for l in config.levels)}")
         print()

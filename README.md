@@ -128,7 +128,6 @@ Or use `comfy-env.toml` to specify CUDA packages - any node importing those pack
 name = "ComfyUI-MyNode"           # Test suite name
 comfyui_version = "latest"        # ComfyUI version (tag, commit, or "latest")
 python_version = "3.10"           # Python version
-cpu_only = true                   # Use --cpu flag (no GPU needed)
 timeout = 300                     # Setup timeout in seconds
 
 [test.platforms]

@@ -158,7 +158,9 @@ class WindowsTestPlatform(TestPlatform):
             "--port", str(port),
         ]
 
-        if config.cpu_only:
+        # Use CPU mode unless GPU mode is explicitly enabled
+        gpu_mode = os.environ.get("COMFY_TEST_GPU")
+        if not gpu_mode:
             cmd.append("--cpu")
 
         # Set environment
