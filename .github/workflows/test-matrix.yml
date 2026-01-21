@@ -111,7 +111,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: .comfy-test
-          keep_files: true
+          keep_files: false
           exclude_assets: ''
 
   test-windows:
