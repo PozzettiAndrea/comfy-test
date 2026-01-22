@@ -12,6 +12,45 @@ from .test.manager import TestManager
 from .errors import TestError, ConfigError, SetupError
 
 
+DEFAULT_CONFIG = """\
+# comfy-test.toml - Test configuration for ComfyUI custom nodes
+# Documentation: https://github.com/PozzettiAndrea/comfy-test
+
+[test]
+name = "{name}"
+python_version = "3.11"
+levels = ["syntax", "install", "registration"]
+
+[test.workflows]
+run = "all"        # or list specific files: ["workflow1.json", "workflow2.json"]
+screenshot = "all"
+timeout = 300
+
+[test.platforms]
+linux = true
+windows = false
+windows_portable = false
+"""
+
+
+def cmd_init(args) -> int:
+    """Handle init command - create default comfy-test.toml."""
+    config_path = Path.cwd() / "comfy-test.toml"
+
+    if config_path.exists() and not args.force:
+        print(f"Config file already exists: {config_path}", file=sys.stderr)
+        print("Use --force to overwrite", file=sys.stderr)
+        return 1
+
+    # Try to auto-detect project name from folder
+    name = Path.cwd().name
+
+    content = DEFAULT_CONFIG.format(name=name)
+    config_path.write_text(content)
+    print(f"Created {config_path}")
+    return 0
+
+
 def cmd_run(args) -> int:
     """Run installation tests."""
     # Handle --local mode (run via act/Docker)
@@ -543,6 +582,18 @@ def main(args=None) -> int:
         help="Path to config file",
     )
     info_parser.set_defaults(func=cmd_info)
+
+    # init command
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create a default comfy-test.toml config file",
+    )
+    init_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Overwrite existing config file",
+    )
+    init_parser.set_defaults(func=cmd_init)
 
     # init-ci command
     init_ci_parser = subparsers.add_parser(

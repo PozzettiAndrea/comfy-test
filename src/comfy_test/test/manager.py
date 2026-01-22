@@ -2,7 +2,9 @@
 
 import json
 import os
+import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -10,6 +12,64 @@ from pathlib import Path
 from typing import Optional, Callable, List
 
 from .config import TestConfig, TestLevel
+
+
+class ProgressSpinner:
+    """Animated progress spinner for workflow execution.
+
+    Displays a line like:
+        [00:45] executing mesh_info.json.... [3/23]  |
+
+    The spinner character animates while execution is in progress.
+    """
+
+    def __init__(self, workflow_name: str, current: int, total: int):
+        self.workflow_name = workflow_name
+        self.current = current
+        self.total = total
+        self.start_time = time.time()
+        self._stop = False
+        self._thread: Optional[threading.Thread] = None
+        self._chars = ['|', '/', '-', '\\']
+        self._idx = 0
+        self._last_line_len = 0
+
+    def start(self) -> None:
+        """Start the spinner animation in a background thread."""
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def _spin(self) -> None:
+        """Background thread that updates the spinner display."""
+        while not self._stop:
+            elapsed = int(time.time() - self.start_time)
+            mins, secs = divmod(elapsed, 60)
+            char = self._chars[self._idx % len(self._chars)]
+            line = f"\r[{mins:02d}:{secs:02d}] executing {self.workflow_name}.... [{self.current}/{self.total}]  {char}"
+            # Pad with spaces to overwrite previous content
+            padded = line.ljust(self._last_line_len)
+            self._last_line_len = len(line)
+            sys.stdout.write(padded)
+            sys.stdout.flush()
+            self._idx += 1
+            time.sleep(0.1)
+
+    def stop(self, status: str) -> None:
+        """Stop the spinner and print final status.
+
+        Args:
+            status: Final status to display (e.g., "PASS", "FAIL")
+        """
+        self._stop = True
+        if self._thread:
+            self._thread.join(timeout=0.3)
+        elapsed = int(time.time() - self.start_time)
+        mins, secs = divmod(elapsed, 60)
+        # Clear line and print final status
+        final_line = f"\r[{mins:02d}:{secs:02d}] {self.workflow_name} [{self.current}/{self.total}] - {status}"
+        padded = final_line.ljust(self._last_line_len)
+        sys.stdout.write(padded + "\n")
+        sys.stdout.flush()
 from .comfy_env import get_cuda_packages, get_node_reqs
 from .platform import get_platform, TestPlatform, TestPaths
 from ..comfyui.server import ComfyUIServer
@@ -377,7 +437,7 @@ class TestManager:
                         screenshot_count = len([w for w in self.config.workflow.run if w in screenshot_set])
 
                         if screenshot_count:
-                            self._log(f"Running {total_workflows} workflow(s) ({screenshot_count} with screenshots)...")
+                            self._log(f"Running {total_workflows} workflow(s) ({screenshot_count} with videos)...")
                         else:
                             self._log(f"Running {total_workflows} workflow(s)...")
 
@@ -388,18 +448,21 @@ class TestManager:
                             self._log(msg)
                             current_workflow_log.append(msg)
 
-                        # Initialize browser only if any workflow needs screenshots
+                        # Initialize browser only if any workflow needs screenshots/videos
                         ws = None
                         screenshots_dir = None
+                        videos_dir = None
                         if screenshot_set:
                             try:
                                 from ..screenshot import WorkflowScreenshot, check_dependencies
                                 check_dependencies()
                                 ws = WorkflowScreenshot(server.base_url, log_callback=capture_log)
                                 ws.start()
-                                # Create screenshots output directory
+                                # Create screenshots and videos output directories
                                 screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
                                 screenshots_dir.mkdir(parents=True, exist_ok=True)
+                                videos_dir = self.node_dir / ".comfy-test" / "videos"
+                                videos_dir.mkdir(parents=True, exist_ok=True)
                             except ImportError:
                                 self._log("WARNING: Screenshots disabled (playwright not installed)")
                                 screenshot_set = set()  # Disable screenshots
@@ -419,20 +482,27 @@ class TestManager:
                                 status = "pass"
                                 error_msg = None
 
+                                # Start progress spinner
+                                spinner = ProgressSpinner(workflow_file.name, idx, total_workflows)
+                                spinner.start()
+
                                 try:
-                                    if workflow_file in screenshot_set and ws:
-                                        # Execute via browser + capture screenshot
-                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
-                                        output_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
-                                        ws.capture_after_execution(
+                                    if workflow_file in screenshot_set and ws and videos_dir:
+                                        # Execute via browser + capture video frames
+                                        workflow_video_dir = videos_dir / workflow_file.stem
+                                        final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
+                                        frames = ws.capture_execution_frames(
                                             workflow_file,
-                                            output_path=output_path,
+                                            output_dir=workflow_video_dir,
                                             timeout=_get_workflow_timeout(self.config.workflow.timeout),
+                                            log_lines=current_workflow_log,
+                                            webp_quality=60,  # Low quality for video frames
+                                            final_screenshot_path=final_screenshot_path,  # High quality PNG
+                                            final_screenshot_delay_ms=5000,  # 5 second delay
                                         )
-                                        capture_log(f"    Status: success")
+                                        capture_log(f"    Captured {len(frames)} video frames")
                                     else:
                                         # Execute via API only (faster)
-                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
                                         result = runner.run_workflow(
                                             workflow_file,
                                             timeout=_get_workflow_timeout(self.config.workflow.timeout),
@@ -444,6 +514,9 @@ class TestManager:
                                     capture_log(f"    Status: FAILED")
                                     capture_log(f"    Error: {e.message}")
                                     all_errors.append((workflow_file.name, str(e.message)))
+                                finally:
+                                    # Stop spinner with final status
+                                    spinner.stop("PASS" if status == "pass" else "FAIL")
 
                                 duration = time.time() - start_time
                                 results.append({
@@ -1010,7 +1083,7 @@ print(json.dumps(result))
                         screenshot_count = len([w for w in self.config.workflow.run if w in screenshot_set])
 
                         if screenshot_count:
-                            self._log(f"Running {total_workflows} workflow(s) ({screenshot_count} with screenshots)...")
+                            self._log(f"Running {total_workflows} workflow(s) ({screenshot_count} with videos)...")
                         else:
                             self._log(f"Running {total_workflows} workflow(s)...")
 
@@ -1021,18 +1094,21 @@ print(json.dumps(result))
                             self._log(msg)
                             current_workflow_log.append(msg)
 
-                        # Initialize browser only if any workflow needs screenshots
+                        # Initialize browser only if any workflow needs screenshots/videos
                         ws = None
                         screenshots_dir = None
+                        videos_dir = None
                         if screenshot_set:
                             try:
                                 from ..screenshot import WorkflowScreenshot, check_dependencies
                                 check_dependencies()
                                 ws = WorkflowScreenshot(server.base_url, log_callback=capture_log)
                                 ws.start()
-                                # Create screenshots output directory
+                                # Create screenshots and videos output directories
                                 screenshots_dir = self.node_dir / ".comfy-test" / "screenshots"
                                 screenshots_dir.mkdir(parents=True, exist_ok=True)
+                                videos_dir = self.node_dir / ".comfy-test" / "videos"
+                                videos_dir.mkdir(parents=True, exist_ok=True)
                             except ImportError:
                                 self._log("WARNING: Screenshots disabled (playwright not installed)")
                                 screenshot_set = set()  # Disable screenshots
@@ -1052,20 +1128,27 @@ print(json.dumps(result))
                                 status = "pass"
                                 error_msg = None
 
+                                # Start progress spinner
+                                spinner = ProgressSpinner(workflow_file.name, idx, total_workflows)
+                                spinner.start()
+
                                 try:
-                                    if workflow_file in screenshot_set and ws:
-                                        # Execute via browser + capture screenshot
-                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING + SCREENSHOT {workflow_file.name}")
-                                        output_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
-                                        ws.capture_after_execution(
+                                    if workflow_file in screenshot_set and ws and videos_dir:
+                                        # Execute via browser + capture video frames
+                                        workflow_video_dir = videos_dir / workflow_file.stem
+                                        final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
+                                        frames = ws.capture_execution_frames(
                                             workflow_file,
-                                            output_path=output_path,
+                                            output_dir=workflow_video_dir,
                                             timeout=_get_workflow_timeout(self.config.workflow.timeout),
+                                            log_lines=current_workflow_log,
+                                            webp_quality=60,  # Low quality for video frames
+                                            final_screenshot_path=final_screenshot_path,  # High quality PNG
+                                            final_screenshot_delay_ms=5000,  # 5 second delay
                                         )
-                                        capture_log(f"    Status: success")
+                                        capture_log(f"    Captured {len(frames)} video frames")
                                     else:
                                         # Execute via API only (faster)
-                                        capture_log(f"  [{idx}/{total_workflows}] RUNNING {workflow_file.name}")
                                         result = runner.run_workflow(
                                             workflow_file,
                                             timeout=_get_workflow_timeout(self.config.workflow.timeout),
@@ -1077,6 +1160,9 @@ print(json.dumps(result))
                                     capture_log(f"    Status: FAILED")
                                     capture_log(f"    Error: {e.message}")
                                     all_errors.append((workflow_file.name, str(e.message)))
+                                finally:
+                                    # Stop spinner with final status
+                                    spinner.stop("PASS" if status == "pass" else "FAIL")
 
                                 duration = time.time() - start_time
                                 results.append({

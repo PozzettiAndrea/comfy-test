@@ -9,9 +9,140 @@ The same HTML is used in both contexts, ensuring parity between local and deploy
 
 import html
 import json
+import os
+import platform
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+
+def _get_system_info() -> dict:
+    """Get system info (CPU, GPU, OS) for report header.
+
+    Returns:
+        Dict with 'cpu', 'gpu', 'os' keys
+    """
+    import subprocess
+
+    info = {
+        'cpu': 'Unknown CPU',
+        'gpu': 'None',
+        'os': platform.system(),
+    }
+
+    cores = os.cpu_count() or 0
+
+    # Get OS info
+    try:
+        if platform.system() == "Linux":
+            # Try to get distro info
+            if Path("/etc/os-release").exists():
+                content = Path("/etc/os-release").read_text()
+                match = re.search(r'PRETTY_NAME="([^"]+)"', content)
+                if match:
+                    info['os'] = match.group(1)
+                else:
+                    info['os'] = "Linux"
+            else:
+                info['os'] = "Linux"
+        elif platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sw_vers", "-productVersion"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                info['os'] = f"macOS {result.stdout.strip()}"
+        elif platform.system() == "Windows":
+            info['os'] = f"Windows {platform.release()}"
+    except Exception:
+        pass
+
+    # Get CPU info
+    try:
+        if platform.system() == "Linux":
+            cpuinfo = Path("/proc/cpuinfo").read_text()
+            match = re.search(r"model name\s*:\s*(.+)", cpuinfo)
+            if match:
+                cpu_model = match.group(1).strip()
+                cpu_model = re.sub(r"\s+", " ", cpu_model)
+                cpu_model = re.sub(r"\(R\)|\(TM\)", "", cpu_model)
+                info['cpu'] = cpu_model.strip()
+        elif platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                info['cpu'] = result.stdout.strip()
+        elif platform.system() == "Windows":
+            result = subprocess.run(
+                ["wmic", "cpu", "get", "name"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                lines = [l.strip() for l in result.stdout.split('\n') if l.strip() and l.strip() != "Name"]
+                if lines:
+                    info['cpu'] = lines[0]
+    except Exception:
+        pass
+
+    if cores > 0:
+        info['cpu'] = f"{info['cpu']} ({cores} cores)"
+
+    # Get GPU info
+    try:
+        # Try nvidia-smi first (NVIDIA GPUs)
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            gpus = [g.strip() for g in result.stdout.strip().split('\n') if g.strip()]
+            if gpus:
+                # If multiple GPUs, show count
+                if len(gpus) > 1:
+                    info['gpu'] = f"{gpus[0]} x{len(gpus)}"
+                else:
+                    info['gpu'] = gpus[0]
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    # If no NVIDIA GPU, try other methods
+    if info['gpu'] == 'None':
+        try:
+            if platform.system() == "Linux":
+                # Try lspci for any GPU
+                result = subprocess.run(
+                    ["lspci"],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if 'VGA' in line or '3D controller' in line:
+                            # Extract GPU name after the colon
+                            match = re.search(r':\s*(.+)$', line)
+                            if match:
+                                gpu_name = match.group(1).strip()
+                                # Simplify common prefixes
+                                gpu_name = re.sub(r'^(NVIDIA|AMD|Intel) Corporation\s*', r'\1 ', gpu_name)
+                                info['gpu'] = gpu_name
+                                break
+            elif platform.system() == "Darwin":
+                result = subprocess.run(
+                    ["system_profiler", "SPDisplaysDataType"],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    match = re.search(r'Chipset Model:\s*(.+)', result.stdout)
+                    if match:
+                        info['gpu'] = match.group(1).strip()
+        except Exception:
+            pass
+
+    return info
 
 
 def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> Path:
@@ -22,7 +153,7 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
     - gh-pages publishing in CI
 
     Args:
-        output_dir: Directory containing results.json, screenshots/, logs/
+        output_dir: Directory containing results.json, screenshots/, logs/, videos/
         repo_name: Optional repository name for the header
 
     Returns:
@@ -31,6 +162,7 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
     results_file = output_dir / "results.json"
     screenshots_dir = output_dir / "screenshots"
     logs_dir = output_dir / "logs"
+    videos_dir = output_dir / "videos"
 
     if not results_file.exists():
         raise FileNotFoundError(f"No results.json found in {output_dir}")
@@ -42,6 +174,18 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
                    for f in screenshots_dir.glob("*.png")} if screenshots_dir.exists() else {}
     log_files = {f.stem: f.name
                  for f in logs_dir.glob("*.log")} if logs_dir.exists() else {}
+
+    # Discover video metadata (from videos/{workflow_name}/metadata.json)
+    video_data: Dict[str, Any] = {}
+    if videos_dir.exists():
+        for workflow_dir in videos_dir.iterdir():
+            if workflow_dir.is_dir():
+                metadata_file = workflow_dir / "metadata.json"
+                if metadata_file.exists():
+                    try:
+                        video_data[workflow_dir.name] = json.loads(metadata_file.read_text())
+                    except Exception:
+                        pass
 
     # Read log contents
     log_contents = {}
@@ -62,7 +206,8 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
         if repo_name in (".", ".comfy-test"):
             repo_name = output_dir.parent.parent.name
 
-    html_content = _render_report(results, screenshots, log_contents, repo_name)
+    system_info = _get_system_info()
+    html_content = _render_report(results, screenshots, log_contents, repo_name, video_data, system_info)
 
     output_file = output_dir / "index.html"
     output_file.write_text(html_content)
@@ -74,6 +219,8 @@ def _render_report(
     screenshots: Dict[str, str],
     log_contents: Dict[str, str],
     repo_name: str,
+    video_data: Optional[Dict[str, Any]] = None,
+    system_info: Optional[Dict[str, str]] = None,
 ) -> str:
     """Render the HTML report from results data.
 
@@ -82,10 +229,14 @@ def _render_report(
         screenshots: Dict mapping workflow name to screenshot filename
         log_contents: Dict mapping workflow name to log content
         repo_name: Repository name for the header
+        video_data: Dict mapping workflow name to metadata (frames with timestamps/logs)
+        system_info: Dict with 'cpu', 'gpu', 'os' keys
 
     Returns:
         Complete HTML document as string
     """
+    system_info = system_info or {}
+    video_data = video_data or {}
     summary = results.get("summary", {})
     total = summary.get("total", 0)
     passed = summary.get("passed", 0)
@@ -111,6 +262,9 @@ def _render_report(
     # Build workflow cards HTML
     failed_section = _render_failed_section(failed_workflows, log_contents)
     workflow_cards, workflow_data_js = _render_workflow_cards(all_workflows, screenshots, log_contents)
+
+    # Build video frames JSON for JavaScript
+    video_data_js = json.dumps(video_data)
 
     return f'''<!DOCTYPE html>
 <html lang="en">
@@ -506,6 +660,96 @@ def _render_report(
             border-radius: 4px;
         }}
 
+        /* Video Player */
+        .video-player {{
+            display: none;
+            margin-top: 1rem;
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 1rem;
+        }}
+
+        .video-player.active {{
+            display: block;
+        }}
+
+        .video-controls {{
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }}
+
+        .video-play-btn {{
+            background: #4da6ff;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }}
+
+        .video-play-btn:hover {{
+            background: #3d8ee0;
+        }}
+
+        .video-frame-counter {{
+            color: #888;
+            font-size: 0.85rem;
+        }}
+
+        .video-slider-container {{
+            padding: 15px 0;
+        }}
+
+        /* noUiSlider customization */
+        #video-slider {{
+            height: 6px;
+            background: #333;
+            border: none;
+            box-shadow: none;
+        }}
+
+        #video-slider .noUi-connect {{
+            background: #4da6ff;
+        }}
+
+        #video-slider .noUi-handle {{
+            width: 16px;
+            height: 16px;
+            background: #4da6ff;
+            border: none;
+            border-radius: 50%;
+            box-shadow: none;
+            top: -5px;
+            right: -8px;
+            cursor: pointer;
+        }}
+
+        #video-slider .noUi-handle:before,
+        #video-slider .noUi-handle:after {{
+            display: none;
+        }}
+
+        /* Pips (tick marks) */
+        .noUi-pips {{
+            color: #666;
+        }}
+
+        .noUi-marker {{
+            background: #4da6ff;
+            width: 2px;
+        }}
+
+        .noUi-marker-large {{
+            height: 12px;
+        }}
+
+        .noUi-value {{
+            display: none;
+        }}
+
         /* Footer */
         footer {{
             text-align: center;
@@ -535,11 +779,13 @@ def _render_report(
             }}
         }}
     </style>
+    <link href="https://cdn.jsdelivr.net/npm/nouislider@15/dist/nouislider.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/nouislider@15/dist/nouislider.min.js"></script>
 </head>
 <body>
     <header>
-        <h1><a href="https://github.com/PozzettiAndrea/{repo_name}">{repo_name}</a></h1>
-        <p class="meta">Test Results | {timestamp_display} | Platform: {platform}</p>
+        <h1><a href="https://github.com/PozzettiAndrea/{repo_name}">{repo_name}</a> Test Results</h1>
+        <p class="meta">{timestamp_display} | {system_info.get('os', platform)} | CPU: {system_info.get('cpu', 'Unknown')} | GPU: {system_info.get('gpu', 'None')}</p>
     </header>
 
     <div class="container">
@@ -566,6 +812,14 @@ def _render_report(
         <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
         <div class="lightbox-content">
             <img id="lightbox-img" src="" alt="">
+            <div class="video-player" id="video-player">
+                <div class="video-slider-container">
+                    <div id="video-slider"></div>
+                </div>
+                <div class="video-controls">
+                    <span class="video-frame-counter" id="video-frame-counter">0.0s / 0.0s</span>
+                </div>
+            </div>
             <div class="lightbox-info">
                 <span class="lightbox-title" id="lightbox-title"></span>
                 <div class="lightbox-meta">
@@ -585,9 +839,24 @@ def _render_report(
         // Store workflow data for hash-based linking
         const workflowData = {workflow_data_js};
 
+        // Store video metadata (frames with timestamps and logs)
+        const videoData = {video_data_js};
+
+        // Video player state
+        let currentWorkflow = null;
+        let playInterval = null;
+        let originalLogContent = '';
+
+        // Current frame data for video player
+        let currentFrameIndex = 0;
+        let currentFrames = [];
+        let currentTotalTime = 0;
+
         function openLightbox(src, title, status, duration, logContent) {{
             document.getElementById('lightbox-img').src = src;
             document.getElementById('lightbox-title').textContent = title;
+            currentWorkflow = title;
+            originalLogContent = logContent;
 
             const badge = document.getElementById('lightbox-badge');
             badge.textContent = status;
@@ -595,13 +864,121 @@ def _render_report(
 
             document.getElementById('lightbox-duration').textContent = duration + 's';
             document.getElementById('lightbox-log').textContent = logContent || '(No log available)';
-            document.getElementById('lightbox').classList.add('active');
 
-            // Update URL hash for shareable link
+            // Setup video player if video data exists
+            const data = videoData[title];
+            const videoPlayer = document.getElementById('video-player');
+
+            if (data && data.frames && data.frames.length > 1) {{
+                currentFrames = data.frames;
+                currentTotalTime = data.total_time || data.frames[data.frames.length - 1].time;
+                setupVideoSlider(data.frames, currentTotalTime);
+                updateVideoFrameByIndex(title, data.frames.length - 1);
+                videoPlayer.classList.add('active');
+            }} else {{
+                videoPlayer.classList.remove('active');
+            }}
+
+            document.getElementById('lightbox').classList.add('active');
             history.replaceState(null, '', '#' + encodeURIComponent(title));
         }}
 
+        function buildSliderRange(frames, totalTime) {{
+            // Build noUiSlider range with frames at their time percentages
+            const range = {{ 'min': frames[0].time }};
+            frames.forEach((frame, idx) => {{
+                if (idx > 0 && idx < frames.length - 1) {{
+                    const pct = (frame.time / totalTime * 100).toFixed(1) + '%';
+                    range[pct] = frame.time;
+                }}
+            }});
+            range['max'] = frames[frames.length - 1].time;
+            return range;
+        }}
+
+        function setupVideoSlider(frames, totalTime) {{
+            const sliderEl = document.getElementById('video-slider');
+
+            // Destroy existing slider if any
+            if (sliderEl.noUiSlider) {{
+                sliderEl.noUiSlider.destroy();
+            }}
+
+            const range = buildSliderRange(frames, totalTime);
+
+            noUiSlider.create(sliderEl, {{
+                start: frames[frames.length - 1].time,
+                snap: true,
+                range: range,
+                pips: {{
+                    mode: 'range',
+                    density: 100
+                }}
+            }});
+
+            sliderEl.noUiSlider.on('update', function(values) {{
+                const time = parseFloat(values[0]);
+                const frameIdx = frames.findIndex(f => Math.abs(f.time - time) < 0.01);
+                if (frameIdx >= 0 && frameIdx !== currentFrameIndex) {{
+                    currentFrameIndex = frameIdx;
+                    showFrame(currentWorkflow, frameIdx);
+                }}
+            }});
+        }}
+
+        function showFrame(workflowName, frameIndex) {{
+            const data = videoData[workflowName];
+            if (!data || !data.frames) return;
+
+            const frame = data.frames[frameIndex];
+            const img = document.getElementById('lightbox-img');
+            img.src = 'videos/' + workflowName + '/' + frame.file;
+
+            const counter = document.getElementById('video-frame-counter');
+            const totalTime = data.total_time || data.frames[data.frames.length - 1].time;
+            counter.textContent = frame.time.toFixed(1) + 's / ' + totalTime.toFixed(1) + 's';
+
+            const logEl = document.getElementById('lightbox-log');
+            if (frame.log) {{
+                logEl.textContent = frame.log;
+                logEl.scrollTop = logEl.scrollHeight;
+            }}
+        }}
+
+        function updateVideoFrameByIndex(workflowName, frameIndex) {{
+            currentFrameIndex = frameIndex;
+            showFrame(workflowName, frameIndex);
+
+            // Update slider position
+            const sliderEl = document.getElementById('video-slider');
+            if (sliderEl.noUiSlider && currentFrames[frameIndex]) {{
+                sliderEl.noUiSlider.set(currentFrames[frameIndex].time);
+            }}
+        }}
+
+        function toggleVideoPlay() {{
+            const btn = document.getElementById('video-play-btn');
+            if (playInterval) {{
+                clearInterval(playInterval);
+                playInterval = null;
+                btn.innerHTML = '&#9654; Play';
+            }} else {{
+                btn.innerHTML = '&#9632; Stop';
+                playInterval = setInterval(() => {{
+                    if (!currentFrames.length) return;
+                    currentFrameIndex = (currentFrameIndex + 1) % currentFrames.length;
+                    updateVideoFrameByIndex(currentWorkflow, currentFrameIndex);
+                }}, 500);
+            }}
+        }}
+
         function closeLightbox() {{
+            // Stop video playback
+            if (playInterval) {{
+                clearInterval(playInterval);
+                playInterval = null;
+                document.getElementById('video-play-btn').innerHTML = '&#9654; Play';
+            }}
             document.getElementById('lightbox').classList.remove('active');
             // Clear hash
             history.replaceState(null, '', window.location.pathname);

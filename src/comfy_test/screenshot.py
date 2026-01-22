@@ -1,12 +1,14 @@
 """Workflow screenshot capture using headless browser."""
 
+import hashlib
 import json
 import subprocess
 import sys
 import tempfile
+import time
 import requests
 from pathlib import Path
-from typing import Optional, Callable, TYPE_CHECKING
+from typing import Optional, Callable, List, TYPE_CHECKING
 
 try:
     from playwright.sync_api import sync_playwright, Page, Browser
@@ -48,6 +50,53 @@ def check_dependencies() -> None:
             "Pillow is required for screenshots. "
             "Install it with: pip install comfy-test[screenshot]"
         )
+
+
+def _image_hash(img: "Image.Image") -> str:
+    """Get hash of image for deduplication."""
+    return hashlib.md5(img.tobytes()).hexdigest()
+
+
+def _dedupe_frames(frames: List["Image.Image"]) -> List["Image.Image"]:
+    """Remove consecutive duplicate frames."""
+    if not frames:
+        return []
+    unique = []
+    last_hash = None
+    for frame in frames:
+        h = _image_hash(frame)
+        if h != last_hash:
+            unique.append(frame)
+            last_hash = h
+    return unique
+
+
+def _create_gif(
+    frames: List["Image.Image"],
+    output_path: Path,
+    duration_ms: int = 500,
+) -> None:
+    """Create animated GIF from frames."""
+    if not frames:
+        return
+    # Convert RGBA to RGB for GIF compatibility (GIF doesn't support alpha well)
+    rgb_frames = []
+    for frame in frames:
+        if frame.mode == "RGBA":
+            # Create white background and paste frame on it
+            bg = Image.new("RGB", frame.size, (255, 255, 255))
+            bg.paste(frame, mask=frame.split()[3])
+            rgb_frames.append(bg)
+        else:
+            rgb_frames.append(frame.convert("RGB"))
+
+    rgb_frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=rgb_frames[1:],
+        duration=duration_ms,
+        loop=0,  # Loop forever
+    )
 
 
 def ensure_dependencies(
@@ -479,6 +528,464 @@ class WorkflowScreenshot:
         # Save with metadata
         img.save(output_path, pnginfo=pnginfo)
         img.close()
+
+    def capture_execution_gif(
+        self,
+        workflow_path: Path,
+        output_path: Optional[Path] = None,
+        timeout: int = 300,
+        frame_duration_ms: int = 500,
+    ) -> Path:
+        """Capture workflow execution as animated GIF.
+
+        Takes a screenshot after each node completes, then combines
+        unique frames into an animated GIF.
+
+        Args:
+            workflow_path: Path to the workflow JSON file
+            output_path: Path to save the GIF (default: workflow with _execution.gif suffix)
+            timeout: Max seconds to wait for execution to complete (default: 300)
+            frame_duration_ms: Duration of each frame in the GIF (default: 500ms)
+
+        Returns:
+            Path to the saved GIF
+
+        Raises:
+            ScreenshotError: If capture or execution fails
+        """
+        if self._page is None:
+            raise ScreenshotError("Browser not started. Call start() or use context manager.")
+
+        # Determine output path
+        if output_path is None:
+            output_path = workflow_path.with_stem(workflow_path.stem + "_execution").with_suffix(".gif")
+
+        # Load workflow JSON
+        try:
+            with open(workflow_path) as f:
+                workflow = json.load(f)
+        except Exception as e:
+            raise ScreenshotError(f"Failed to load workflow: {workflow_path}", str(e))
+
+        self._log(f"Capturing execution GIF: {workflow_path.name}")
+
+        # Set server-side setting to prevent Templates panel from showing
+        self._disable_first_run_tutorial()
+
+        # Navigate to ComfyUI
+        try:
+            self._page.goto(self.server_url, wait_until="networkidle")
+        except Exception as e:
+            raise ScreenshotError(f"Failed to connect to ComfyUI at {self.server_url}", str(e))
+
+        # Wait for app to initialize
+        try:
+            self._page.wait_for_function(
+                "typeof window.app !== 'undefined' && window.app.graph !== undefined",
+                timeout=30000,
+            )
+        except Exception as e:
+            raise ScreenshotError("ComfyUI app did not initialize", str(e))
+
+        # Load the workflow via JavaScript
+        workflow_json = json.dumps(workflow)
+        try:
+            self._page.evaluate(f"""
+                (async () => {{
+                    const workflow = {workflow_json};
+                    await window.app.loadGraphData(workflow);
+                }})();
+            """)
+        except Exception as e:
+            raise ScreenshotError("Failed to load workflow into ComfyUI", str(e))
+
+        # Wait for graph to render before execution
+        self._page.wait_for_timeout(2000)
+
+        # Close any open panels before capturing
+        self._close_panels_and_alerts()
+
+        # Fit the entire graph in view
+        self._fit_graph_to_view()
+
+        # Wait for WebSocket to be ready
+        try:
+            self._page.wait_for_function(
+                "window.app && window.app.api && window.app.api.socket && window.app.api.socket.readyState === 1",
+                timeout=10000,
+            )
+        except Exception:
+            self._log("  Warning: WebSocket not ready, proceeding anyway")
+
+        # Inject WebSocket listener to track node execution
+        # Capture on BOTH 'executing' (green box) and 'executed' (output ready)
+        self._page.evaluate("""
+            window._nodeEvents = [];
+            window._executionComplete = false;
+            window._executionError = null;
+
+            if (window.app && window.app.api && window.app.api.socket) {
+                const origOnMessage = window.app.api.socket.onmessage;
+                window.app.api.socket.onmessage = function(event) {
+                    if (origOnMessage) {
+                        try { origOnMessage.call(this, event); } catch(e) {}
+                    }
+                    if (event && typeof event.data === 'string') {
+                        try {
+                            const msg = JSON.parse(event.data);
+                            if (msg && msg.type === 'executing' && msg.data && msg.data.node) {
+                                // Node starting - green highlight appears
+                                window._nodeEvents.push({
+                                    type: 'executing',
+                                    node: msg.data.node,
+                                    time: Date.now()
+                                });
+                            } else if (msg && msg.type === 'executed' && msg.data) {
+                                // Node finished - output ready
+                                window._nodeEvents.push({
+                                    type: 'executed',
+                                    node: msg.data.node,
+                                    time: Date.now()
+                                });
+                            } else if (msg && msg.type === 'execution_success') {
+                                window._executionComplete = true;
+                            } else if (msg && msg.type === 'execution_error') {
+                                window._executionError = msg.data;
+                                window._executionComplete = true;
+                            }
+                        } catch (e) {}
+                    }
+                };
+            }
+        """)
+
+        # Create temp directory for frames
+        temp_dir = Path(tempfile.mkdtemp(prefix="comfy-gif-"))
+        frames = []
+
+        try:
+            # Take initial frame (before execution)
+            initial_frame = temp_dir / "frame_000.png"
+            self._page.screenshot(path=str(initial_frame))
+            frames.append(Image.open(initial_frame))
+
+            # Queue the workflow
+            self._log("  Queuing workflow for execution...")
+            self._page.evaluate("window.app.queuePrompt()")
+
+            # Capture loop - periodic screenshots to catch green execution boxes
+            # We take screenshots frequently during execution to catch the green highlights
+            # Deduplication will remove identical frames later
+            start_time = time.time()
+            last_screenshot_time = 0
+            frame_num = 1
+            screenshot_interval_ms = 50  # Capture every 50ms to catch fast nodes
+
+            while time.time() - start_time < timeout:
+                current_time = time.time()
+
+                # Check execution state
+                state = self._page.evaluate("""
+                    () => ({
+                        complete: window._executionComplete,
+                        error: window._executionError
+                    })
+                """)
+
+                # Take periodic screenshot to catch execution state (green boxes)
+                if (current_time - last_screenshot_time) * 1000 >= screenshot_interval_ms:
+                    frame_path = temp_dir / f"frame_{frame_num:03d}.png"
+                    self._page.screenshot(path=str(frame_path))
+                    frames.append(Image.open(frame_path))
+                    frame_num += 1
+                    last_screenshot_time = current_time
+
+                if state["complete"]:
+                    if state["error"]:
+                        self._log(f"  Execution error: {state['error']}")
+                    break
+
+                self._page.wait_for_timeout(10)
+
+            self._log(f"  Captured {frame_num - 1} frames during execution")
+
+            # Final frame after completion
+            self._page.wait_for_timeout(1000)  # Wait for final renders
+            final_frame = temp_dir / f"frame_{frame_num:03d}.png"
+            self._page.screenshot(path=str(final_frame))
+            frames.append(Image.open(final_frame))
+
+            self._log(f"  Captured {len(frames)} total frames")
+
+            # Dedupe frames
+            unique_frames = _dedupe_frames(frames)
+            self._log(f"  {len(unique_frames)} unique frames after deduplication")
+
+            # Create GIF
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _create_gif(unique_frames, output_path, frame_duration_ms)
+
+            self._log(f"  Saved: {output_path}")
+            return output_path
+
+        finally:
+            # Clean up temp directory
+            for frame in frames:
+                frame.close()
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def capture_execution_frames(
+        self,
+        workflow_path: Path,
+        output_dir: Path,
+        timeout: int = 300,
+        max_frames: int = 30,
+        webp_quality: int = 60,
+        log_lines: Optional[List[str]] = None,
+        final_screenshot_path: Optional[Path] = None,
+        final_screenshot_delay_ms: int = 5000,
+    ) -> List[Path]:
+        """Capture workflow execution as individual WebP frames for slider playback.
+
+        Takes periodic screenshots during execution and saves as compressed WebP.
+        Uses 1x scale (not HiDPI) to reduce file size. Also saves metadata.json
+        with timestamps and log snapshots for each frame.
+
+        Optionally captures a high-quality PNG screenshot after execution completes,
+        waiting for previews to fully render.
+
+        Args:
+            workflow_path: Path to the workflow JSON file
+            output_dir: Directory to save frames (e.g., videos/workflow_name/)
+            timeout: Max seconds to wait for execution to complete (default: 300)
+            max_frames: Maximum number of frames to capture (default: 30)
+            webp_quality: WebP compression quality 0-100 (default: 60, lower for video)
+            log_lines: Optional list that accumulates log lines (for syncing logs to frames)
+            final_screenshot_path: Optional path to save high-quality PNG after execution
+            final_screenshot_delay_ms: Delay before final screenshot (default: 5000ms)
+
+        Returns:
+            List of paths to saved WebP frames
+
+        Raises:
+            ScreenshotError: If capture or execution fails
+        """
+        if self._page is None:
+            raise ScreenshotError("Browser not started. Call start() or use context manager.")
+
+        # Load workflow JSON
+        try:
+            with open(workflow_path) as f:
+                workflow = json.load(f)
+        except Exception as e:
+            raise ScreenshotError(f"Failed to load workflow: {workflow_path}", str(e))
+
+        self._log(f"Capturing execution frames: {workflow_path.name}")
+
+        # Set server-side setting to prevent Templates panel from showing
+        self._disable_first_run_tutorial()
+
+        # Navigate to ComfyUI
+        try:
+            self._page.goto(self.server_url, wait_until="networkidle")
+        except Exception as e:
+            raise ScreenshotError(f"Failed to connect to ComfyUI at {self.server_url}", str(e))
+
+        # Wait for app to initialize
+        try:
+            self._page.wait_for_function(
+                "typeof window.app !== 'undefined' && window.app.graph !== undefined",
+                timeout=30000,
+            )
+        except Exception as e:
+            raise ScreenshotError("ComfyUI app did not initialize", str(e))
+
+        # Load the workflow via JavaScript
+        workflow_json = json.dumps(workflow)
+        try:
+            self._page.evaluate(f"""
+                (async () => {{
+                    const workflow = {workflow_json};
+                    await window.app.loadGraphData(workflow);
+                }})();
+            """)
+        except Exception as e:
+            raise ScreenshotError("Failed to load workflow into ComfyUI", str(e))
+
+        # Wait for graph to render before execution
+        self._page.wait_for_timeout(2000)
+
+        # Close any open panels before capturing
+        self._close_panels_and_alerts()
+
+        # Fit the entire graph in view
+        self._fit_graph_to_view()
+
+        # Wait for WebSocket to be ready
+        try:
+            self._page.wait_for_function(
+                "window.app && window.app.api && window.app.api.socket && window.app.api.socket.readyState === 1",
+                timeout=10000,
+            )
+        except Exception:
+            self._log("  Warning: WebSocket not ready, proceeding anyway")
+
+        # Inject WebSocket listener to track execution completion
+        self._page.evaluate("""
+            window._executionComplete = false;
+            window._executionError = null;
+
+            if (window.app && window.app.api && window.app.api.socket) {
+                const origOnMessage = window.app.api.socket.onmessage;
+                window.app.api.socket.onmessage = function(event) {
+                    if (origOnMessage) {
+                        try { origOnMessage.call(this, event); } catch(e) {}
+                    }
+                    if (event && typeof event.data === 'string') {
+                        try {
+                            const msg = JSON.parse(event.data);
+                            if (msg && msg.type === 'execution_success') {
+                                window._executionComplete = true;
+                            } else if (msg && msg.type === 'execution_error') {
+                                window._executionError = msg.data;
+                                window._executionComplete = true;
+                            }
+                        } catch (e) {}
+                    }
+                };
+            }
+        """)
+
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        frame_paths: List[Path] = []
+        temp_frames: List[tuple] = []  # (path, timestamp, log_snapshot)
+
+        try:
+            # Take initial frame (before execution)
+            frame_num = 0
+            capture_start = time.time()
+            temp_path = output_dir / f"frame_{frame_num:03d}.png"
+            self._page.screenshot(path=str(temp_path), scale="css")  # 1x scale
+            log_snapshot = "\n".join(log_lines) if log_lines else ""
+            temp_frames.append((temp_path, 0.0, log_snapshot))
+
+            # Queue the workflow
+            self._log("  Queuing workflow for execution...")
+            self._page.evaluate("window.app.queuePrompt()")
+
+            # Capture loop - periodic screenshots
+            last_screenshot_time = 0
+            frame_num = 1
+            screenshot_interval_ms = 100  # Capture every 100ms
+
+            while time.time() - capture_start < timeout and frame_num < max_frames:
+                current_time = time.time()
+                elapsed = current_time - capture_start
+
+                # Check execution state
+                state = self._page.evaluate("""
+                    () => ({
+                        complete: window._executionComplete,
+                        error: window._executionError
+                    })
+                """)
+
+                # Take periodic screenshot
+                if (current_time - capture_start - last_screenshot_time) * 1000 >= screenshot_interval_ms:
+                    temp_path = output_dir / f"frame_{frame_num:03d}.png"
+                    self._page.screenshot(path=str(temp_path), scale="css")  # 1x scale
+                    log_snapshot = "\n".join(log_lines) if log_lines else ""
+                    temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
+                    frame_num += 1
+                    last_screenshot_time = elapsed
+
+                if state["complete"]:
+                    if state["error"]:
+                        self._log(f"  Execution error: {state['error']}")
+                    break
+
+                self._page.wait_for_timeout(20)
+
+            # Final frame after completion
+            self._page.wait_for_timeout(1000)
+            elapsed = time.time() - capture_start
+            temp_path = output_dir / f"frame_{frame_num:03d}.png"
+            self._page.screenshot(path=str(temp_path), scale="css")
+            log_snapshot = "\n".join(log_lines) if log_lines else ""
+            temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
+
+            total_time = round(time.time() - capture_start, 2)
+            self._log(f"  Captured {len(temp_frames)} frames over {total_time}s")
+
+            # Dedupe and convert to WebP, keeping metadata
+            last_hash = None
+            webp_num = 0
+            frame_metadata = []
+            for temp_path, timestamp, log_snap in temp_frames:
+                img = Image.open(temp_path)
+                h = _image_hash(img)
+
+                if h != last_hash:
+                    # Save as WebP
+                    webp_path = output_dir / f"frame_{webp_num:03d}.webp"
+                    img.save(webp_path, "WEBP", quality=webp_quality)
+                    frame_paths.append(webp_path)
+                    frame_metadata.append({
+                        "file": webp_path.name,
+                        "time": timestamp,
+                        "log": log_snap,
+                    })
+                    webp_num += 1
+                    last_hash = h
+
+                img.close()
+                # Remove temp PNG
+                temp_path.unlink()
+
+            # Save metadata.json
+            metadata = {
+                "frames": frame_metadata,
+                "total_time": total_time,
+            }
+            (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+            self._log(f"  {len(frame_paths)} unique frames saved as WebP")
+
+            # Capture high-quality final screenshot if requested
+            if final_screenshot_path:
+                self._log(f"  Waiting {final_screenshot_delay_ms}ms for previews to render...")
+                self._page.wait_for_timeout(final_screenshot_delay_ms)
+
+                # Fit graph to view again (in case previews changed layout)
+                self._fit_graph_to_view()
+                self._page.wait_for_timeout(500)
+
+                # Take high-quality screenshot at 2x scale
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+
+                try:
+                    # Full viewport screenshot at HiDPI (2x scale for crisp image)
+                    self._page.screenshot(path=str(tmp_path))
+
+                    # Embed workflow metadata into PNG
+                    self._embed_workflow(tmp_path, final_screenshot_path, workflow)
+                    self._log(f"  Saved high-quality screenshot: {final_screenshot_path.name}")
+
+                finally:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+
+            return frame_paths
+
+        except Exception as e:
+            # Clean up on error
+            for temp_path, _, _ in temp_frames:
+                if isinstance(temp_path, Path) and temp_path.exists():
+                    temp_path.unlink()
+            raise
 
 
 def capture_workflows(
