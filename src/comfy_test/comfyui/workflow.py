@@ -1,13 +1,13 @@
 """Workflow execution and monitoring."""
 
 import json
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Callable
 
 from .api import ComfyUIAPI
+from .models import WorkflowExecution
 from .workflow_converter import WorkflowConverter, set_object_info
-from ..errors import WorkflowError, TestTimeoutError
+from ..errors import WorkflowError
 
 
 def is_litegraph_format(workflow: Dict[str, Any]) -> bool:
@@ -53,7 +53,7 @@ class WorkflowRunner:
     Example:
         >>> runner = WorkflowRunner(api)
         >>> result = runner.run_workflow(Path("workflow.json"), timeout=120)
-        >>> print(result["status"])
+        >>> print(result.status)
     """
 
     def __init__(
@@ -68,7 +68,7 @@ class WorkflowRunner:
         self,
         workflow_file: Path,
         timeout: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> WorkflowExecution:
         """Run a workflow and wait for completion.
 
         Args:
@@ -76,7 +76,7 @@ class WorkflowRunner:
             timeout: Maximum seconds to wait for completion (None = no timeout)
 
         Returns:
-            Execution result with status and outputs
+            WorkflowExecution with status, outputs, and node tracking
 
         Raises:
             WorkflowError: If workflow fails or has errors
@@ -111,16 +111,19 @@ class WorkflowRunner:
         prompt: Dict[str, Any],
         timeout: Optional[int] = None,
         workflow_name: str = "workflow",
-    ) -> Dict[str, Any]:
+    ) -> WorkflowExecution:
         """Run a prompt and wait for completion.
+
+        Uses WebSocket for real-time execution tracking.
 
         Args:
             prompt: Workflow prompt definition
-            timeout: Maximum seconds to wait (None = no timeout)
+            timeout: Maximum seconds to wait (None = no timeout, defaults to 120)
             workflow_name: Name for logging
 
         Returns:
-            Execution result
+            WorkflowExecution with status, outputs, and node tracking
+            (runs = nodes that executed, cached = nodes that were cached)
 
         Raises:
             WorkflowError: If workflow fails
@@ -128,107 +131,22 @@ class WorkflowRunner:
         """
         self._log(f"Queuing workflow: {workflow_name}...")
 
-        # Queue the prompt
-        prompt_id = self.api.queue_prompt(prompt)
-        self._log(f"Queued with ID: {prompt_id}")
+        # Use WebSocket-based execution tracking
+        effective_timeout = timeout if timeout is not None else 120
+        execution = self.api.execute_workflow(
+            prompt,
+            timeout=effective_timeout,
+            log_callback=self._log,
+        )
 
-        # Wait for completion
-        return self._wait_for_completion(prompt_id, timeout, workflow_name)
+        # Check for errors
+        if execution.has_error:
+            error_msg = execution.get_error_message() or "Unknown error"
+            raise WorkflowError(
+                f"Workflow execution failed: {error_msg}",
+                workflow_file=workflow_name,
+                node_error=error_msg,
+            )
 
-    def _wait_for_completion(
-        self,
-        prompt_id: str,
-        timeout: Optional[int],
-        workflow_name: str,
-    ) -> Dict[str, Any]:
-        """Wait for workflow to complete.
-
-        Args:
-            prompt_id: ID of queued prompt
-            timeout: Maximum seconds to wait (None = no timeout)
-            workflow_name: Name for error messages
-
-        Returns:
-            Execution result
-
-        Raises:
-            WorkflowError: If workflow fails
-            TestTimeoutError: If workflow doesn't complete
-        """
-        if timeout is not None:
-            self._log(f"Waiting for workflow completion (timeout: {timeout}s)...")
-        else:
-            self._log("Waiting for workflow completion...")
-
-        start_time = time.time()
-
-        while True:
-            # Check timeout if specified
-            if timeout is not None and time.time() - start_time >= timeout:
-                self.api.interrupt()
-                raise TestTimeoutError(
-                    f"Workflow did not complete within {timeout} seconds",
-                    timeout_seconds=timeout,
-                )
-
-            history = self.api.get_history(prompt_id)
-
-            if history is None:
-                # Not started yet, check queue
-                queue = self.api.get_queue()
-                pending = len(queue.get("queue_pending", []))
-                running = len(queue.get("queue_running", []))
-                self._log(f"  Queue: {running} running, {pending} pending")
-                time.sleep(2)
-                continue
-
-            # Check for completion
-            status = history.get("status", {})
-            status_str = status.get("status_str", "")
-
-            if status_str == "success":
-                self._log("Workflow completed successfully!")
-                return {
-                    "status": "success",
-                    "prompt_id": prompt_id,
-                    "outputs": history.get("outputs", {}),
-                }
-
-            if status_str == "error":
-                # Extract error details
-                messages = status.get("messages", [])
-                error_msg = self._format_error_messages(messages)
-                raise WorkflowError(
-                    f"Workflow execution failed: {error_msg}",
-                    workflow_file=workflow_name,
-                    node_error=error_msg,
-                )
-
-            # Check for node errors in execution
-            if "outputs" in history:
-                for node_id, output in history["outputs"].items():
-                    if isinstance(output, dict) and output.get("error"):
-                        raise WorkflowError(
-                            f"Node {node_id} failed",
-                            workflow_file=workflow_name,
-                            node_error=str(output.get("error")),
-                        )
-
-            # Still running
-            elapsed = int(time.time() - start_time)
-            self._log(f"  Running... ({elapsed}s elapsed)")
-            time.sleep(2)
-
-    def _format_error_messages(self, messages: list) -> str:
-        """Format error messages from workflow execution."""
-        if not messages:
-            return "Unknown error"
-
-        formatted = []
-        for msg in messages:
-            if isinstance(msg, dict):
-                formatted.append(msg.get("message", str(msg)))
-            else:
-                formatted.append(str(msg))
-
-        return "; ".join(formatted)
+        self._log("Workflow completed successfully!")
+        return execution

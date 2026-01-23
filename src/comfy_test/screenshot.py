@@ -281,6 +281,53 @@ class WorkflowScreenshot:
         except Exception:
             pass  # Best effort
 
+    def _validate_workflow_in_browser(self) -> None:
+        """Validate workflow using browser's graphToPrompt() conversion.
+
+        Must be called after workflow is loaded into browser via loadGraphData().
+        Uses graphToPrompt() for consistent conversion - this ensures we validate
+        using the exact same API format that queuePrompt() will use.
+
+        The browser's graphToPrompt() is the canonical conversion. Validating with
+        its output prevents mismatches between Python's converter and the browser's.
+
+        Raises:
+            ScreenshotError: If workflow validation fails
+        """
+        result = self._page.evaluate("""
+            async () => {
+                try {
+                    // Get API format using browser's converter
+                    const { output } = await window.app.graphToPrompt();
+
+                    // Validate via /validate endpoint
+                    const validateResp = await fetch('/validate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ prompt: output })
+                    });
+
+                    if (!validateResp.ok) {
+                        const data = await validateResp.json();
+                        return { success: false, error: data.error, node_errors: data.node_errors };
+                    }
+
+                    return { success: true };
+                } catch (e) {
+                    return { success: false, error: { message: e.toString() } };
+                }
+            }
+        """)
+
+        if not result.get("success"):
+            error = result.get("error", {})
+            error_msg = error.get("message", "Unknown error")
+            node_errors = result.get("node_errors")
+            details = error_msg
+            if node_errors:
+                details += f"\nNode errors:\n{json.dumps(node_errors, indent=2)}"
+            raise ScreenshotError("Workflow validation failed", details)
+
     def __enter__(self) -> "WorkflowScreenshot":
         self.start()
         return self
@@ -474,6 +521,9 @@ class WorkflowScreenshot:
                             } else if (msg && msg.type === 'execution_error') {
                                 window._executionError = msg.data;
                                 window._executionComplete = true;
+                            } else if (msg && msg.type === 'execution_interrupted') {
+                                window._executionError = 'Execution interrupted';
+                                window._executionComplete = true;
                             }
                         } catch (e) {}
                     }
@@ -481,9 +531,13 @@ class WorkflowScreenshot:
             }
         """)
 
-        # Queue the workflow
+        # Validate workflow using browser's graphToPrompt() conversion
+        self._log("  Validating workflow...")
+        self._validate_workflow_in_browser()
+
+        # Queue using queuePrompt for proper WebSocket handling
         self._log("  Queuing workflow for execution...")
-        self._page.evaluate("window.app.queuePrompt()")
+        self._page.evaluate("window.app.queuePrompt(0)")
 
         # Wait for WebSocket execution_success/error message
         self._log("  Waiting for execution to complete...")
@@ -699,9 +753,13 @@ class WorkflowScreenshot:
             self._page.screenshot(path=str(initial_frame))
             frames.append(Image.open(initial_frame))
 
-            # Queue the workflow
+            # Validate workflow using browser's graphToPrompt() conversion
+            self._log("  Validating workflow...")
+            self._validate_workflow_in_browser()
+
+            # Queue using queuePrompt for proper WebSocket handling
             self._log("  Queuing workflow for execution...")
-            self._page.evaluate("window.app.queuePrompt()")
+            self._page.evaluate("window.app.queuePrompt(0)")
 
             # Capture loop - periodic screenshots to catch green execution boxes
             # We take screenshots frequently during execution to catch the green highlights
@@ -769,8 +827,6 @@ class WorkflowScreenshot:
         self,
         workflow_path: Path,
         output_dir: Path,
-        timeout: int = 300,
-        max_frames: int = 30,
         webp_quality: int = 60,
         log_lines: Optional[List[str]] = None,
         final_screenshot_path: Optional[Path] = None,
@@ -788,8 +844,6 @@ class WorkflowScreenshot:
         Args:
             workflow_path: Path to the workflow JSON file
             output_dir: Directory to save frames (e.g., videos/workflow_name/)
-            timeout: Max seconds to wait for execution to complete (default: 300)
-            max_frames: Maximum number of frames to capture (default: 30)
             webp_quality: WebP compression quality 0-100 (default: 60, lower for video)
             log_lines: Optional list that accumulates log lines (for syncing logs to frames)
             final_screenshot_path: Optional path to save high-quality PNG after execution
@@ -880,6 +934,9 @@ class WorkflowScreenshot:
                             } else if (msg && msg.type === 'execution_error') {
                                 window._executionError = msg.data;
                                 window._executionComplete = true;
+                            } else if (msg && msg.type === 'execution_interrupted') {
+                                window._executionError = 'Execution interrupted';
+                                window._executionComplete = true;
                             }
                         } catch (e) {}
                     }
@@ -901,16 +958,20 @@ class WorkflowScreenshot:
             log_snapshot = "\n".join(log_lines) if log_lines else ""
             temp_frames.append((temp_path, 0.0, log_snapshot))
 
-            # Queue the workflow
+            # Validate workflow using browser's graphToPrompt() conversion
+            self._log("  Validating workflow...")
+            self._validate_workflow_in_browser()
+
+            # Queue using queuePrompt for proper WebSocket handling
             self._log("  Queuing workflow for execution...")
-            self._page.evaluate("window.app.queuePrompt()")
+            self._page.evaluate("window.app.queuePrompt(0)")
 
             # Capture loop - periodic screenshots
             last_screenshot_time = 0
             frame_num = 1
             screenshot_interval_ms = 100  # Capture every 100ms
 
-            while time.time() - capture_start < timeout and frame_num < max_frames:
+            while True:
                 current_time = time.time()
                 elapsed = current_time - capture_start
 
@@ -974,13 +1035,6 @@ class WorkflowScreenshot:
                 # Remove temp PNG
                 temp_path.unlink()
 
-            # Save metadata.json
-            metadata = {
-                "frames": frame_metadata,
-                "total_time": total_time,
-            }
-            (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
-
             self._log(f"  {len(frame_paths)} unique frames saved as WebP")
 
             # Capture high-quality final screenshot if requested
@@ -1019,6 +1073,13 @@ class WorkflowScreenshot:
                 finally:
                     if tmp_path.exists():
                         tmp_path.unlink()
+
+            # Save metadata.json (after final screenshot so it's included)
+            metadata = {
+                "frames": frame_metadata,
+                "total_time": total_time,
+            }
+            (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
             return frame_paths
 

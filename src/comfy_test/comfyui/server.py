@@ -48,6 +48,7 @@ class ComfyUIServer:
         self.port = port
         self.cuda_mock_packages = cuda_mock_packages or []
         self._log = log_callback or (lambda msg: print(msg))
+        self._extra_log_listeners: List[Callable[[str], None]] = []
         self._process: Optional[subprocess.Popen] = None
         self._api: Optional[ComfyUIAPI] = None
         self._output_thread: Optional[threading.Thread] = None
@@ -58,6 +59,21 @@ class ComfyUIServer:
     def base_url(self) -> str:
         """Get server base URL."""
         return f"http://127.0.0.1:{self.port}"
+
+    def add_log_listener(self, callback: Callable[[str], None]) -> None:
+        """Add an extra log listener for server output."""
+        self._extra_log_listeners.append(callback)
+
+    def remove_log_listener(self, callback: Callable[[str], None]) -> None:
+        """Remove an extra log listener."""
+        if callback in self._extra_log_listeners:
+            self._extra_log_listeners.remove(callback)
+
+    def _log_all(self, msg: str) -> None:
+        """Log to main callback and all extra listeners."""
+        self._log(msg)
+        for listener in self._extra_log_listeners:
+            listener(msg)
 
     def start(self, wait_timeout: int = 60) -> None:
         """Start the ComfyUI server and wait for it to be ready.
@@ -113,18 +129,18 @@ class ComfyUIServer:
                     if line:
                         line_text = line.rstrip()
                         self._output_lines.append(line_text)
-                        self._log(f"  [ComfyUI] {line_text}")
+                        self._log_all(f"  [ComfyUI] {line_text}")
                 # Check if process ended
                 if self._process.poll() is not None:
                     # Read remaining output
                     for line in self._process.stdout:
                         line_text = line.rstrip()
                         self._output_lines.append(line_text)
-                        self._log(f"  [ComfyUI] {line_text}")
+                        self._log_all(f"  [ComfyUI] {line_text}")
                     for line in self._process.stderr:
                         line_text = line.rstrip()
                         self._output_lines.append(line_text)
-                        self._log(f"  [ComfyUI] {line_text}")
+                        self._log_all(f"  [ComfyUI] {line_text}")
                     break
         except Exception:
             pass  # Process may have ended

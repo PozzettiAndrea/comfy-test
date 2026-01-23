@@ -1,11 +1,15 @@
 """ComfyUI REST API client."""
 
 import json
-from typing import Any, Dict, List, Optional
+import time
+import uuid
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
+import websocket
 
-from ..errors import ServerError, VerificationError
+from ..errors import ServerError, TestTimeoutError, VerificationError
+from .models import WorkflowExecution
 
 
 class ComfyUIAPI:
@@ -83,6 +87,44 @@ class ComfyUIAPI:
                 missing_nodes=missing,
             )
 
+    def validate_prompt(self, prompt: Dict[str, Any]) -> None:
+        """Validate a workflow without queueing it for execution.
+
+        Requires ComfyUI-validate-endpoint custom node to be installed.
+        See: https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint
+
+        Args:
+            prompt: Workflow definition in API format (dict of node_id -> node_config)
+
+        Raises:
+            ServerError: If validation fails or endpoint not available
+        """
+        try:
+            response = self.session.post(
+                f"{self.base_url}/validate",
+                json={"prompt": prompt},
+                timeout=self.timeout,
+            )
+            if response.status_code == 400:
+                data = response.json()
+                error = data.get("error", {})
+                node_errors = data.get("node_errors", {})
+                details = error.get("message", "Unknown validation error")
+                if error.get("details"):
+                    details += f"\n{error['details']}"
+                if node_errors:
+                    details += f"\nNode errors:\n{json.dumps(node_errors, indent=2)}"
+                raise ServerError("Workflow validation failed", details)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            if hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code == 404:
+                    raise ServerError(
+                        "Validation endpoint not available",
+                        "Install ComfyUI-validate-endpoint: https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint"
+                    )
+            raise ServerError("Failed to validate prompt", str(e))
+
     def queue_prompt(self, workflow: Dict[str, Any]) -> str:
         """Queue a workflow for execution.
 
@@ -105,9 +147,22 @@ class ComfyUIAPI:
             data = response.json()
             return data["prompt_id"]
         except requests.RequestException as e:
+            # Try to extract validation error details from response
+            details = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    if 'node_errors' in error_data:
+                        # Format node errors for readability
+                        details = f"Node validation errors:\n{json.dumps(error_data['node_errors'], indent=2)}"
+                    elif 'error' in error_data:
+                        error_info = error_data['error']
+                        details = error_info.get('message', str(error_info))
+                except Exception:
+                    pass  # Keep original error string
             raise ServerError(
                 "Failed to queue prompt",
-                str(e)
+                details
             )
         except KeyError:
             raise ServerError(
@@ -190,6 +245,131 @@ class ComfyUIAPI:
             )
         except requests.RequestException:
             pass  # Best effort - don't fail if cleanup fails
+
+    def _get_ws_url(self, client_id: str) -> str:
+        """Get WebSocket URL for the server."""
+        # Convert http(s) to ws(s)
+        if self.base_url.startswith("https://"):
+            ws_base = "wss://" + self.base_url[8:]
+        else:
+            ws_base = "ws://" + self.base_url[7:]
+        return f"{ws_base}/ws?clientId={client_id}"
+
+    def execute_workflow(
+        self,
+        workflow: Dict[str, Any],
+        timeout: int = 120,
+        log_callback: Optional[Callable[[str], None]] = None,
+    ) -> WorkflowExecution:
+        """Execute workflow and track completion via WebSocket.
+
+        Uses WebSocket for real-time execution tracking instead of polling.
+        This provides lower latency and detailed information about which
+        nodes executed vs. were cached.
+
+        Args:
+            workflow: Workflow definition (the "prompt" part of a workflow JSON)
+            timeout: Maximum seconds to wait for completion
+            log_callback: Optional callback for progress logging
+
+        Returns:
+            WorkflowExecution with detailed execution state
+
+        Raises:
+            ServerError: If connection or execution fails
+            TestTimeoutError: If workflow doesn't complete in time
+        """
+        log = log_callback or (lambda msg: None)
+        client_id = str(uuid.uuid4())
+
+        # Connect WebSocket
+        ws_url = self._get_ws_url(client_id)
+        try:
+            ws = websocket.WebSocket()
+            ws.connect(ws_url)
+        except (ConnectionRefusedError, OSError, websocket.WebSocketException) as e:
+            raise ServerError(
+                "Failed to connect WebSocket for execution tracking",
+                str(e)
+            )
+
+        try:
+            # Queue the prompt
+            prompt_id = self.queue_prompt(workflow)
+            execution = WorkflowExecution(prompt_id=prompt_id)
+            log(f"Queued with ID: {prompt_id}")
+
+            start_time = time.time()
+
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > timeout:
+                    self.interrupt()
+                    raise TestTimeoutError(
+                        f"Workflow did not complete within {timeout} seconds",
+                        timeout_seconds=timeout,
+                    )
+
+                # Set socket timeout for this recv
+                ws.settimeout(min(5.0, timeout - elapsed))
+
+                try:
+                    message_data = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    # Timeout on recv, continue loop to check overall timeout
+                    continue
+
+                if not isinstance(message_data, str):
+                    # Binary data (e.g., preview images), skip
+                    continue
+
+                try:
+                    message = json.loads(message_data)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = message.get("type")
+                data = message.get("data", {})
+                msg_prompt_id = data.get("prompt_id")
+
+                # Only process messages for our prompt
+                if msg_prompt_id and msg_prompt_id != prompt_id:
+                    continue
+
+                if msg_type == "executing":
+                    node_id = data.get("node")
+                    if node_id is None:
+                        # Execution complete (node=None signals end)
+                        log("Execution complete")
+                        break
+                    execution.runs.add(node_id)
+                    log(f"  Executing node: {node_id}")
+
+                elif msg_type == "execution_cached":
+                    cached_nodes = data.get("nodes", [])
+                    execution.cached.update(cached_nodes)
+                    if cached_nodes:
+                        log(f"  Cached nodes: {', '.join(cached_nodes)}")
+
+                elif msg_type == "execution_error":
+                    # Capture full error details
+                    execution.error = data
+                    log(f"  Execution error: {data.get('exception_type', 'Unknown')}")
+                    break
+
+                elif msg_type == "execution_success":
+                    log("Execution complete (success)")
+                    break
+
+            # Fetch outputs from history
+            history = self.get_history(prompt_id)
+            if history:
+                execution.outputs = history.get("outputs", {})
+
+            return execution
+
+        finally:
+            ws.close()
 
     def close(self) -> None:
         """Close the session."""

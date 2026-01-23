@@ -297,6 +297,14 @@ class TestManager:
                         self._log(f"  {name} from {repo}")
                         platform.install_node_from_repo(paths, repo, name)
 
+                # Install comfy-test's validation endpoint for pre-execution validation
+                self._log("Installing validation endpoint...")
+                platform.install_node_from_repo(
+                    paths,
+                    "PozzettiAndrea/ComfyUI-validate-endpoint",
+                    "ComfyUI-validate-endpoint"
+                )
+
                 self._log_level_done(TestLevel.INSTALL, "PASSED")
 
                 # Check if we need server for remaining levels
@@ -387,7 +395,7 @@ class TestManager:
                                 for idx, workflow_file in enumerate(self.config.workflow.screenshot, 1):
                                     self._log(f"  [{idx}/{total_screenshots}] STATIC {workflow_file.name}")
                                     output_path = screenshots_dir / f"{workflow_file.stem}.png"
-                                    ws.capture(workflow_file, output_path=output_path)
+                                    ws.capture(self._resolve_workflow_path(workflow_file), output_path=output_path)
                             finally:
                                 ws.stop()
 
@@ -457,6 +465,8 @@ class TestManager:
                             for idx, workflow_file in enumerate(self.config.workflow.run, 1):
                                 # Reset workflow log for this workflow
                                 current_workflow_log.clear()
+                                # Register capture_log to receive [ComfyUI] output
+                                server.add_log_listener(capture_log)
                                 start_time = time.time()
                                 status = "pass"
                                 error_msg = None
@@ -471,9 +481,8 @@ class TestManager:
                                         workflow_video_dir = videos_dir / workflow_file.stem
                                         final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
                                         frames = ws.capture_execution_frames(
-                                            workflow_file,
+                                            self._resolve_workflow_path(workflow_file),
                                             output_dir=workflow_video_dir,
-                                            timeout=_get_workflow_timeout(self.config.workflow.timeout),
                                             log_lines=current_workflow_log,
                                             webp_quality=60,  # Low quality for video frames
                                             final_screenshot_path=final_screenshot_path,  # High quality PNG
@@ -486,16 +495,21 @@ class TestManager:
                                             workflow_file,
                                             timeout=_get_workflow_timeout(self.config.workflow.timeout),
                                         )
-                                        capture_log(f"    Status: {result['status']}")
+                                        capture_log(f"    Status: {result.status}")
                                 except (WorkflowError, TestTimeoutError, ScreenshotError) as e:
                                     status = "fail"
-                                    error_msg = str(e.message)
+                                    # Include full error with details, not just message
+                                    error_msg = str(e)
                                     capture_log(f"    Status: FAILED")
                                     capture_log(f"    Error: {e.message}")
-                                    all_errors.append((workflow_file.name, str(e.message)))
+                                    if e.details:
+                                        capture_log(f"    Details: {e.details}")
+                                    all_errors.append((workflow_file.name, str(e)))
                                 finally:
                                     # Stop spinner with final status
                                     spinner.stop("PASS" if status == "pass" else "FAIL")
+                                    # Remove listener so next workflow starts fresh
+                                    server.remove_log_listener(capture_log)
 
                                 duration = time.time() - start_time
                                 results.append({
@@ -851,8 +865,23 @@ print(json.dumps(result))
             Absolute Path to workflow file
         """
         workflow_path = Path(workflow_file)
+        self._log(f"  [DEBUG] _resolve_workflow_path: input={workflow_file}")
+        self._log(f"  [DEBUG] _resolve_workflow_path: node_dir={self.node_dir}")
         if not workflow_path.is_absolute():
             workflow_path = self.node_dir / workflow_file
+        self._log(f"  [DEBUG] _resolve_workflow_path: resolved={workflow_path}")
+        self._log(f"  [DEBUG] _resolve_workflow_path: exists={workflow_path.exists()}")
+        if not workflow_path.exists():
+            # List what's in the node_dir
+            self._log(f"  [DEBUG] Contents of {self.node_dir}:")
+            for item in sorted(self.node_dir.iterdir()):
+                self._log(f"  [DEBUG]   {item.name}{'/' if item.is_dir() else ''}")
+            # Check if workflows dir exists
+            workflows_dir = self.node_dir / "workflows"
+            if workflows_dir.exists():
+                self._log(f"  [DEBUG] Contents of {workflows_dir}:")
+                for item in sorted(workflows_dir.iterdir()):
+                    self._log(f"  [DEBUG]     {item.name}")
         return workflow_path
 
     def run_single_level(
@@ -933,6 +962,14 @@ print(json.dumps(result))
                     for name, repo in node_reqs:
                         self._log(f"  {name} from {repo}")
                         platform.install_node_from_repo(paths, repo, name)
+
+                # Install comfy-test's validation endpoint for pre-execution validation
+                self._log("Installing validation endpoint...")
+                platform.install_node_from_repo(
+                    paths,
+                    "PozzettiAndrea/ComfyUI-validate-endpoint",
+                    "ComfyUI-validate-endpoint"
+                )
 
                 # Get CUDA packages for state
                 cuda_packages = get_cuda_packages(self.node_dir)
@@ -1043,7 +1080,7 @@ print(json.dumps(result))
                                 for idx, workflow_file in enumerate(self.config.workflow.screenshot, 1):
                                     self._log(f"  [{idx}/{total_screenshots}] STATIC {workflow_file.name}")
                                     output_path = screenshots_dir / f"{workflow_file.stem}.png"
-                                    ws.capture(workflow_file, output_path=output_path)
+                                    ws.capture(self._resolve_workflow_path(workflow_file), output_path=output_path)
                             finally:
                                 ws.stop()
                         except ImportError:
@@ -1103,6 +1140,8 @@ print(json.dumps(result))
                             for idx, workflow_file in enumerate(self.config.workflow.run, 1):
                                 # Reset workflow log for this workflow
                                 current_workflow_log.clear()
+                                # Register capture_log to receive [ComfyUI] output
+                                server.add_log_listener(capture_log)
                                 start_time = time.time()
                                 status = "pass"
                                 error_msg = None
@@ -1117,9 +1156,8 @@ print(json.dumps(result))
                                         workflow_video_dir = videos_dir / workflow_file.stem
                                         final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
                                         frames = ws.capture_execution_frames(
-                                            workflow_file,
+                                            self._resolve_workflow_path(workflow_file),
                                             output_dir=workflow_video_dir,
-                                            timeout=_get_workflow_timeout(self.config.workflow.timeout),
                                             log_lines=current_workflow_log,
                                             webp_quality=60,  # Low quality for video frames
                                             final_screenshot_path=final_screenshot_path,  # High quality PNG
@@ -1132,16 +1170,21 @@ print(json.dumps(result))
                                             workflow_file,
                                             timeout=_get_workflow_timeout(self.config.workflow.timeout),
                                         )
-                                        capture_log(f"    Status: {result['status']}")
+                                        capture_log(f"    Status: {result.status}")
                                 except (WorkflowError, TestTimeoutError, ScreenshotError) as e:
                                     status = "fail"
-                                    error_msg = str(e.message)
+                                    # Include full error with details, not just message
+                                    error_msg = str(e)
                                     capture_log(f"    Status: FAILED")
                                     capture_log(f"    Error: {e.message}")
-                                    all_errors.append((workflow_file.name, str(e.message)))
+                                    if e.details:
+                                        capture_log(f"    Details: {e.details}")
+                                    all_errors.append((workflow_file.name, str(e)))
                                 finally:
                                     # Stop spinner with final status
                                     spinner.stop("PASS" if status == "pass" else "FAIL")
+                                    # Remove listener so next workflow starts fresh
+                                    server.remove_log_listener(capture_log)
 
                                 duration = time.time() - start_time
                                 results.append({
