@@ -937,7 +937,14 @@ def _render_report(
 
             const frame = data.frames[frameIndex];
             const img = document.getElementById('lightbox-img');
-            img.src = 'videos/' + workflowName + '/' + frame.file;
+
+            // Use high-quality screenshot for the last frame
+            const isLastFrame = frameIndex === data.frames.length - 1;
+            if (isLastFrame && workflowData[workflowName] && workflowData[workflowName].src) {{
+                img.src = workflowData[workflowName].src;
+            }} else {{
+                img.src = 'videos/' + workflowName + '/' + frame.file;
+            }}
 
             const counter = document.getElementById('video-frame-counter');
             const totalTime = data.total_time || data.frames[data.frames.length - 1].time;
