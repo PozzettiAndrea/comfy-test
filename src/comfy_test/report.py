@@ -852,6 +852,11 @@ def _render_report(
         let currentFrames = [];
         let currentTotalTime = 0;
 
+        function openLightboxByName(name) {{
+            const w = workflowData[name];
+            if (w) openLightbox(w.src, w.title, w.status, w.duration, w.log);
+        }}
+
         function openLightbox(src, title, status, duration, logContent) {{
             document.getElementById('lightbox-img').src = src;
             document.getElementById('lightbox-title').textContent = title;
@@ -1057,9 +1062,6 @@ def _render_workflow_cards(
         screenshot_file = screenshots.get(name, "")
         log_content = log_contents.get(name, "")
 
-        # Escape log content for JavaScript string
-        log_escaped = html.escape(log_content).replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
-
         # Store data for hash-based linking
         src = f'screenshots/{screenshot_file}' if screenshot_file else ''
         workflow_data[name] = {
@@ -1073,18 +1075,21 @@ def _render_workflow_cards(
         # Add failed class for red border
         failed_class = "failed" if status == "fail" else ""
 
+        # Escape name for use in JavaScript string (single quotes)
+        name_escaped = html.escape(name).replace("'", "\\'")
+
         # Screenshot or placeholder
         if screenshot_file:
             screenshot_html = f'''
                 <img class="workflow-screenshot" src="screenshots/{screenshot_file}"
-                     alt="{name}" loading="lazy">
+                     alt="{html.escape(name)}" loading="lazy">
             '''
-            onclick = f'''onclick="openLightbox('{src}', '{name}', '{status}', '{duration:.2f}', '{log_escaped}')"'''
+            onclick = f"""onclick="openLightboxByName('{name_escaped}')\""""
             clickable = "clickable"
         else:
             screenshot_html = '<div class="workflow-screenshot placeholder">No screenshot</div>'
             # Still allow clicking to see log even without screenshot
-            onclick = f'''onclick="openLightbox('', '{name}', '{status}', '{duration:.2f}', '{log_escaped}')"'''
+            onclick = f"""onclick="openLightboxByName('{name_escaped}')\""""
             clickable = "clickable"
 
         cards.append(f'''
@@ -1092,7 +1097,7 @@ def _render_workflow_cards(
                 {screenshot_html}
                 <div class="workflow-info">
                     <div class="workflow-header">
-                        <span class="workflow-name" title="{name}">{name}</span>
+                        <span class="workflow-name" title="{html.escape(name)}">{html.escape(name)}</span>
                         <span class="workflow-badge {status}">{status}</span>
                     </div>
                     <div class="workflow-meta">
