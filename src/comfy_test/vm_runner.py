@@ -1,7 +1,9 @@
 """Windows VM test execution via QEMU."""
 
 import fnmatch
+import grp
 import os
+import shlex
 import subprocess
 import shutil
 import tempfile
@@ -113,9 +115,32 @@ def find_gpu_device() -> Optional[str]:
     return None
 
 
+def ensure_winrm_installed(log: Callable = print):
+    """Ensure pywinrm is installed, installing it if necessary."""
+    try:
+        import winrm
+        return True
+    except ImportError:
+        log("Installing pywinrm...")
+        result = subprocess.run(
+            ["pip", "install", "pywinrm"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            log(f"Failed to install pywinrm: {result.stderr}")
+            return False
+        return True
+
+
 def wait_for_winrm(port: int = WINRM_PORT, timeout: int = 300, log: Callable = print) -> bool:
     """Wait for WinRM to become available and functional."""
     import socket
+
+    # Ensure winrm is installed
+    if not ensure_winrm_installed(log):
+        raise ImportError("Failed to install pywinrm")
+
     import winrm
 
     start = time.time()
@@ -452,15 +477,35 @@ def run_vm(
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build QEMU command
+    # Create temporary overlay to protect original image
+    overlay_path = output_dir / "vm-overlay.qcow2"
+    if overlay_path.exists():
+        overlay_path.unlink()  # Remove stale overlay from previous run
+
+    result = subprocess.run([
+        "qemu-img", "create",
+        "-f", "qcow2",
+        "-b", str(qcow2_path.resolve()),
+        "-F", "qcow2",
+        str(overlay_path)
+    ], capture_output=True)
+
+    if result.returncode != 0:
+        log(f"Error creating overlay: {result.stderr.decode()}")
+        return 1
+
+    log(f"Created temporary overlay (original image protected)")
+
+    # Build QEMU command (must match packer build settings)
     qemu_cmd = [
         "qemu-system-x86_64",
         "-enable-kvm",
+        "-machine", "q35",  # Must match packer build
         "-m", memory,
         "-smp", str(cpus),
-        "-cpu", "host",
+        "-cpu", "host,migratable=on,hv-time=on,hv-relaxed=on,hv-vapic=on,hv-spinlocks=0x1fff",
         "-bios", str(OVMF_PATH),
-        "-drive", f"file={qcow2_path},format=qcow2,if=virtio",
+        "-drive", f"file={overlay_path},if=virtio,cache=writeback,discard=ignore,format=qcow2",
         "-device", "virtio-net-pci,netdev=net0",
         "-netdev", f"user,id=net0,hostfwd=tcp::{WINRM_PORT}-:5985",
         "-vnc", ":0",  # VNC on port 5900 for debugging
@@ -482,11 +527,30 @@ def run_vm(
 
     # Start VM
     log("Starting Windows VM...")
-    qemu_process = subprocess.Popen(
-        qemu_cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+
+    # Check if we need sg kvm for KVM access
+    use_sg_kvm = False
+    if Path("/dev/kvm").exists():
+        try:
+            kvm_gid = grp.getgrnam("kvm").gr_gid
+            if kvm_gid not in os.getgroups():
+                use_sg_kvm = True
+        except KeyError:
+            pass
+
+    if use_sg_kvm:
+        cmd_str = " ".join(shlex.quote(str(c)) for c in qemu_cmd)
+        qemu_process = subprocess.Popen(
+            ["sg", "kvm", "-c", cmd_str],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        qemu_process = subprocess.Popen(
+            qemu_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     # Give QEMU a moment to start VNC server
     time.sleep(2)
@@ -577,3 +641,7 @@ def run_vm(
 
         # Stop websockify
         stop_websockify()
+
+        # Clean up overlay (original image was never modified)
+        if overlay_path.exists():
+            overlay_path.unlink()

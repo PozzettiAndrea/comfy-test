@@ -2,8 +2,10 @@
 
 import argparse
 import os
+import shutil
 import sys
 import tempfile
+from importlib.resources import files
 from pathlib import Path
 from typing import Optional
 
@@ -13,42 +15,33 @@ from .test.manager import TestManager
 from .errors import TestError, ConfigError, SetupError
 
 
-DEFAULT_CONFIG = """\
-# comfy-test.toml - Test configuration for ComfyUI custom nodes
-# Documentation: https://github.com/PozzettiAndrea/comfy-test
-
-[test]
-name = "{name}"
-python_version = "3.11"
-levels = ["syntax", "install", "registration"]
-
-[test.workflows]
-run = "all"        # or list specific files: ["workflow1.json", "workflow2.json"]
-screenshot = "all"
-timeout = 300
-
-[test.platforms]
-linux = true
-windows = false
-windows_portable = false
-"""
-
-
 def cmd_init(args) -> int:
-    """Handle init command - create default comfy-test.toml."""
-    config_path = Path.cwd() / "comfy-test.toml"
+    """Handle init command - copy template files."""
+    cwd = Path.cwd()
+    config_path = cwd / "comfy-test.toml"
+    github_dir = cwd / ".github"
 
-    if config_path.exists() and not args.force:
-        print(f"Config file already exists: {config_path}", file=sys.stderr)
-        print("Use --force to overwrite", file=sys.stderr)
-        return 1
+    # Get templates directory from package
+    templates = files("comfy_test") / "templates"
 
-    # Try to auto-detect project name from folder
-    name = Path.cwd().name
+    # Check existing files
+    if not args.force:
+        if config_path.exists():
+            print(f"Config file already exists: {config_path}", file=sys.stderr)
+            print("Use --force to overwrite", file=sys.stderr)
+            return 1
 
-    content = DEFAULT_CONFIG.format(name=name)
-    config_path.write_text(content)
+    # Copy comfy-test.toml
+    template_config = templates / "comfy-test.toml"
+    shutil.copy(template_config, config_path)
     print(f"Created {config_path}")
+
+    # Copy github/ -> .github/
+    template_github = templates / "github"
+    if template_github.is_dir():
+        shutil.copytree(template_github, github_dir, dirs_exist_ok=True)
+        print(f"Created {github_dir}/")
+
     return 0
 
 

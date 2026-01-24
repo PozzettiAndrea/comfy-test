@@ -153,7 +153,7 @@ def run_local(
         return 1
 
     # Verify workflow file exists
-    workflow_file = node_dir / ".github" / "workflows" / "comfy-test.yml"
+    workflow_file = node_dir / ".github" / "workflows" / "run-tests.yml"
     if not workflow_file.exists():
         log(f"Error: {workflow_file} not found")
         return 1
@@ -197,16 +197,16 @@ def run_local(
 
             target.write_text(workflow_content)
 
-            comfy_test_yml = work_workflow_dir / "comfy-test.yml"
-            if comfy_test_yml.exists():
-                content = comfy_test_yml.read_text()
+            run_tests_yml = work_workflow_dir / "run-tests.yml"
+            if run_tests_yml.exists():
+                content = run_tests_yml.read_text()
                 patched = re.sub(
                     r'uses:\s*PozzettiAndrea/comfy-test/\.github/workflows/test-matrix\.yml@\w+',
                     'uses: ./.github/workflows/test-matrix.yml',
                     content
                 )
                 if patched != content:
-                    comfy_test_yml.write_text(patched)
+                    run_tests_yml.write_text(patched)
 
         # Pre-build wheels on host (avoids hatchling issues in Docker)
         wheel_dir = work_dir / ".wheels"

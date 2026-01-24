@@ -44,6 +44,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/comfy_test"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src/comfy_test/**"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
