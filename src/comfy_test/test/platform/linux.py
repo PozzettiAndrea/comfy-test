@@ -83,6 +83,17 @@ class LinuxTestPlatform(TestPlatform):
         # Use system Python
         python = Path(sys.executable)
 
+        # Install build dependencies for packages that compile C extensions
+        self._log("Installing build dependencies...")
+        self._run_command(
+            ["sudo", "apt-get", "update"],
+            cwd=work_dir,
+        )
+        self._run_command(
+            ["sudo", "apt-get", "install", "-y", "python3-dev"],
+            cwd=work_dir,
+        )
+
         # Install ComfyUI requirements (uses CUDA index in GPU mode)
         self._log("Installing ComfyUI requirements...")
         requirements_file = comfyui_dir / "requirements.txt"
