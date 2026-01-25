@@ -190,9 +190,13 @@ def run_local(
     # Create main log file inside output_dir
     log_file = output_dir / f"{output_dir.name}.log"
 
-    # Local paths
-    local_comfy_test = Path.home() / "utils" / "comfy-test"
-    local_comfy_env = Path.home() / "utils" / "comfy-env"
+    # Local paths (Desktop/utils on Windows, ~/utils on Linux)
+    if is_windows_host:
+        local_comfy_test = Path.home() / "Desktop" / "utils" / "comfy-test"
+        local_comfy_env = Path.home() / "Desktop" / "utils" / "comfy-env"
+    else:
+        local_comfy_test = Path.home() / "utils" / "comfy-test"
+        local_comfy_env = Path.home() / "utils" / "comfy-env"
     local_workflow = local_comfy_test / ".github" / "workflows" / "test-matrix-local.yml"
 
     # Create isolated temp directory for full isolation
