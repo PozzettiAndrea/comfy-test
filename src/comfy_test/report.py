@@ -145,7 +145,7 @@ def _get_system_info() -> dict:
     return info
 
 
-def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> Path:
+def generate_html_report(output_dir: Path, repo_name: Optional[str] = None, current_platform: Optional[str] = None) -> Path:
     """Generate index.html from results.json and screenshots.
 
     This is the single source of truth - used for both:
@@ -155,6 +155,7 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
     Args:
         output_dir: Directory containing results.json, screenshots/, logs/, videos/
         repo_name: Optional repository name for the header
+        current_platform: Optional platform ID if this is a multi-platform subdir
 
     Returns:
         Path to the generated index.html file
@@ -206,7 +207,14 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
         if repo_name in (".", ".comfy-test"):
             repo_name = output_dir.parent.parent.name
 
-    html_content = _render_report(results, screenshots, log_contents, repo_name, video_data)
+    # Auto-detect platform from directory name if not provided
+    if current_platform is None:
+        dir_name = output_dir.name
+        platform_ids = [p['id'] for p in PLATFORMS]
+        if dir_name in platform_ids:
+            current_platform = dir_name
+
+    html_content = _render_report(results, screenshots, log_contents, repo_name, video_data, current_platform)
 
     output_file = output_dir / "index.html"
     output_file.write_text(html_content, encoding="utf-8")
@@ -219,6 +227,7 @@ def _render_report(
     log_contents: Dict[str, str],
     repo_name: str,
     video_data: Optional[Dict[str, Any]] = None,
+    current_platform: Optional[str] = None,
 ) -> str:
     """Render the HTML report from results data.
 
@@ -228,6 +237,7 @@ def _render_report(
         log_contents: Dict mapping workflow name to log content
         repo_name: Repository name for the header
         video_data: Dict mapping workflow name to metadata (frames with timestamps/logs)
+        current_platform: Optional platform ID if this is a multi-platform page
 
     Returns:
         Complete HTML document as string
@@ -261,6 +271,10 @@ def _render_report(
 
     # Build video frames JSON for JavaScript
     video_data_js = json.dumps(video_data)
+
+    # Platform tabs (only if multi-platform)
+    platform_tabs_css = _get_platform_tabs_css() if current_platform else ""
+    platform_tabs_html = _generate_platform_tabs_html(current_platform) if current_platform else ""
 
     return f'''<!DOCTYPE html>
 <html lang="en">
@@ -781,11 +795,13 @@ def _render_report(
                 align-items: flex-start;
             }}
         }}
+        {platform_tabs_css}
     </style>
     <link href="https://cdn.jsdelivr.net/npm/nouislider@15/dist/nouislider.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/nouislider@15/dist/nouislider.min.js"></script>
 </head>
 <body>
+    {platform_tabs_html}
     <header>
         <h1><a href="https://github.com/PozzettiAndrea/{repo_name}">{repo_name}</a> Test Results</h1>
         <p class="meta">{timestamp_display}</p>
@@ -1138,3 +1154,172 @@ def _render_workflow_cards(
     workflow_data_js = json.dumps(workflow_data)
 
     return '\n'.join(cards), workflow_data_js
+
+
+# Platform definitions for multi-platform index
+PLATFORMS = [
+    {'id': 'linux-cpu', 'label': 'Linux CPU'},
+    {'id': 'linux-gpu', 'label': 'Linux GPU'},
+    {'id': 'windows-cpu', 'label': 'Windows CPU'},
+    {'id': 'windows-gpu', 'label': 'Windows GPU'},
+    {'id': 'windows-portable-cpu', 'label': 'Win Portable CPU'},
+    {'id': 'windows-portable-gpu', 'label': 'Win Portable GPU'},
+]
+
+
+def generate_root_index(output_dir: Path, repo_name: Optional[str] = None) -> Path:
+    """Generate root index.html that redirects to first available platform.
+
+    Args:
+        output_dir: Parent directory containing platform subdirectories
+        repo_name: Optional repository name for the header
+
+    Returns:
+        Path to the generated index.html file
+    """
+    # Find first available platform
+    first_available = None
+    for p in PLATFORMS:
+        platform_dir = output_dir / p['id']
+        if (platform_dir / 'index.html').exists():
+            first_available = p['id']
+            break
+
+    title = f"{repo_name} - Test Results" if repo_name else "ComfyUI Test Results"
+
+    if first_available:
+        # Redirect to first available platform
+        html_content = f'''<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="refresh" content="0; url={first_available}/index.html">
+  <title>{html.escape(title)}</title>
+</head>
+<body>
+  <p>Redirecting to <a href="{first_available}/index.html">{first_available}</a>...</p>
+</body>
+</html>
+'''
+    else:
+        # No results yet
+        html_content = f'''<!DOCTYPE html>
+<html>
+<head>
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 40px; background: #1a1a2e; color: #eee; }}
+  </style>
+</head>
+<body>
+  <h1>{html.escape(title)}</h1>
+  <p>No test results available yet.</p>
+</body>
+</html>
+'''
+
+    index_file = output_dir / 'index.html'
+    index_file.write_text(html_content)
+    return index_file
+
+
+def _generate_platform_tabs_html(current_platform: str, is_subdir: bool = True) -> str:
+    """Generate HTML for platform navigation tabs.
+
+    Args:
+        current_platform: The currently active platform ID
+        is_subdir: If True, links use '../{platform}/', else '{platform}/'
+
+    Returns:
+        HTML string for the platform tabs
+    """
+    prefix = "../" if is_subdir else ""
+    platforms_js = json.dumps(PLATFORMS)
+
+    return f'''
+    <nav class="platform-tabs" id="platform-tabs">
+      <script>
+        (function() {{
+          const platforms = {platforms_js};
+          const currentPlatform = "{current_platform}";
+          const prefix = "{prefix}";
+          const nav = document.getElementById('platform-tabs');
+
+          platforms.forEach(function(p) {{
+            const link = document.createElement('a');
+            link.href = prefix + p.id + '/index.html';
+            link.className = 'platform-tab' + (p.id === currentPlatform ? ' active' : '');
+            link.textContent = p.label;
+
+            // Check if platform exists (async, updates styling)
+            fetch(prefix + p.id + '/index.html', {{ method: 'HEAD' }})
+              .then(function(resp) {{
+                if (!resp.ok) {{
+                  link.className += ' unavailable';
+                  link.onclick = function(e) {{ e.preventDefault(); }};
+                }}
+              }})
+              .catch(function() {{
+                link.className += ' unavailable';
+                link.onclick = function(e) {{ e.preventDefault(); }};
+              }});
+
+            nav.appendChild(link);
+          }});
+        }})();
+      </script>
+    </nav>
+    '''
+
+
+def _get_platform_tabs_css() -> str:
+    """Get CSS for platform navigation tabs."""
+    return '''
+        .platform-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            padding: 0 2rem;
+            background: #16213e;
+            padding-top: 1rem;
+            padding-bottom: 0;
+        }
+        .platform-tab {
+            padding: 10px 20px;
+            background: #1a1a2e;
+            color: #4ade80;
+            text-decoration: none;
+            border-radius: 8px 8px 0 0;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .platform-tab:hover {
+            background: #0f3460;
+            color: #fff;
+        }
+        .platform-tab.active {
+            background: #1a1a2e;
+            color: #fff;
+            border-bottom: 2px solid #4ade80;
+        }
+        .platform-tab.unavailable {
+            color: #666;
+            cursor: not-allowed;
+        }
+    '''
+
+
+def has_platform_subdirs(output_dir: Path) -> bool:
+    """Check if output_dir has platform subdirectories with results.
+
+    Args:
+        output_dir: Directory to check
+
+    Returns:
+        True if at least one platform subdir with index.html exists
+    """
+    for p in PLATFORMS:
+        platform_dir = output_dir / p['id']
+        if (platform_dir / 'index.html').exists():
+            return True
+    return False

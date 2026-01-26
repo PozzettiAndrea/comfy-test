@@ -215,6 +215,7 @@ class WorkflowScreenshot:
         self._playwright = None
         self._browser: Optional["Browser"] = None
         self._page: Optional["Page"] = None
+        self._console_logs: List[str] = []
 
     def start(self) -> None:
         """Start the headless browser."""
@@ -228,7 +229,25 @@ class WorkflowScreenshot:
             viewport={"width": self.width, "height": self.height},
             device_scale_factor=2,  # HiDPI for crisp screenshots
         )
+        # Capture browser console messages
+        self._page.on("console", self._handle_console)
 
+    def _handle_console(self, msg) -> None:
+        """Capture browser console messages."""
+        log_entry = f"[Console-{msg.type}] {msg.text}"
+        self._console_logs.append(log_entry)
+        # Only log errors and warnings to avoid noise
+        if msg.type in ("error", "warning"):
+            self._log(f"  {log_entry}")
+
+    def save_console_logs(self, output_path: Path) -> None:
+        """Save captured console logs to file."""
+        if self._console_logs:
+            output_path.write_text("\n".join(self._console_logs))
+
+    def clear_console_logs(self) -> None:
+        """Clear captured console logs."""
+        self._console_logs.clear()
 
     def stop(self) -> None:
         """Stop the headless browser."""
