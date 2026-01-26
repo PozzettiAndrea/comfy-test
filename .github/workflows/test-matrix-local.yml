@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Parse python version from config
         id: config
@@ -64,6 +66,8 @@ jobs:
 
       - name: Checkout node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout comfy-test
         if: ${{ !env.COMFY_TEST_LOCAL }}
@@ -109,6 +113,13 @@ jobs:
             pip install --force-reinstall .local-comfy-env
           fi
 
+      - name: Install local comfy-3d-viewers
+        run: |
+          if ls .wheels/comfy_3d_viewers-*.whl 1>/dev/null 2>&1; then
+            echo "Installing comfy-3d-viewers from pre-built wheel"
+            pip install --force-reinstall .wheels/comfy_3d_viewers-*.whl
+          fi
+
       - name: Syntax
         id: syntax
         run: comfy-test run --platform linux --only-level syntax -c ${{ inputs.config-file || 'comfy-test.toml' }}
@@ -149,6 +160,8 @@ jobs:
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout comfy-test
         uses: actions/checkout@v4
@@ -206,6 +219,8 @@ jobs:
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout comfy-test
         uses: actions/checkout@v4

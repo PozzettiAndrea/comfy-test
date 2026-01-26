@@ -630,6 +630,10 @@ class TestManager:
 
                                 # Save per-workflow log (copy the list since we clear it)
                                 (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log))
+                                # Save browser console logs
+                                if ws:
+                                    ws.save_console_logs(logs_dir / f"{workflow_file.stem}_console.log")
+                                    ws.clear_console_logs()
                         finally:
                             if ws:
                                 ws.stop()
@@ -1320,6 +1324,10 @@ print(json.dumps(result))
 
                                 # Save per-workflow log (copy the list since we clear it)
                                 (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log))
+                                # Save browser console logs
+                                if ws:
+                                    ws.save_console_logs(logs_dir / f"{workflow_file.stem}_console.log")
+                                    ws.clear_console_logs()
                         finally:
                             if ws:
                                 ws.stop()

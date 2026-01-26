@@ -236,11 +236,20 @@ def run_local(
                 capture_output=True, check=True
             )
 
+        local_comfy_3d_viewers = Path.home() / "utils" / "comfy-3d-viewers"
+        if local_comfy_3d_viewers.exists():
+            log(f"Building comfy-3d-viewers wheel...")
+            subprocess.run(
+                ["pip", "wheel", str(local_comfy_3d_viewers), "--no-deps", "--no-cache-dir", "-w", str(wheel_dir)],
+                capture_output=True, check=True
+            )
+
         # Build container options - mount output dir
+        playwright_cache = Path.home() / ".cache" / "ms-playwright"
         container_opts = [
             "-t",  # Allocate pseudo-TTY to force line-buffered output
             f"-v {output_dir}:{work_dir}/.comfy-test",
-            f"--user {os.getuid()}:{os.getgid()}",  # Run as current user to avoid root-owned files
+            f"-v {playwright_cache}:/root/.cache/ms-playwright",  # Cache Playwright browsers
             "--shm-size=8g",  # Default 64MB is too small for ML tensor transfer
         ]
         if gpu:
@@ -373,6 +382,13 @@ def run_local(
         if logs_dir.exists():
             subprocess.run(["sudo", "rm", "-rf", str(logs_dir)], capture_output=True)
         workflow_logs = split_log_by_workflow(log_file, logs_dir)
+
+        # Fix ownership of output files (Docker runs as root)
+        if output_dir.exists():
+            subprocess.run(
+                ["sudo", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(output_dir)],
+                capture_output=True
+            )
 
         # Report output
         screenshots_dir = output_dir / "screenshots"
