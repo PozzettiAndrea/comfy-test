@@ -6,12 +6,12 @@ Setup Instructions
    - Copies "github" folder to your repo root and renames it to ".github"
 
 2. Enable workflow write permissions:
-   - Go to Settings → Actions → General
+   - Go to Settings -> Actions -> General
    - Under "Workflow permissions", select "Read and write permissions"
    - Click Save
 
 3. Enable GitHub Pages (for test reports):
-   - Go to Settings → Pages
+   - Go to Settings -> Pages
    - Under "Source", select "Deploy from a branch"
    - Select "gh-pages" branch and "/ (root)"
    - Click Save

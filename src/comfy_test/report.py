@@ -209,7 +209,7 @@ def generate_html_report(output_dir: Path, repo_name: Optional[str] = None) -> P
     html_content = _render_report(results, screenshots, log_contents, repo_name, video_data)
 
     output_file = output_dir / "index.html"
-    output_file.write_text(html_content)
+    output_file.write_text(html_content, encoding="utf-8")
     return output_file
 
 

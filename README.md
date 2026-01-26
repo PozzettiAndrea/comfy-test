@@ -75,7 +75,7 @@ Validates widget values in your workflow against node schemas from `/object_info
 Validates the workflow graph structure:
 
 - **Node existence** - All linked nodes actually exist
-- **Connection types** - Output types match input types (IMAGE → IMAGE)
+- **Connection types** - Output types match input types (IMAGE -> IMAGE)
 - **Slot validity** - Input/output slot indices are valid
 
 ```

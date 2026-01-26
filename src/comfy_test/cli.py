@@ -60,8 +60,11 @@ def cmd_run(args) -> int:
             platform_name=args.platform,  # Pass through platform (auto-detected if None)
         )
 
-    # Auto-detect: if not in CI, use local mode automatically
-    if not os.environ.get('GITHUB_ACTIONS') and not os.environ.get('ACT'):
+    # Auto-detect: if not in CI and not already in Docker, use local mode automatically
+    in_ci = os.environ.get('GITHUB_ACTIONS') or os.environ.get('ACT')
+    in_docker = os.environ.get('COMFY_TEST_IN_DOCKER')
+
+    if not in_ci and not in_docker:
         from .local_runner import run_local
         print("[comfy-test] Not in CI environment, running locally via Docker...")
         output_dir = Path(args.output_dir) if args.output_dir else Path.cwd() / ".comfy-test-logs"
@@ -281,6 +284,25 @@ def cmd_download_portable(args) -> int:
 
     print(f"Downloaded to: {archive_path}")
     return 0
+
+
+def cmd_build_windows_image(args) -> int:
+    """Build the Windows base image for faster local testing."""
+    import platform as plat
+    if plat.system() != "Windows":
+        print("Error: This command only works on Windows", file=sys.stderr)
+        return 1
+
+    from .local_runner import build_windows_base_image
+
+    try:
+        image_name = build_windows_base_image(print, force=args.rebuild)
+        print(f"\nBase image ready: {image_name}")
+        print("Subsequent 'ct test' runs will use this image for fast startup.")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 def cmd_merge(args) -> int:
@@ -747,6 +769,18 @@ def main(args=None) -> int:
         help="Output directory",
     )
     download_parser.set_defaults(func=cmd_download_portable)
+
+    # build-windows-image command
+    build_win_parser = subparsers.add_parser(
+        "build-windows-image",
+        help="Build the Windows base image for faster local testing",
+    )
+    build_win_parser.add_argument(
+        "--rebuild", "-r",
+        action="store_true",
+        help="Force rebuild even if image exists",
+    )
+    build_win_parser.set_defaults(func=cmd_build_windows_image)
 
     # screenshot command
     screenshot_parser = subparsers.add_parser(

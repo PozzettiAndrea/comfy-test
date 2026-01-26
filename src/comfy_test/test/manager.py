@@ -629,7 +629,7 @@ class TestManager:
                                 })
 
                                 # Save per-workflow log (copy the list since we clear it)
-                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log))
+                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log), encoding="utf-8")
                         finally:
                             if ws:
                                 ws.stop()
@@ -1319,7 +1319,7 @@ print(json.dumps(result))
                                 })
 
                                 # Save per-workflow log (copy the list since we clear it)
-                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log))
+                                (logs_dir / f"{workflow_file.stem}.log").write_text("\n".join(current_workflow_log), encoding="utf-8")
                         finally:
                             if ws:
                                 ws.stop()

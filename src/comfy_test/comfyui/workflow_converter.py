@@ -959,10 +959,10 @@ class WorkflowConverter:
                     logger.debug(f"Unknown dict widget value structure: {value}")
             elif isinstance(value, str):
                 # String values at the end often represent buttons or special controls
-                # The "➕ Add Lora" button is a common example
+                # The "Add Lora" button is a common example
                 if value == '':
                     # Empty string often represents the "Add" button
-                    widget_inputs['➕ Add Lora'] = value
+                    widget_inputs['Add Lora'] = value
             # Skip None values and other types that don't map to widgets
     
     @staticmethod
