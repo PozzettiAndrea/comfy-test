@@ -705,6 +705,7 @@ def run_local(
             f"-v {output_dir}:{work_dir}/.comfy-test",
             f"-v {playwright_cache}:/root/.cache/ms-playwright",  # Cache Playwright browsers
             "--shm-size=8g",  # Default 64MB is too small for ML tensor transfer
+            "--memory=8g",  # Limit memory to allow parallel test runs
         ]
         if gpu:
             container_opts.append("--gpus all")
