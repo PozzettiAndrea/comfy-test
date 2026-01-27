@@ -290,6 +290,7 @@ class TestManager:
 
         platforms = [
             ("linux", self.config.linux),
+            ("macos", self.config.macos),
             ("windows", self.config.windows),
             ("windows_portable", self.config.windows_portable),
         ]
@@ -314,7 +315,7 @@ class TestManager:
         """Run tests on a specific platform.
 
         Args:
-            platform_name: Platform to test ('linux', 'windows', 'windows_portable')
+            platform_name: Platform to test ('linux', 'macos', 'windows', 'windows_portable')
             dry_run: If True, only show what would be done
             level: Maximum test level to run (CLI override, None = use config levels)
             workflow_filter: If specified, only run this workflow (e.g., 'fix_normals.json')
@@ -1115,7 +1116,7 @@ print(json.dumps(result))
         the work_dir.
 
         Args:
-            platform_name: Platform to test ('linux', 'windows', 'windows_portable')
+            platform_name: Platform to test ('linux', 'macos', 'windows', 'windows_portable')
             level: Specific level to run
             work_dir: Persistent directory for state (required for install and later levels)
             skip_setup: If True, load state from work_dir instead of running install

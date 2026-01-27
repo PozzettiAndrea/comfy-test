@@ -693,7 +693,7 @@ def main(args=None) -> int:
     )
     run_parser.add_argument(
         "--platform", "-p",
-        choices=["linux", "windows", "windows-portable"],
+        choices=["linux", "macos", "windows", "windows-portable"],
         help="Run on specific platform only",
     )
     run_parser.add_argument(
@@ -751,7 +751,7 @@ def main(args=None) -> int:
     )
     verify_parser.add_argument(
         "--platform", "-p",
-        choices=["linux", "windows", "windows-portable"],
+        choices=["linux", "macos", "windows", "windows-portable"],
         help="Platform to verify on",
     )
     verify_parser.set_defaults(func=cmd_verify)

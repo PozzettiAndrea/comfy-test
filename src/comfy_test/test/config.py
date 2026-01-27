@@ -158,6 +158,7 @@ class TestConfig:
         levels: List of test levels to run (install, registration, instantiation, validation)
         workflow: Optional workflow to execute for end-to-end testing
         linux: Linux-specific test configuration
+        macos: macOS-specific test configuration
         windows: Windows-specific test configuration
         windows_portable: Windows Portable-specific test configuration
 
@@ -176,6 +177,7 @@ class TestConfig:
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)
+    macos: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows_portable: PlatformTestConfig = field(default_factory=PlatformTestConfig)
 
@@ -220,7 +222,7 @@ class TestConfig:
         """Get configuration for a specific platform.
 
         Args:
-            platform: Platform name ('linux', 'windows', 'windows_portable')
+            platform: Platform name ('linux', 'macos', 'windows', 'windows_portable')
 
         Returns:
             PlatformTestConfig for the specified platform
@@ -230,6 +232,7 @@ class TestConfig:
         """
         platform_map = {
             "linux": self.linux,
+            "macos": self.macos,
             "windows": self.windows,
             "windows_portable": self.windows_portable,
             "windows-portable": self.windows_portable,  # Allow hyphen variant

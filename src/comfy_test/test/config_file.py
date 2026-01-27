@@ -216,6 +216,10 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         test_section.get("linux", {}),
         platforms.get("linux", True)
     )
+    macos_config = _parse_platform_config(
+        test_section.get("macos", {}),
+        platforms.get("macos", True)
+    )
     windows_config = _parse_platform_config(
         test_section.get("windows", {}),
         platforms.get("windows", True)
@@ -234,6 +238,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             "levels": levels,
             "workflow": workflow,
             "linux": linux_config,
+            "macos": macos_config,
             "windows": windows_config,
             "windows_portable": windows_portable_config,
         }
