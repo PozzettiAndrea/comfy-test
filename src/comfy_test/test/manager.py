@@ -219,7 +219,7 @@ class TestManager:
 
     def _get_output_base(self) -> Path:
         """Get the base output directory for logs, screenshots, results."""
-        return self.output_dir if self.output_dir else self._get_output_base()
+        return self.output_dir if self.output_dir else (self.node_dir / ".comfy-test")
 
     def _log(self, msg: str) -> None:
         """Log message with timestamp, write to file immediately."""
@@ -606,7 +606,7 @@ class TestManager:
                         current_workflow_log = []
 
                         def capture_log(msg):
-                            self._log(msg)
+                            # Don't call self._log here - server._log_all already does
                             current_workflow_log.append(msg)
 
                         # Always initialize browser for screenshots/videos
@@ -1082,12 +1082,8 @@ print(json.dumps(result))
             Absolute Path to workflow file
         """
         workflow_path = Path(workflow_file)
-        self._log(f"  [DEBUG] _resolve_workflow_path: input={workflow_file}")
-        self._log(f"  [DEBUG] _resolve_workflow_path: node_dir={self.node_dir}")
         if not workflow_path.is_absolute():
             workflow_path = self.node_dir / workflow_file
-        self._log(f"  [DEBUG] _resolve_workflow_path: resolved={workflow_path}")
-        self._log(f"  [DEBUG] _resolve_workflow_path: exists={workflow_path.exists()}")
         if not workflow_path.exists():
             # List what's in the node_dir
             self._log(f"  [DEBUG] Contents of {self.node_dir}:")
@@ -1346,7 +1342,7 @@ print(json.dumps(result))
                         current_workflow_log = []
 
                         def capture_log(msg):
-                            self._log(msg)
+                            # Don't call self._log here - server._log_all already does
                             current_workflow_log.append(msg)
 
                         # Always initialize browser for screenshots/videos
