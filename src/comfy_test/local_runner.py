@@ -534,6 +534,128 @@ def run_windows_docker(
         shutil.rmtree(wheel_dir, ignore_errors=True)
 
 
+def run_linux_pooled(
+    container_id: str,
+    node_dir: Path,
+    output_dir: Path,
+    config_file: str,
+    gpu: bool,
+    log: Callable[[str], None],
+) -> int:
+    """Run Linux test in a pre-created pooled container.
+
+    This bypasses act entirely for faster startup when a pooled container is available.
+    The container is destroyed after the test completes.
+    """
+    import tempfile
+
+    node_name = node_dir.name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create wheel directory
+    wheel_dir = Path(tempfile.mkdtemp(prefix="comfy-wheels-"))
+
+    try:
+        # Build wheels for comfy-test and comfy-env
+        log("Building wheels...")
+        local_comfy_test = Path.home() / "utils" / "comfy-test"
+        if local_comfy_test.exists():
+            subprocess.run(
+                ["pip", "wheel", str(local_comfy_test), "--no-deps", "--no-cache-dir", "-w", str(wheel_dir)],
+                capture_output=True, check=True
+            )
+
+        local_comfy_env = Path.home() / "utils" / "comfy-env"
+        if local_comfy_env.exists():
+            subprocess.run(
+                ["pip", "wheel", str(local_comfy_env), "--no-deps", "--no-cache-dir", "-w", str(wheel_dir)],
+                capture_output=True, check=True
+            )
+
+        local_comfy_3d_viewers = Path.home() / "utils" / "comfy-3d-viewers"
+        if local_comfy_3d_viewers.exists():
+            subprocess.run(
+                ["pip", "wheel", str(local_comfy_3d_viewers), "--no-deps", "--no-cache-dir", "-w", str(wheel_dir)],
+                capture_output=True, check=True
+            )
+
+        # Copy node to container (respecting .gitignore)
+        log("Copying files to container...")
+        temp_node_dir = Path(tempfile.mkdtemp(prefix="comfy-node-")) / node_dir.name
+        _copy_with_gitignore(node_dir, temp_node_dir)
+
+        # Create work directory in container
+        subprocess.run(
+            ["docker", "exec", container_id, "mkdir", "-p", "/work"],
+            check=True, capture_output=True
+        )
+
+        # Copy files into container
+        subprocess.run(
+            ["docker", "cp", str(temp_node_dir), f"{container_id}:/work/node"],
+            check=True
+        )
+        subprocess.run(
+            ["docker", "cp", str(wheel_dir), f"{container_id}:/work/wheels"],
+            check=True
+        )
+
+        # Copy playwright cache if exists
+        playwright_cache = Path.home() / ".cache" / "ms-playwright"
+        if playwright_cache.exists():
+            subprocess.run(
+                ["docker", "cp", str(playwright_cache), f"{container_id}:/root/.cache/ms-playwright"],
+                capture_output=True  # May fail, non-fatal
+            )
+
+        # Helper to run commands in container with streaming output
+        def docker_exec_stream(cmd: str) -> int:
+            proc = subprocess.Popen(
+                ["docker", "exec", container_id, "bash", "-c", cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+            for line in iter(proc.stdout.readline, ''):
+                log(f"  | {line.rstrip()}")
+            return proc.wait()
+
+        # Install dependencies
+        log("Installing uv...")
+        docker_exec_stream("pip install uv -q")
+
+        log("Installing wheels...")
+        docker_exec_stream("uv pip install --system /work/wheels/*.whl")
+
+        log("Installing Playwright...")
+        docker_exec_stream("pip install playwright pillow -q && playwright install chromium --with-deps")
+
+        # Run tests
+        log("Running tests...")
+        exit_code = docker_exec_stream(
+            f"cd /work/node && python -u -m comfy_test run --platform linux"
+        )
+
+        # Copy results back
+        log("Copying results...")
+        subprocess.run(
+            ["docker", "cp", f"{container_id}:/work/node/.comfy-test/.", str(output_dir)],
+            capture_output=True  # May fail if no results
+        )
+
+        # Cleanup temp directories
+        shutil.rmtree(temp_node_dir.parent, ignore_errors=True)
+
+        return exit_code
+
+    finally:
+        # Always destroy the container after use (keep pool virgin)
+        log("Destroying container...")
+        subprocess.run(["docker", "rm", "-f", container_id], capture_output=True)
+        # Cleanup wheel directory
+        shutil.rmtree(wheel_dir, ignore_errors=True)
+
+
 def run_local(
     node_dir: Path,
     output_dir: Path,
@@ -567,6 +689,22 @@ def run_local(
     # For Windows platforms, use direct Docker (act has Windows container issues)
     if platform_name in ("windows", "windows-portable"):
         return run_windows_docker(node_dir, output_dir, config_file, gpu, log)
+
+    # Linux: check if container pool has a ready container for fast startup
+    if platform_name == "linux":
+        from .container_pool import ContainerPool
+        pool = ContainerPool()
+        pooled_container = pool.acquire()
+        if pooled_container:
+            log(f"Using pooled container: {pooled_container[:12]}")
+            return run_linux_pooled(
+                container_id=pooled_container,
+                node_dir=node_dir,
+                output_dir=output_dir,
+                config_file=config_file,
+                gpu=gpu,
+                log=log,
+            )
 
     # Linux: use act (works well with Linux containers)
     # Check for Docker mode mismatch and auto-switch if needed
