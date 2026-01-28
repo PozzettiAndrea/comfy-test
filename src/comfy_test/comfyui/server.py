@@ -95,6 +95,9 @@ class ComfyUIServer:
         # Prepare extra env vars
         extra_env = {}
 
+        # Always enable comfy-env debug logging in tests
+        extra_env["COMFY_ENV_DEBUG"] = "1"
+
         # Add env_vars from comfy-env.toml (CI only)
         if self.env_vars:
             extra_env.update(self.env_vars)
