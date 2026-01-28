@@ -2,11 +2,12 @@
 # Composite Action: Setup ComfyUI test environment
 # =============================================================================
 # Sets up everything needed EXCEPT comfy-test itself:
-# - Python
+# - Python + pip cache
 # - ComfyUI clone + requirements
 # - Playwright browser
 #
-# All cached together in .comfy-test-env/
+# Cached: ComfyUI clone/portable, Playwright browser
+# Always runs: pip install (fast due to pip download cache)
 # =============================================================================
 
 name: Setup ComfyUI test environment
@@ -23,6 +24,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'pip'
+
     - name: Restore environment cache
       id: env-cache
       uses: actions/cache/restore@v4
@@ -34,18 +41,11 @@ runs:
           ~/AppData/Local/ms-playwright
         key: comfy-env-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ inputs.python-version }}
-
-    - name: Setup environment
+    - name: Clone/download ComfyUI
       if: steps.env-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         mkdir -p .comfy-test-env
-
-        # For portable: download and extract
         if [ "${{ inputs.platform }}" = "windows-portable" ]; then
           echo "Downloading ComfyUI Portable..."
           curl -L --fail -o .comfy-test-env/portable.7z \
@@ -54,16 +54,23 @@ runs:
           "/c/Program Files/7-Zip/7z.exe" x .comfy-test-env/portable.7z -o".comfy-test-env" -y
           rm .comfy-test-env/portable.7z
         else
-          # For standard platforms: clone ComfyUI
           echo "Cloning ComfyUI..."
           git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git .comfy-test-env/ComfyUI
-          echo "Installing ComfyUI requirements..."
-          pip install -r .comfy-test-env/ComfyUI/requirements.txt
         fi
 
-        # Install Playwright browser
-        echo "Installing Playwright..."
-        pip install playwright
+    - name: Install pip packages
+      if: inputs.platform != 'windows-portable'
+      shell: bash
+      run: |
+        echo "Installing ComfyUI requirements..."
+        pip install -r .comfy-test-env/ComfyUI/requirements.txt
+        echo "Installing uv and playwright..."
+        pip install uv playwright
+
+    - name: Install Playwright browser
+      if: steps.env-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
         playwright install chromium
         playwright install-deps chromium || true
 
