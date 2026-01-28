@@ -58,6 +58,8 @@ jobs:
       python-version: ${{ steps.config.outputs.python-version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Parse python version from comfy-test.toml
         id: config
@@ -97,6 +99,8 @@ jobs:
       # Checkout the CONSUMER repo (the custom node being tested)
       - name: Checkout custom node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       # Checkout THIS repo (comfy-test) to get the test tooling
       - name: Checkout comfy-test
@@ -105,6 +109,7 @@ jobs:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
 
       # Setup Python + Playwright with caching
       - name: Setup environment
@@ -138,6 +143,8 @@ jobs:
     steps:
       - name: Checkout custom node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout comfy-test
         uses: actions/checkout@v4
@@ -145,6 +152,7 @@ jobs:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
 
       - name: Setup environment
         uses: ./.comfy-test-src/.github/actions/setup
@@ -175,6 +183,8 @@ jobs:
     steps:
       - name: Checkout custom node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout comfy-test
         uses: actions/checkout@v4
@@ -182,6 +192,7 @@ jobs:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
 
       - name: Setup environment
         uses: ./.comfy-test-src/.github/actions/setup
@@ -212,6 +223,8 @@ jobs:
     steps:
       - name: Checkout custom node
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout comfy-test
         uses: actions/checkout@v4
@@ -219,6 +232,14 @@ jobs:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
+
+      # Cache the ComfyUI Portable 7z archive (~2GB download)
+      - name: Cache ComfyUI Portable
+        uses: actions/cache@v4
+        with:
+          path: ~/.comfy-test/cache/portable
+          key: comfyui-portable-${{ runner.os }}
 
       - name: Setup environment
         uses: ./.comfy-test-src/.github/actions/setup
@@ -251,11 +272,14 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/checkout@v4
         with:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
@@ -278,11 +302,14 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/checkout@v4
         with:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
@@ -305,11 +332,19 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/checkout@v4
         with:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
+      # Cache the ComfyUI Portable 7z archive (~2GB download)
+      - uses: actions/cache@v4
+        with:
+          path: ~/.comfy-test/cache/portable
+          key: comfyui-portable-${{ runner.os }}
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
@@ -332,11 +367,14 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/checkout@v4
         with:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
@@ -364,6 +402,7 @@ jobs:
           repository: PozzettiAndrea/comfy-test
           ref: ${{ inputs.comfy-test-ref }}
           path: .comfy-test-src
+          fetch-depth: 1
 
       - uses: actions/setup-python@v5
         with:
@@ -381,6 +420,7 @@ jobs:
         with:
           ref: gh-pages
           path: gh-pages
+          fetch-depth: 1
         continue-on-error: true
 
       - name: Prepare gh-pages structure

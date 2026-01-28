@@ -3,8 +3,8 @@
 # =============================================================================
 # This action sets up everything needed to run comfy-test:
 # - Python
-# - Playwright browser (CACHED to save ~2-3 min per run)
 # - uv (fast pip replacement)
+# - Playwright browser (CACHED to save ~2-3 min per run)
 # - comfy-test itself
 #
 # Usage in workflow:
@@ -36,31 +36,39 @@ runs:
         python-version: ${{ inputs.python-version }}
 
     # -------------------------------------------------------------------------
-    # Step 2: Cache Playwright browser
-    # -------------------------------------------------------------------------
-    # Playwright downloads ~250MB chromium browser. Caching saves 2-3 min.
-    # Cache key is per-OS since browser binaries are platform-specific.
-    - name: Cache Playwright browsers
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/ms-playwright
-          ~/Library/Caches/ms-playwright
-          ~/AppData/Local/ms-playwright
-        key: playwright-${{ runner.os }}-chromium
-
-    # -------------------------------------------------------------------------
-    # Step 3: Install uv (fast pip replacement)
+    # Step 2: Install uv (fast pip replacement)
     # -------------------------------------------------------------------------
     - name: Install uv
       shell: bash
       run: pip install uv
 
     # -------------------------------------------------------------------------
-    # Step 4: Install comfy-test (ALWAYS FRESH - not cached)
+    # Step 3: Cache Playwright browser
     # -------------------------------------------------------------------------
-    # We install from the checkout, not from cache, so changes to comfy-test
-    # are picked up immediately.
+    # Playwright downloads ~250MB chromium browser. Caching saves 2-3 min.
+    # Cache key is per-OS since browser binaries are platform-specific.
+    - name: Get Playwright cache path
+      id: playwright-cache
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          # Use forward slashes for bash compatibility
+          echo "path=$(echo $LOCALAPPDATA | sed 's/\\/\//g')/ms-playwright" >> $GITHUB_OUTPUT
+        elif [ "$RUNNER_OS" = "macOS" ]; then
+          echo "path=$HOME/Library/Caches/ms-playwright" >> $GITHUB_OUTPUT
+        else
+          echo "path=$HOME/.cache/ms-playwright" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Cache Playwright browsers
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.playwright-cache.outputs.path }}
+        key: playwright-${{ runner.os }}-chromium
+
+    # -------------------------------------------------------------------------
+    # Step 4: Install comfy-test
+    # -------------------------------------------------------------------------
     - name: Install comfy-test
       shell: bash
       run: pip install "${{ inputs.comfy-test-path }}[screenshot]"
@@ -70,10 +78,9 @@ runs:
     # -------------------------------------------------------------------------
     # If cached, this just verifies the browser exists (~1 sec).
     # If not cached, downloads chromium (~2-3 min).
-    # install-deps installs system dependencies (apt/brew) - can't be cached.
     - name: Install Playwright
       shell: bash
       run: |
         playwright install chromium
-        # install-deps may fail on some systems (e.g., macOS), that's ok
+        # install-deps installs system dependencies - can fail on some systems
         playwright install-deps chromium || true
