@@ -45,6 +45,37 @@ def get_node_reqs(node_dir: Path) -> List[Tuple[str, str]]:
     return result
 
 
+def get_env_vars(node_dir: Path) -> dict:
+    """
+    Read [env_vars] section from comfy-env.toml.
+
+    Only used in CI environments where env vars can't persist between runs.
+
+    Args:
+        node_dir: Path to the custom node directory
+
+    Returns:
+        Dict of env var name -> value
+    """
+    import os
+
+    # Only apply in CI environments
+    if not os.environ.get("CI") and not os.environ.get("GITHUB_ACTIONS"):
+        return {}
+
+    config_path = Path(node_dir) / "comfy-env.toml"
+    if not config_path.exists():
+        return {}
+
+    try:
+        config = tomllib.loads(config_path.read_text())
+    except Exception:
+        return {}
+
+    env_vars = config.get("env_vars", {})
+    return {str(k): str(v) for k, v in env_vars.items()}
+
+
 def get_cuda_packages(node_dir: Path) -> List[str]:
     """
     Read comfy-env.toml and return list of CUDA package names.

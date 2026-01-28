@@ -41,12 +41,14 @@ class ComfyUIServer:
         port: int = 8188,
         cuda_mock_packages: Optional[List[str]] = None,
         log_callback: Optional[Callable[[str], None]] = None,
+        env_vars: Optional[dict] = None,
     ):
         self.platform = platform
         self.paths = paths
         self.config = config
         self.port = port
         self.cuda_mock_packages = cuda_mock_packages or []
+        self.env_vars = env_vars or {}
         self._log = log_callback or (lambda msg: print(msg))
         self._extra_log_listeners: List[Callable[[str], None]] = []
         self._process: Optional[subprocess.Popen] = None
@@ -90,8 +92,14 @@ class ComfyUIServer:
 
         self._log(f"Starting ComfyUI server on port {self.port}...")
 
-        # Prepare extra env vars for CUDA mock injection
+        # Prepare extra env vars
         extra_env = {}
+
+        # Add env_vars from comfy-env.toml (CI only)
+        if self.env_vars:
+            extra_env.update(self.env_vars)
+
+        # Add CUDA mock injection
         if self.cuda_mock_packages:
             extra_env["COMFY_TEST_MOCK_PACKAGES"] = ",".join(self.cuda_mock_packages)
             extra_env["COMFY_TEST_STRICT_IMPORTS"] = "1"

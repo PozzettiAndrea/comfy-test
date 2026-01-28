@@ -50,7 +50,7 @@ class ProgressSpinner:
         elapsed = int(time.time() - self.start_time)
         mins, secs = divmod(elapsed, 60)
         print(f"[{mins:02d}:{secs:02d}] {self.workflow_name} [{self.current}/{self.total}] - {status}")
-from .comfy_env import get_cuda_packages, get_node_reqs
+from .comfy_env import get_cuda_packages, get_env_vars, get_node_reqs
 from .platform import get_platform, TestPlatform, TestPaths
 from .platform.isolation import WindowsIsolation
 from ..comfyui.server import ComfyUIServer
@@ -482,6 +482,11 @@ class TestManager:
                 elif cuda_packages:
                     self._log(f"Found CUDA packages to mock: {', '.join(cuda_packages)}")
 
+                # Get env_vars from comfy-env.toml (CI only)
+                env_vars = get_env_vars(self.node_dir)
+                if env_vars:
+                    self._log(f"Applying env_vars from comfy-env.toml: {', '.join(f'{k}={v}' for k, v in env_vars.items())}")
+
                 # === Start server for remaining levels ===
                 # Node discovery happens via ComfyUI's own loading mechanism
                 self._log("\nStarting ComfyUI server...")
@@ -489,6 +494,7 @@ class TestManager:
                     platform, paths, self.config,
                     cuda_mock_packages=cuda_packages,
                     log_callback=self._log,
+                    env_vars=env_vars,
                 ) as server:
                     api = server.get_api()
 
