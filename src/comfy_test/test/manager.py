@@ -848,25 +848,18 @@ class TestManager:
         self._check_unicode_characters()
 
     def _check_unicode_characters(self) -> None:
-        """Check Python files for problematic unicode characters.
+        """Check Python files for characters that can't encode on Windows (cp1252).
 
-        Scans all .py files in the node directory for characters that can
-        cause issues on Windows, such as curly quotes (often copy-pasted
-        from documentation).
+        Scans all .py files in the node directory for any characters that
+        cannot be encoded in Windows cp1252 codepage. This catches:
+        - Curly quotes (copy-pasted from documentation)
+        - Emoji and symbols (checkmarks, warning signs, etc.)
+        - Non-Latin characters
 
         Raises:
-            TestError: If problematic characters are found
+            TestError: If non-cp1252 characters are found
         """
-        # Problematic characters and their safe replacements
-        problematic_chars = {
-            '\u2018': "'",  # Left single quote
-            '\u2019': "'",  # Right single quote
-            '\u201c': '"',  # Left double quote
-            '\u201d': '"',  # Right double quote
-            '\u2013': '-',  # En dash
-            '\u2014': '-',  # Em dash
-            '\u2026': '...',  # Ellipsis
-        }
+        import unicodedata
 
         issues = []
 
@@ -874,7 +867,7 @@ class TestManager:
             # Skip common non-source directories
             rel_path = py_file.relative_to(self.node_dir)
             parts = rel_path.parts
-            skip_dirs = {'.git', '__pycache__', '.venv', 'venv', 'node_modules', 'site-packages', 'lib', 'Lib'}
+            skip_dirs = {'.git', '__pycache__', '.venv', 'venv', 'node_modules', 'site-packages', 'lib', 'Lib', '.pixi'}
             if any(p in skip_dirs or p.startswith('_env_') or p.startswith('.') for p in parts):
                 continue
 
@@ -886,20 +879,13 @@ class TestManager:
 
             file_issues = []
             for line_num, line in enumerate(content.splitlines(), 1):
-                for char, replacement in problematic_chars.items():
-                    if char in line:
-                        col = line.index(char) + 1
-                        char_name = {
-                            '\u2018': 'left single quote',
-                            '\u2019': 'right single quote',
-                            '\u201c': 'left double quote',
-                            '\u201d': 'right double quote',
-                            '\u2013': 'en dash',
-                            '\u2014': 'em dash',
-                            '\u2026': 'ellipsis',
-                        }.get(char, f'U+{ord(char):04X}')
+                for col, char in enumerate(line, 1):
+                    try:
+                        char.encode('cp1252')
+                    except UnicodeEncodeError:
+                        char_name = unicodedata.name(char, f'U+{ord(char):04X}')
                         file_issues.append(
-                            f"  Line {line_num}, col {col}: {char_name} ({repr(char)}) - use {repr(replacement)}"
+                            f"  Line {line_num}, col {col}: {char_name} ({repr(char)}) - not encodable in cp1252"
                         )
 
             if file_issues:
@@ -907,11 +893,11 @@ class TestManager:
 
         if issues:
             raise TestError(
-                "Problematic unicode characters found in Python files",
-                "These characters can cause issues on Windows:\n\n" + "\n\n".join(issues)
+                "Non-ASCII characters found that can't encode on Windows (cp1252)",
+                "Replace with ASCII equivalents:\n\n" + "\n\n".join(issues)
             )
 
-        self._log("Unicode check: OK (no problematic characters found)")
+        self._log("Unicode check: OK (all characters cp1252-safe)")
 
     def _get_workflow_files(self) -> List[Path]:
         """Get workflow files configured for execution.
