@@ -1,20 +1,6 @@
 # =============================================================================
 # Composite Action: Setup comfy-test environment
 # =============================================================================
-# This action sets up everything needed to run comfy-test:
-# - Python
-# - uv (fast pip replacement)
-# - Playwright browser (CACHED to save ~2-3 min per run)
-# - ComfyUI Portable (CACHED for windows-portable platform)
-# - comfy-test itself
-#
-# Usage in workflow:
-#   - uses: ./.comfy-test-src/.github/actions/setup
-#     with:
-#       python-version: "3.11"
-#       platform: "windows-portable"  # optional
-# =============================================================================
-
 name: Setup comfy-test environment
 description: Sets up Python, Playwright (cached), and comfy-test
 
@@ -32,9 +18,7 @@ inputs:
 runs:
   using: composite
   steps:
-    # -------------------------------------------------------------------------
-    # Step 1: Restore Playwright cache
-    # -------------------------------------------------------------------------
+    # === RESTORE CACHES ===
     - name: Restore Playwright cache
       id: playwright-cache
       uses: actions/cache/restore@v4
@@ -45,9 +29,16 @@ runs:
           ~/AppData/Local/ms-playwright
         key: playwright-${{ runner.os }}-chromium
 
-    # -------------------------------------------------------------------------
-    # Step 2: Restore ComfyUI Portable cache (windows-portable only)
-    # -------------------------------------------------------------------------
+    - name: Restore pip cache
+      id: pip-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/Library/Caches/pip
+          ~/AppData/Local/pip/Cache
+        key: pip-${{ runner.os }}-py${{ inputs.python-version }}
+
     - name: Restore Portable cache
       if: inputs.platform == 'windows-portable'
       id: portable-cache
@@ -56,40 +47,46 @@ runs:
         path: ~/.comfy-test/cache/portable
         key: comfyui-portable-${{ runner.os }}
 
-    # -------------------------------------------------------------------------
-    # Step 3: Setup Python
-    # -------------------------------------------------------------------------
-    - name: Setup Python ${{ inputs.python-version }}
+    # === SETUP ===
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: ${{ inputs.python-version }}
 
-    # -------------------------------------------------------------------------
-    # Step 4: Install uv (fast pip replacement)
-    # -------------------------------------------------------------------------
     - name: Install uv
       shell: bash
       run: pip install uv
 
-    # -------------------------------------------------------------------------
-    # Step 5: Install comfy-test
-    # -------------------------------------------------------------------------
-    - name: Install comfy-test
-      shell: bash
-      run: pip install "${{ inputs.comfy-test-path }}[screenshot]"
-
-    # -------------------------------------------------------------------------
-    # Step 6: Install Playwright browser
-    # -------------------------------------------------------------------------
-    - name: Install Playwright
+    - name: Install Playwright browser
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
+        pip install playwright
         playwright install chromium
         playwright install-deps chromium || true
 
-    # -------------------------------------------------------------------------
-    # Step 7: Save Playwright cache (immediately after download)
-    # -------------------------------------------------------------------------
+    - name: Download and extract Portable
+      if: inputs.platform == 'windows-portable' && steps.portable-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        CACHE_DIR="$HOME/.comfy-test/cache/portable"
+        mkdir -p "$CACHE_DIR"
+        VERSION=$(curl -s https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Latest version: $VERSION"
+        ARCHIVE="$CACHE_DIR/ComfyUI_portable_${VERSION}.7z"
+        EXTRACT_DIR="$CACHE_DIR/ComfyUI_portable_${VERSION}"
+        if [ ! -f "$ARCHIVE" ]; then
+          echo "Downloading..."
+          curl -L -o "$ARCHIVE" "https://github.com/comfyanonymous/ComfyUI/releases/download/${VERSION}/ComfyUI_windows_portable_nvidia.7z"
+        fi
+        if [ ! -d "$EXTRACT_DIR" ] || [ -z "$(ls -A "$EXTRACT_DIR" 2>/dev/null)" ]; then
+          echo "Extracting..."
+          mkdir -p "$EXTRACT_DIR"
+          7z x "$ARCHIVE" -o"$EXTRACT_DIR" -y
+        fi
+        echo "Portable ready at: $EXTRACT_DIR"
+
+    # === SAVE CACHES ===
     - name: Save Playwright cache
       if: steps.playwright-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
@@ -100,43 +97,24 @@ runs:
           ~/AppData/Local/ms-playwright
         key: playwright-${{ runner.os }}-chromium
 
-    # -------------------------------------------------------------------------
-    # Step 8: Download and extract Portable (windows-portable only, if cache miss)
-    # -------------------------------------------------------------------------
-    - name: Download and extract Portable
-      if: inputs.platform == 'windows-portable' && steps.portable-cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        python -c "
-        from comfy_test.test.platform.windows_portable import WindowsPortableTestPlatform, _get_cache_dir
-        import requests
-        from pathlib import Path
+    - name: Save pip cache
+      if: steps.pip-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/Library/Caches/pip
+          ~/AppData/Local/pip/Cache
+        key: pip-${{ runner.os }}-py${{ inputs.python-version }}
 
-        platform = WindowsPortableTestPlatform(log=print)
-        cache_dir = _get_cache_dir()
-
-        # Get latest version
-        version = platform._get_latest_release_tag()
-        archive_path = cache_dir / f'ComfyUI_portable_{version}.7z'
-        extract_dir = cache_dir / f'ComfyUI_portable_{version}'
-
-        # Download if not exists
-        if not archive_path.exists():
-            platform._download_portable(version, archive_path)
-
-        # Extract if not exists
-        if not extract_dir.exists() or not any(extract_dir.iterdir()):
-            platform._extract_7z(archive_path, extract_dir)
-
-        print(f'Portable ready at: {extract_dir}')
-        "
-
-    # -------------------------------------------------------------------------
-    # Step 9: Save Portable cache (immediately after download/extract)
-    # -------------------------------------------------------------------------
     - name: Save Portable cache
       if: inputs.platform == 'windows-portable' && steps.portable-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ~/.comfy-test/cache/portable
         key: comfyui-portable-${{ runner.os }}
+
+    # === INSTALL COMFY-TEST (after caches saved) ===
+    - name: Install comfy-test
+      shell: bash
+      run: pip install "${{ inputs.comfy-test-path }}[screenshot]"
