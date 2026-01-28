@@ -54,6 +54,8 @@ jobs:
     needs: parse-config
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Free disk space
         run: |
@@ -127,6 +129,8 @@ jobs:
     needs: parse-config
     runs-on: macos-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
@@ -327,6 +331,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       COMFY_TEST_GPU: "1"
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
@@ -527,6 +532,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       COMFY_TEST_GPU: "1"
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout node
         uses: actions/checkout@v4
