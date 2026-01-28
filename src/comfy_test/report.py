@@ -1375,3 +1375,103 @@ def has_platform_subdirs(output_dir: Path) -> bool:
         if (platform_dir / 'index.html').exists():
             return True
     return False
+
+
+def generate_branch_root_index(output_dir: Path, repo_name: Optional[str] = None) -> Path:
+    """Generate root index.html with branch switcher tabs.
+
+    Creates a tabbed interface that shows available branches (main, dev, etc.)
+    with a button to switch to non-main branches in the top-right corner.
+
+    Args:
+        output_dir: Parent directory containing branch subdirectories (main/, dev/, etc.)
+        repo_name: Optional repository name for the header
+
+    Returns:
+        Path to the generated index.html file
+    """
+    title = f"{repo_name} Test Results" if repo_name else "ComfyUI Test Results"
+
+    # Discover available branches (any directory with an index.html)
+    branches = []
+    for subdir in sorted(output_dir.iterdir()):
+        if subdir.is_dir() and (subdir / 'index.html').exists():
+            # Skip platform directories (they're inside branch dirs)
+            if subdir.name not in [p['id'] for p in PLATFORMS]:
+                branches.append(subdir.name)
+
+    # Ensure 'main' is first if it exists
+    if 'main' in branches:
+        branches.remove('main')
+        branches.insert(0, 'main')
+
+    branches_json = json.dumps(branches)
+
+    html_content = f'''<!DOCTYPE html>
+<html>
+<head>
+  <title>{html.escape(title)}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; margin: 0; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; display: flex; flex-direction: column; }}
+    header {{ display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: #16213e; border-bottom: 1px solid #0f3460; }}
+    h1 {{ margin: 0; font-size: 20px; }}
+    h1 a {{ color: #fff; text-decoration: none; }}
+    h1 a:hover {{ color: #4da6ff; }}
+    .branch-switcher {{ display: flex; gap: 8px; align-items: center; }}
+    .branch-btn {{ padding: 8px 16px; background: #0f3460; border: none; color: #888; cursor: pointer; border-radius: 6px; font-size: 13px; transition: all 0.2s; }}
+    .branch-btn:hover {{ background: #1f4470; color: #fff; }}
+    .branch-btn.active {{ background: #4da6ff; color: #fff; }}
+    .branch-btn.main {{ background: #0f3460; }}
+    .branch-btn.main.active {{ background: #22c55e; color: #fff; }}
+    iframe {{ flex: 1; width: 100%; border: none; background: #1a1a2e; }}
+    .current-branch {{ color: #888; font-size: 12px; margin-right: 8px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1><a href="https://github.com/{html.escape(repo_name or '')}">{html.escape(title)}</a></h1>
+    <div class="branch-switcher">
+      <span class="current-branch">Branch:</span>
+      <div id="branch-tabs"></div>
+    </div>
+  </header>
+  <iframe id="frame" src="about:blank"></iframe>
+  <script>
+    const branches = {branches_json};
+    const tabs = document.getElementById('branch-tabs');
+    const frame = document.getElementById('frame');
+    let activeTab = null;
+
+    function init() {{
+      branches.forEach(function(branch) {{
+        const btn = document.createElement('button');
+        btn.className = 'branch-btn' + (branch === 'main' ? ' main' : '');
+        btn.textContent = branch;
+        btn.onclick = function() {{
+          document.querySelectorAll('.branch-btn').forEach(function(t) {{ t.classList.remove('active'); }});
+          btn.classList.add('active');
+          frame.src = branch + '/index.html';
+          activeTab = branch;
+          history.replaceState(null, '', '#' + branch);
+        }};
+        tabs.appendChild(btn);
+
+        // Auto-select from hash or default to main
+        const hash = location.hash.slice(1);
+        if (hash === branch || (!activeTab && branch === 'main') || (!activeTab && branches.indexOf('main') === -1 && branch === branches[0])) {{
+          btn.click();
+        }}
+      }});
+    }}
+
+    init();
+  </script>
+</body>
+</html>
+'''
+
+    index_file = output_dir / 'index.html'
+    index_file.write_text(html_content)
+    return index_file

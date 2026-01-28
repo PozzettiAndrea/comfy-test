@@ -386,24 +386,43 @@ jobs:
       - name: Prepare gh-pages structure
         run: |
           mkdir -p gh-pages
-          # Copy each platform's results to gh-pages
+          # Auto-detect branch: use branch name as subdirectory on push events
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BRANCH="${{ github.ref_name }}"
+            TARGET="gh-pages/$BRANCH"
+          else
+            # For PRs, use a temp directory that won't be published
+            TARGET="gh-pages/_pr"
+          fi
+          # Clear only the target directory (preserve other branch subdirs)
+          rm -rf "$TARGET"
+          mkdir -p "$TARGET"
+          # Copy each platform's results to target
           for dir in artifacts/results-*; do
             if [ -d "$dir" ]; then
               name=$(basename "$dir" | sed 's/results-//')
-              rm -rf "gh-pages/$name"
-              mkdir -p "gh-pages/$name"
-              cp -r "$dir"/* "gh-pages/$name/" 2>/dev/null || true
+              mkdir -p "$TARGET/$name"
+              cp -r "$dir"/* "$TARGET/$name/" 2>/dev/null || true
             fi
           done
           touch gh-pages/.nojekyll
+          # Store branch name for later steps
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "TARGET=$TARGET" >> $GITHUB_ENV
 
-      - name: Generate index page
-        run: comfy-test generate-index gh-pages --repo-name "${{ github.repository }}"
+      - name: Generate branch index page
+        if: github.event_name == 'push'
+        run: comfy-test generate-index "gh-pages/$BRANCH" --repo-name "${{ github.repository }}"
+
+      - name: Generate root index with branch switcher
+        if: github.event_name == 'push'
+        run: comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
 
       - name: Publish to gh-pages
+        if: github.event_name == 'push'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: gh-pages
-          keep_files: false
+          keep_files: true
