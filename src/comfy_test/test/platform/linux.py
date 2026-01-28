@@ -19,10 +19,7 @@ PYPI_INDEX = "https://pypi.org/simple"
 
 
 class LinuxTestPlatform(TestPlatform):
-    """Linux platform implementation for ComfyUI testing.
-
-    Uses system Python directly (no venv) for simpler, faster tests.
-    """
+    """Linux platform implementation for ComfyUI testing."""
 
     @property
     def name(self) -> str:
@@ -36,7 +33,7 @@ class LinuxTestPlatform(TestPlatform):
         """Install requirements with proper PyTorch index for GPU/CPU mode."""
         gpu_mode = os.environ.get("COMFY_TEST_GPU")
 
-        cmd = ["uv", "pip", "install", "--system"]
+        cmd = ["uv", "pip", "install"]
 
         # Use local wheels if available (for local testing with ct test)
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
