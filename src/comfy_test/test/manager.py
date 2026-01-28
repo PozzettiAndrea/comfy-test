@@ -419,7 +419,7 @@ class TestManager:
                     # Use existing ComfyUI directory (skip clone + requirements)
                     self._log(f"Using existing ComfyUI: {comfyui_dir}")
                     import sys
-                    comfyui_path = Path(comfyui_dir)
+                    comfyui_path = Path(comfyui_dir).resolve()
 
                     # For portable, find embedded Python
                     if platform_name == "windows_portable":
