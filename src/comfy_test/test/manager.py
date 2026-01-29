@@ -219,7 +219,7 @@ class TestManager:
 
     def _get_output_base(self) -> Path:
         """Get the base output directory for logs, screenshots, results."""
-        return self.output_dir if self.output_dir else (self.node_dir / ".comfy-test")
+        return self.output_dir if self.output_dir else (self.node_dir / "comfy-test-results")
 
     def _log(self, msg: str) -> None:
         """Log message with timestamp, write to file immediately."""

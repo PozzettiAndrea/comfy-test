@@ -63,6 +63,7 @@ venv.bak/
 
 # Test artifacts
 .comfy-test/
+comfy-test-results/
 
 # Jupyter
 .ipynb_checkpoints/

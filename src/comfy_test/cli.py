@@ -924,8 +924,8 @@ def main(args=None) -> int:
     )
     merge_parser.add_argument(
         "--output-dir", "-o",
-        default=".comfy-test",
-        help="Directory with test results (default: .comfy-test)",
+        default="comfy-test-results",
+        help="Directory with test results (default: comfy-test-results)",
     )
     merge_parser.set_defaults(func=cmd_merge)
 

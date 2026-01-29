@@ -33,7 +33,7 @@ class LinuxTestPlatform(TestPlatform):
         """Install requirements with proper PyTorch index for GPU/CPU mode."""
         gpu_mode = os.environ.get("COMFY_TEST_GPU")
 
-        cmd = ["uv", "pip", "install"]
+        cmd = ["uv", "pip", "install", "--system"]
 
         # Use local wheels if available (for local testing with ct test)
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")

@@ -131,7 +131,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: results-linux-cpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -174,7 +174,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: results-macos-cpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -217,7 +217,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: results-windows-cpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -261,7 +261,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: results-windows-portable-cpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -296,7 +296,7 @@ jobs:
         if: always()
         with:
           name: results-linux-gpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -327,7 +327,7 @@ jobs:
         if: always()
         with:
           name: results-windows-gpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -359,7 +359,7 @@ jobs:
         if: always()
         with:
           name: results-windows-portable-gpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -390,7 +390,7 @@ jobs:
         if: always()
         with:
           name: results-macos-gpu
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
 

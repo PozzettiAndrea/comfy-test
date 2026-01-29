@@ -151,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-logs-linux
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
 
   test-windows:
@@ -210,7 +210,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-logs-windows
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore
 
   test-windows-portable:
@@ -266,5 +266,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-logs-windows-portable
-          path: .comfy-test/
+          path: comfy-test-results/
           if-no-files-found: ignore

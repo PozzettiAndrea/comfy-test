@@ -517,7 +517,7 @@ def run_windows_docker(
             # Copy results out (from custom node directory)
             log("Copying results...")
             subprocess.run(
-                ["docker", "cp", f"{container_id}:C:/ComfyUI/custom_nodes/{node_name}/.comfy-test/.", str(output_dir)],
+                ["docker", "cp", f"{container_id}:C:/ComfyUI/custom_nodes/{node_name}/comfy-test-results/.", str(output_dir)],
                 capture_output=True  # May fail if no results
             )
 
@@ -639,7 +639,7 @@ def run_linux_pooled(
         # Copy results back
         log("Copying results...")
         subprocess.run(
-            ["docker", "cp", f"{container_id}:/work/node/.comfy-test/.", str(output_dir)],
+            ["docker", "cp", f"{container_id}:/work/node/comfy-test-results/.", str(output_dir)],
             capture_output=True  # May fail if no results
         )
 
@@ -848,7 +848,7 @@ def run_local(
         playwright_cache = Path.home() / ".cache" / "ms-playwright"
         container_opts = [
             "-t",  # Allocate pseudo-TTY to force line-buffered output
-            f"-v {output_dir}:{work_dir}/.comfy-test",
+            f"-v {output_dir}:{work_dir}/comfy-test-results",  # Mount results to container's actual working path
             f"-v {playwright_cache}:/root/.cache/ms-playwright",  # Cache Playwright browsers
             "--shm-size=8g",  # Default 64MB is too small for ML tensor transfer
             "--memory=8g",  # Limit memory to allow parallel test runs
