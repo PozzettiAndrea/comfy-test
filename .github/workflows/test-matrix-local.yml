@@ -89,13 +89,13 @@ jobs:
         run: |
           if ls .wheels/comfy_test-*.whl 1>/dev/null 2>&1; then
             echo "Installing comfy-test from pre-built wheel"
-            uv pip install --force-reinstall .wheels/comfy_test-*.whl
-            uv pip install playwright pillow  # screenshot extras
+            pip install --force-reinstall .wheels/comfy_test-*.whl
+            pip install playwright pillow  # screenshot extras
           elif [ -d ".local-comfy-test" ]; then
             echo "Installing comfy-test from local copy"
-            uv pip install ".local-comfy-test[screenshot]"
+            pip install ".local-comfy-test[screenshot]"
           else
-            uv pip install "./.comfy-test-src[screenshot]"
+            pip install "./.comfy-test-src[screenshot]"
           fi
 
       - name: Install Playwright
@@ -107,17 +107,17 @@ jobs:
         run: |
           if ls .wheels/comfy_env-*.whl 1>/dev/null 2>&1; then
             echo "Installing comfy-env from pre-built wheel"
-            uv pip install --force-reinstall .wheels/comfy_env-*.whl
+            pip install --force-reinstall .wheels/comfy_env-*.whl
           elif [ -d ".local-comfy-env" ]; then
             echo "Installing comfy-env from local copy"
-            uv pip install --force-reinstall .local-comfy-env
+            pip install --force-reinstall .local-comfy-env
           fi
 
       - name: Install local comfy-3d-viewers
         run: |
           if ls .wheels/comfy_3d_viewers-*.whl 1>/dev/null 2>&1; then
             echo "Installing comfy-3d-viewers from pre-built wheel"
-            uv pip install --force-reinstall .wheels/comfy_3d_viewers-*.whl
+            pip install --force-reinstall .wheels/comfy_3d_viewers-*.whl
           fi
 
       - name: Syntax
@@ -179,7 +179,7 @@ jobs:
         run: pip install uv
 
       - name: Install comfy-test
-        run: uv pip install ./.comfy-test-src
+        run: pip install ./.comfy-test-src
 
       - name: Syntax
         id: syntax
@@ -235,7 +235,7 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Install comfy-test
-        run: pip install uv && uv pip install ./.comfy-test-src
+        run: pip install ./.comfy-test-src
 
       - name: Syntax
         id: syntax

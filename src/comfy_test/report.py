@@ -1094,11 +1094,8 @@ def _render_report(
             const gpuLegend = document.getElementById('gpu-legend');
 
             try {{
-                // Fetch CSV and metadata in parallel
-                const [csvResponse, metaResponse] = await Promise.all([
-                    fetch('hardware_logs/' + workflowName + '.csv'),
-                    fetch('hardware_logs/_meta.json')
-                ]);
+                // Fetch CSV from logs folder
+                const csvResponse = await fetch('logs/' + workflowName + '_resources.csv');
 
                 if (!csvResponse.ok) {{
                     graphContainer.classList.remove('active');
@@ -1106,23 +1103,28 @@ def _render_report(
                 }}
 
                 const text = await csvResponse.text();
-                const lines = text.trim().split('\\n').slice(1); // Skip header
+                const allLines = text.trim().split('\\n');
 
-                if (lines.length < 2) {{
+                // Parse metadata from first line comment: # cpu_count=X,total_ram_gb=Y
+                let cpuCount = 8, totalRamGb = 32;
+                if (allLines[0].startsWith('#')) {{
+                    const metaMatch = allLines[0].match(/cpu_count=(\\d+),total_ram_gb=([\\d.]+)/);
+                    if (metaMatch) {{
+                        cpuCount = parseInt(metaMatch[1]);
+                        totalRamGb = parseFloat(metaMatch[2]);
+                    }}
+                }}
+
+                // Skip comment and header lines
+                const dataLines = allLines.slice(2);
+
+                if (dataLines.length < 2) {{
                     graphContainer.classList.remove('active');
                     return;
                 }}
 
-                // Get metadata for scaling (fallback to reasonable defaults)
-                let cpuCount = 8, totalRamGb = 32;
-                if (metaResponse.ok) {{
-                    const meta = await metaResponse.json();
-                    cpuCount = meta.cpu_count || 8;
-                    totalRamGb = meta.total_ram_gb || 32;
-                }}
-
                 // Parse CSV (t,cpu_cores,ram_gb,gpu_pct)
-                const data = lines.map(line => {{
+                const data = dataLines.map(line => {{
                     const [t, cpu, ram, gpu] = line.split(',');
                     return {{
                         t: parseFloat(t),

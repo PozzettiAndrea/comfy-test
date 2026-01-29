@@ -118,8 +118,9 @@ jobs:
           python-version: ${{ needs.parse-config.outputs.python-version }}
 
       # Install comfy-test (not cached, always fresh from repo)
+      # Use pip since venv is in PATH; uv can't auto-detect venv at ~/venv
       - name: Install comfy-test
-        run: uv pip install "./.comfy-test-src[screenshot]"
+        run: pip install "./.comfy-test-src[screenshot]"
 
       # Run tests using cached ComfyUI
       - name: Run tests
@@ -164,7 +165,7 @@ jobs:
           python-version: ${{ needs.parse-config.outputs.python-version }}
 
       - name: Install comfy-test
-        run: uv pip install "./.comfy-test-src[screenshot]"
+        run: pip install "./.comfy-test-src[screenshot]"
 
       - name: Run tests
         run: comfy-test run --platform macos --comfyui-dir ~/venv/ComfyUI -c ${{ inputs.config-file }}
@@ -207,7 +208,7 @@ jobs:
           python-version: ${{ needs.parse-config.outputs.python-version }}
 
       - name: Install comfy-test
-        run: uv pip install "./.comfy-test-src[screenshot]"
+        run: pip install "./.comfy-test-src[screenshot]"
 
       - name: Run tests
         run: comfy-test run --platform windows --comfyui-dir ~/venv/ComfyUI -c ${{ inputs.config-file }}
@@ -251,7 +252,7 @@ jobs:
           platform: windows-portable
 
       - name: Install comfy-test
-        run: uv pip install "./.comfy-test-src[screenshot]"
+        run: pip install "./.comfy-test-src[screenshot]"
 
       - name: Run tests
         run: comfy-test run --platform windows-portable --comfyui-dir ~/venv/ComfyUI_windows_portable/ComfyUI -c ${{ inputs.config-file }}
@@ -290,7 +291,7 @@ jobs:
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
-      - run: uv pip install "./.comfy-test-src[screenshot]"
+      - run: pip install "./.comfy-test-src[screenshot]"
       - run: comfy-test run --platform linux --comfyui-dir ~/venv/ComfyUI -c ${{ inputs.config-file }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -321,7 +322,7 @@ jobs:
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
-      - run: uv pip install "./.comfy-test-src[screenshot]"
+      - run: pip install "./.comfy-test-src[screenshot]"
       - run: comfy-test run --platform windows --comfyui-dir ~/venv/ComfyUI -c ${{ inputs.config-file }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -353,7 +354,7 @@ jobs:
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
           platform: windows-portable
-      - run: uv pip install "./.comfy-test-src[screenshot]"
+      - run: pip install "./.comfy-test-src[screenshot]"
       - run: comfy-test run --platform windows-portable --comfyui-dir ~/venv/ComfyUI_windows_portable/ComfyUI -c ${{ inputs.config-file }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -384,7 +385,7 @@ jobs:
       - uses: ./.comfy-test-src/.github/actions/setup
         with:
           python-version: ${{ needs.parse-config.outputs.python-version }}
-      - run: uv pip install "./.comfy-test-src[screenshot]"
+      - run: pip install "./.comfy-test-src[screenshot]"
       - run: comfy-test run --platform macos --comfyui-dir ~/venv/ComfyUI -c ${{ inputs.config-file }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -415,7 +416,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install uv && uv pip install ./.comfy-test-src
+      - run: pip install ./.comfy-test-src
 
       - name: Download all test artifacts
         uses: actions/download-artifact@v4
