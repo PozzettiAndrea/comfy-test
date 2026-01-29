@@ -16,8 +16,8 @@ class ResourceSample:
     """Single resource usage sample."""
 
     timestamp: float  # seconds since start
-    cpu_percent: float
-    ram_percent: float
+    cpu_cores: float  # effective cores used (e.g., 2.5 out of 10)
+    ram_gb: float  # RAM used in GB
     gpu_percent: float | None = None  # None if no GPU or CPU-only test
 
 
@@ -57,11 +57,16 @@ class ResourceMonitor:
         """Main monitoring loop - runs in background thread."""
         import psutil
 
+        cpu_count = psutil.cpu_count() or 1
+
         while not self._stop_event.is_set():
+            cpu_pct = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory()
+
             sample = ResourceSample(
                 timestamp=round(time.time() - self._start_time, 1),
-                cpu_percent=psutil.cpu_percent(interval=0.1),
-                ram_percent=psutil.virtual_memory().percent,
+                cpu_cores=round(cpu_pct * cpu_count / 100, 2),  # effective cores
+                ram_gb=round(mem.used / (1024**3), 2),  # GB used
                 gpu_percent=self._get_gpu_percent() if self.monitor_gpu else None,
             )
             self.samples.append(sample)
@@ -90,24 +95,31 @@ class ResourceMonitor:
 
     def get_summary(self) -> dict:
         """Return summary stats and timeline."""
+        import psutil
+
         if not self.samples:
             return {}
 
-        cpu_vals = [s.cpu_percent for s in self.samples]
-        ram_vals = [s.ram_percent for s in self.samples]
+        cpu_vals = [s.cpu_cores for s in self.samples]
+        ram_vals = [s.ram_gb for s in self.samples]
         gpu_vals = [s.gpu_percent for s in self.samples if s.gpu_percent is not None]
 
+        cpu_count = psutil.cpu_count() or 1
+        total_ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
+
         summary = {
-            "cpu": {"peak": max(cpu_vals), "avg": round(sum(cpu_vals) / len(cpu_vals), 1)},
-            "ram": {"peak": max(ram_vals), "avg": round(sum(ram_vals) / len(ram_vals), 1)},
+            "cpu": {"peak": max(cpu_vals), "avg": round(sum(cpu_vals) / len(cpu_vals), 2)},
+            "ram": {"peak": max(ram_vals), "avg": round(sum(ram_vals) / len(ram_vals), 2)},
+            "cpu_count": cpu_count,
+            "total_ram_gb": total_ram_gb,
             "samples": len(self.samples),
         }
         if gpu_vals:
             summary["gpu"] = {"peak": max(gpu_vals), "avg": round(sum(gpu_vals) / len(gpu_vals), 1)}
 
-        # Timeline - all samples
+        # Timeline - all samples (cpu in cores, ram in GB)
         timeline = [
-            {"t": s.timestamp, "cpu": s.cpu_percent, "ram": s.ram_percent, "gpu": s.gpu_percent}
+            {"t": s.timestamp, "cpu": s.cpu_cores, "ram": s.ram_gb, "gpu": s.gpu_percent}
             for s in self.samples
         ]
         summary["timeline"] = timeline

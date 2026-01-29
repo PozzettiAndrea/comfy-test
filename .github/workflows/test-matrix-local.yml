@@ -89,13 +89,13 @@ jobs:
         run: |
           if ls .wheels/comfy_test-*.whl 1>/dev/null 2>&1; then
             echo "Installing comfy-test from pre-built wheel"
-            pip install --force-reinstall .wheels/comfy_test-*.whl
-            pip install playwright pillow  # screenshot extras
+            uv pip install --force-reinstall .wheels/comfy_test-*.whl
+            uv pip install playwright pillow  # screenshot extras
           elif [ -d ".local-comfy-test" ]; then
             echo "Installing comfy-test from local copy"
-            pip install ".local-comfy-test[screenshot]"
+            uv pip install ".local-comfy-test[screenshot]"
           else
-            pip install "./.comfy-test-src[screenshot]"
+            uv pip install "./.comfy-test-src[screenshot]"
           fi
 
       - name: Install Playwright
@@ -107,17 +107,17 @@ jobs:
         run: |
           if ls .wheels/comfy_env-*.whl 1>/dev/null 2>&1; then
             echo "Installing comfy-env from pre-built wheel"
-            pip install --force-reinstall .wheels/comfy_env-*.whl
+            uv pip install --force-reinstall .wheels/comfy_env-*.whl
           elif [ -d ".local-comfy-env" ]; then
             echo "Installing comfy-env from local copy"
-            pip install --force-reinstall .local-comfy-env
+            uv pip install --force-reinstall .local-comfy-env
           fi
 
       - name: Install local comfy-3d-viewers
         run: |
           if ls .wheels/comfy_3d_viewers-*.whl 1>/dev/null 2>&1; then
             echo "Installing comfy-3d-viewers from pre-built wheel"
-            pip install --force-reinstall .wheels/comfy_3d_viewers-*.whl
+            uv pip install --force-reinstall .wheels/comfy_3d_viewers-*.whl
           fi
 
       - name: Syntax
@@ -129,22 +129,22 @@ jobs:
         if: always()
         run: |
           export COMFY_LOCAL_WHEELS="$(pwd)/.wheels"
-          comfy-test run --platform linux --only-level install --work-dir .comfy-test-env -c ${{ inputs.config-file || 'comfy-test.toml' }}
+          comfy-test run --platform linux --only-level install --work-dir ~/venv -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Registration
         id: registration
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform linux --only-level registration --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform linux --only-level registration --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Instantiation
         id: instantiation
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform linux --only-level instantiation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform linux --only-level instantiation --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Execution
         id: execution
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform linux --only-level execution --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform linux --only-level execution --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Upload logs
         if: always()
@@ -179,7 +179,7 @@ jobs:
         run: pip install uv
 
       - name: Install comfy-test
-        run: pip install ./.comfy-test-src
+        run: uv pip install ./.comfy-test-src
 
       - name: Syntax
         id: syntax
@@ -188,22 +188,22 @@ jobs:
       - name: Install
         id: install
         if: always()
-        run: comfy-test run --platform windows --only-level install --work-dir .comfy-test-env -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows --only-level install --work-dir ~/venv -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Registration
         id: registration
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows --only-level registration --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows --only-level registration --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Instantiation
         id: instantiation
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows --only-level instantiation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows --only-level instantiation --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Execution
         id: execution
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows --only-level execution --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows --only-level execution --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Upload logs
         if: always()
@@ -235,7 +235,7 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Install comfy-test
-        run: pip install ./.comfy-test-src
+        run: pip install uv && uv pip install ./.comfy-test-src
 
       - name: Syntax
         id: syntax
@@ -244,22 +244,22 @@ jobs:
       - name: Install
         id: install
         if: always()
-        run: comfy-test run --platform windows-portable --only-level install --work-dir .comfy-test-env -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows-portable --only-level install --work-dir ~/venv -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Registration
         id: registration
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows-portable --only-level registration --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows-portable --only-level registration --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Instantiation
         id: instantiation
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows-portable --only-level instantiation --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows-portable --only-level instantiation --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Execution
         id: execution
         if: always() && steps.install.outcome == 'success'
-        run: comfy-test run --platform windows-portable --only-level execution --work-dir .comfy-test-env --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
+        run: comfy-test run --platform windows-portable --only-level execution --work-dir ~/venv --skip-setup -c ${{ inputs.config-file || 'comfy-test.toml' }}
 
       - name: Upload logs
         if: always()

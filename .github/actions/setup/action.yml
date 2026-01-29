@@ -6,7 +6,7 @@
 # - ComfyUI clone + requirements
 # - Playwright browser
 #
-# Cached: .comfy-test-env/ (venv + ComfyUI + Playwright browser)
+# Cached: ~/venv (venv + ComfyUI + Playwright browser)
 # On cache hit: instant - no pip install needed
 # =============================================================================
 
@@ -34,47 +34,51 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          .comfy-test-env
+          ~/venv
           ~/.cache/ms-playwright
           ~/Library/Caches/ms-playwright
           ~/AppData/Local/ms-playwright
-        key: comfy-env-v2-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
+        key: comfy-env-v3-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
 
     - name: Setup environment (cache miss)
       if: steps.env-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        mkdir -p .comfy-test-env
+        mkdir -p ~/venv
 
         # Create venv
         echo "Creating venv..."
-        python -m venv .comfy-test-env/venv
+        python -m venv ~/venv/venv
 
         # Activate venv (cross-platform)
-        if [ -f ".comfy-test-env/venv/bin/activate" ]; then
-          source .comfy-test-env/venv/bin/activate
+        if [ -f ~/venv/venv/bin/activate ]; then
+          source ~/venv/venv/bin/activate
         else
-          source .comfy-test-env/venv/Scripts/activate
+          source ~/venv/venv/Scripts/activate
         fi
+
+        # Install uv first (bootstrap)
+        echo "Installing uv..."
+        pip install uv
 
         # Clone/download ComfyUI
         if [ "${{ inputs.platform }}" = "windows-portable" ]; then
           echo "Downloading ComfyUI Portable..."
-          curl -L --fail -o .comfy-test-env/portable.7z \
+          curl -L --fail -o ~/venv/portable.7z \
             "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
           echo "Extracting..."
-          "/c/Program Files/7-Zip/7z.exe" x .comfy-test-env/portable.7z -o".comfy-test-env" -y
-          rm .comfy-test-env/portable.7z
+          "/c/Program Files/7-Zip/7z.exe" x ~/venv/portable.7z -o"$HOME/venv" -y
+          rm ~/venv/portable.7z
         else
           echo "Cloning ComfyUI..."
-          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git .comfy-test-env/ComfyUI
+          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ~/venv/ComfyUI
           echo "Installing ComfyUI requirements..."
-          pip install -r .comfy-test-env/ComfyUI/requirements.txt
+          uv pip install -r ~/venv/ComfyUI/requirements.txt
         fi
 
-        # Install tools needed by comfy-test
-        echo "Installing uv and playwright..."
-        pip install uv playwright
+        # Install playwright
+        echo "Installing playwright..."
+        uv pip install playwright
 
         # Install Playwright browser
         echo "Installing Playwright browser..."
@@ -87,20 +91,20 @@ runs:
       run: |
         echo "Cache hit - venv ready to use"
         # Add venv to PATH for subsequent steps
-        if [ -d ".comfy-test-env/venv/bin" ]; then
-          echo ".comfy-test-env/venv/bin" >> $GITHUB_PATH
+        if [ -d ~/venv/venv/bin ]; then
+          echo "$HOME/venv/venv/bin" >> $GITHUB_PATH
         else
-          echo ".comfy-test-env/venv/Scripts" >> $GITHUB_PATH
+          echo "$HOME/venv/venv/Scripts" >> $GITHUB_PATH
         fi
 
     - name: Add venv to PATH (cache miss)
       if: steps.env-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        if [ -d ".comfy-test-env/venv/bin" ]; then
-          echo ".comfy-test-env/venv/bin" >> $GITHUB_PATH
+        if [ -d ~/venv/venv/bin ]; then
+          echo "$HOME/venv/venv/bin" >> $GITHUB_PATH
         else
-          echo ".comfy-test-env/venv/Scripts" >> $GITHUB_PATH
+          echo "$HOME/venv/venv/Scripts" >> $GITHUB_PATH
         fi
 
     - name: Save environment cache
@@ -108,8 +112,8 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: |
-          .comfy-test-env
+          ~/venv
           ~/.cache/ms-playwright
           ~/Library/Caches/ms-playwright
           ~/AppData/Local/ms-playwright
-        key: comfy-env-v2-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
+        key: comfy-env-v3-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}

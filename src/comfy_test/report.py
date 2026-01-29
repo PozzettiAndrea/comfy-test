@@ -901,9 +901,9 @@ def _render_report(
                 <div class="resource-graph-title">Resource Usage</div>
                 <canvas id="resource-canvas"></canvas>
                 <div class="resource-legend">
-                    <span><span class="dot cpu"></span> CPU</span>
-                    <span><span class="dot ram"></span> RAM</span>
-                    <span id="gpu-legend" style="display:none"><span class="dot gpu"></span> GPU</span>
+                    <span><span class="dot cpu"></span> CPU (cores)</span>
+                    <span><span class="dot ram"></span> RAM (GB)</span>
+                    <span id="gpu-legend" style="display:none"><span class="dot gpu"></span> GPU (%)</span>
                 </div>
             </div>
             <div class="lightbox-info">
@@ -1093,14 +1093,19 @@ def _render_report(
             const canvas = document.getElementById('resource-canvas');
             const gpuLegend = document.getElementById('gpu-legend');
 
-            // Try to fetch the CSV
             try {{
-                const response = await fetch('hardware_logs/' + workflowName + '.csv');
-                if (!response.ok) {{
+                // Fetch CSV and metadata in parallel
+                const [csvResponse, metaResponse] = await Promise.all([
+                    fetch('hardware_logs/' + workflowName + '.csv'),
+                    fetch('hardware_logs/_meta.json')
+                ]);
+
+                if (!csvResponse.ok) {{
                     graphContainer.classList.remove('active');
                     return;
                 }}
-                const text = await response.text();
+
+                const text = await csvResponse.text();
                 const lines = text.trim().split('\\n').slice(1); // Skip header
 
                 if (lines.length < 2) {{
@@ -1108,20 +1113,32 @@ def _render_report(
                     return;
                 }}
 
-                // Parse CSV
+                // Get metadata for scaling (fallback to reasonable defaults)
+                let cpuCount = 8, totalRamGb = 32;
+                if (metaResponse.ok) {{
+                    const meta = await metaResponse.json();
+                    cpuCount = meta.cpu_count || 8;
+                    totalRamGb = meta.total_ram_gb || 32;
+                }}
+
+                // Parse CSV (t,cpu_cores,ram_gb,gpu_pct)
                 const data = lines.map(line => {{
                     const [t, cpu, ram, gpu] = line.split(',');
                     return {{
                         t: parseFloat(t),
-                        cpu: parseFloat(cpu),
-                        ram: parseFloat(ram),
-                        gpu: gpu ? parseFloat(gpu) : null
+                        cpu: parseFloat(cpu),  // cores
+                        ram: parseFloat(ram),  // GB
+                        gpu: gpu ? parseFloat(gpu) : null  // %
                     }};
                 }});
 
                 // Check if we have GPU data
                 const hasGpu = data.some(d => d.gpu !== null);
                 gpuLegend.style.display = hasGpu ? 'flex' : 'none';
+
+                // Make container visible BEFORE measuring canvas
+                graphContainer.classList.add('active');
+                await new Promise(r => setTimeout(r, 10));
 
                 // Draw the graph
                 const ctx = canvas.getContext('2d');
@@ -1133,46 +1150,71 @@ def _render_report(
 
                 const w = rect.width;
                 const h = rect.height;
-                const padding = {{ top: 10, right: 10, bottom: 20, left: 35 }};
+                const padding = {{ top: 10, right: 40, bottom: 20, left: 45 }};
                 const graphW = w - padding.left - padding.right;
                 const graphH = h - padding.top - padding.bottom;
 
                 ctx.clearRect(0, 0, w, h);
 
+                // Calculate max values for scaling
+                const maxCpu = Math.max(...data.map(d => d.cpu), cpuCount * 0.5);
+                const maxRam = Math.max(...data.map(d => d.ram), totalRamGb * 0.5);
+                const maxTime = data[data.length - 1].t;
+
+                // Draw grid lines
+                ctx.strokeStyle = '#1a3a5c';
+                ctx.lineWidth = 0.5;
+                for (let i = 1; i < 4; i++) {{
+                    const y = padding.top + (graphH * i / 4);
+                    ctx.beginPath();
+                    ctx.moveTo(padding.left, y);
+                    ctx.lineTo(w - padding.right, y);
+                    ctx.stroke();
+                }}
+
                 // Draw axes
                 ctx.strokeStyle = '#333';
+                ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.moveTo(padding.left, padding.top);
                 ctx.lineTo(padding.left, h - padding.bottom);
                 ctx.lineTo(w - padding.right, h - padding.bottom);
+                ctx.lineTo(w - padding.right, padding.top);
                 ctx.stroke();
 
-                // Y-axis labels (0%, 50%, 100%)
-                ctx.fillStyle = '#666';
-                ctx.font = '10px sans-serif';
+                // Y-axis labels - LEFT (CPU cores, blue)
+                ctx.fillStyle = '#4da6ff';
+                ctx.font = '9px sans-serif';
                 ctx.textAlign = 'right';
-                ctx.fillText('100%', padding.left - 5, padding.top + 4);
-                ctx.fillText('50%', padding.left - 5, padding.top + graphH / 2 + 4);
-                ctx.fillText('0%', padding.left - 5, h - padding.bottom + 4);
+                const cpuMax = Math.ceil(maxCpu);
+                ctx.fillText(cpuMax + ' cores', padding.left - 3, padding.top + 4);
+                ctx.fillText('0', padding.left - 3, h - padding.bottom + 4);
+
+                // Y-axis labels - RIGHT (RAM GB, green)
+                ctx.fillStyle = '#22c55e';
+                ctx.textAlign = 'left';
+                const ramMax = Math.ceil(maxRam);
+                ctx.fillText(ramMax + ' GB', w - padding.right + 3, padding.top + 4);
+                ctx.fillText('0', w - padding.right + 3, h - padding.bottom + 4);
 
                 // X-axis labels (time)
-                const maxTime = data[data.length - 1].t;
+                ctx.fillStyle = '#666';
                 ctx.textAlign = 'center';
-                ctx.fillText('0s', padding.left, h - padding.bottom + 15);
-                ctx.fillText(maxTime.toFixed(0) + 's', w - padding.right, h - padding.bottom + 15);
+                ctx.fillText('0s', padding.left, h - padding.bottom + 12);
+                ctx.fillText(maxTime.toFixed(0) + 's', w - padding.right, h - padding.bottom + 12);
 
-                // Draw lines
-                function drawLine(values, color) {{
-                    if (values.every(v => v === null)) return;
+                // Draw line helper
+                function drawLine(values, maxVal, color) {{
+                    if (values.every(v => v === null || isNaN(v))) return;
                     ctx.strokeStyle = color;
                     ctx.lineWidth = 1.5;
                     ctx.beginPath();
                     let started = false;
                     data.forEach((d, i) => {{
                         const val = values[i];
-                        if (val === null) return;
+                        if (val === null || isNaN(val)) return;
                         const x = padding.left + (d.t / maxTime) * graphW;
-                        const y = padding.top + (1 - val / 100) * graphH;
+                        const y = padding.top + (1 - val / maxVal) * graphH;
                         if (!started) {{
                             ctx.moveTo(x, y);
                             started = true;
@@ -1183,14 +1225,14 @@ def _render_report(
                     ctx.stroke();
                 }}
 
-                drawLine(data.map(d => d.cpu), '#4da6ff');  // CPU - blue
-                drawLine(data.map(d => d.ram), '#22c55e');  // RAM - green
+                // Draw lines (CPU uses left scale, RAM uses right scale)
+                drawLine(data.map(d => d.cpu), cpuMax, '#4da6ff');  // CPU cores - blue
+                drawLine(data.map(d => d.ram), ramMax, '#22c55e');  // RAM GB - green
                 if (hasGpu) {{
-                    drawLine(data.map(d => d.gpu), '#f97316');  // GPU - orange
+                    drawLine(data.map(d => d.gpu), 100, '#f97316');  // GPU % - orange
                 }}
-
-                graphContainer.classList.add('active');
             }} catch (e) {{
+                console.error('Resource graph error:', e);
                 graphContainer.classList.remove('active');
             }}
         }}

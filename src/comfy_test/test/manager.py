@@ -753,12 +753,22 @@ class TestManager:
                                 if resource_metrics.get("timeline"):
                                     hardware_logs_dir = logs_dir / "hardware_logs"
                                     hardware_logs_dir.mkdir(exist_ok=True)
+                                    # Save CSV with real values (cpu in cores, ram in GB)
                                     csv_path = hardware_logs_dir / f"{workflow_file.stem}.csv"
                                     with open(csv_path, 'w') as f:
-                                        f.write("t,cpu,ram,gpu\n")
+                                        f.write("t,cpu_cores,ram_gb,gpu_pct\n")
                                         for sample in resource_metrics["timeline"]:
                                             gpu_val = sample['gpu'] if sample['gpu'] is not None else ''
                                             f.write(f"{sample['t']},{sample['cpu']},{sample['ram']},{gpu_val}\n")
+                                    # Save metadata for graph scaling (once per test run)
+                                    meta_path = hardware_logs_dir / "_meta.json"
+                                    if not meta_path.exists():
+                                        import json
+                                        meta = {
+                                            "cpu_count": resource_metrics.get("cpu_count", 1),
+                                            "total_ram_gb": resource_metrics.get("total_ram_gb", 16),
+                                        }
+                                        meta_path.write_text(json.dumps(meta))
                                     # Remove timeline from results.json (keep only summary stats)
                                     resource_metrics.pop("timeline", None)
 
@@ -1500,12 +1510,22 @@ print(json.dumps(result))
                                 if resource_metrics.get("timeline"):
                                     hardware_logs_dir = logs_dir / "hardware_logs"
                                     hardware_logs_dir.mkdir(exist_ok=True)
+                                    # Save CSV with real values (cpu in cores, ram in GB)
                                     csv_path = hardware_logs_dir / f"{workflow_file.stem}.csv"
                                     with open(csv_path, 'w') as f:
-                                        f.write("t,cpu,ram,gpu\n")
+                                        f.write("t,cpu_cores,ram_gb,gpu_pct\n")
                                         for sample in resource_metrics["timeline"]:
                                             gpu_val = sample['gpu'] if sample['gpu'] is not None else ''
                                             f.write(f"{sample['t']},{sample['cpu']},{sample['ram']},{gpu_val}\n")
+                                    # Save metadata for graph scaling (once per test run)
+                                    meta_path = hardware_logs_dir / "_meta.json"
+                                    if not meta_path.exists():
+                                        import json
+                                        meta = {
+                                            "cpu_count": resource_metrics.get("cpu_count", 1),
+                                            "total_ram_gb": resource_metrics.get("total_ram_gb", 16),
+                                        }
+                                        meta_path.write_text(json.dumps(meta))
                                     # Remove timeline from results.json (keep only summary stats)
                                     resource_metrics.pop("timeline", None)
 

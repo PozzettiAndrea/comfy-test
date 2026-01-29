@@ -293,7 +293,7 @@ def _gitignore_filter(base_dir: Path):
 
     # Always ignore these (essential for clean copy)
     # Note: .git is NOT ignored - workflow needs it for checkout step
-    always_ignore = {'__pycache__', '.comfy-test', '.comfy-test-env', '.comfy-test-logs'}
+    always_ignore = {'__pycache__', '.comfy-test', '.comfy-test-logs'}
 
     # Parse .gitignore if it exists
     gitignore_patterns = []

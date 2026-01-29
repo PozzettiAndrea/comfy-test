@@ -62,7 +62,7 @@ def _gitignore_filter(base_dir: Path, work_dir: Path = None):
     from typing import List
 
     # Always ignore these (essential for clean copy)
-    always_ignore = {'.git', '__pycache__', '.comfy-test', '.comfy-test-env',
+    always_ignore = {'.git', '__pycache__', '.comfy-test',
                      '.comfy-test-logs', '.venv', 'venv', 'node_modules'}
 
     # Parse .gitignore if it exists
