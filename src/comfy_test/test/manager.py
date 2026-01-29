@@ -328,6 +328,9 @@ class TestManager:
         Returns:
             TestResult for the platform
         """
+        # Normalize platform name (windows-portable -> windows_portable)
+        platform_name = platform_name.lower().replace("-", "_")
+
         # Determine which levels to run
         # If CLI --level specified, filter to only levels up to that point
         requested_levels = self.config.levels
@@ -1179,6 +1182,9 @@ print(json.dumps(result))
             manager.run_single_level('linux', TestLevel.REGISTRATION,
                                      work_dir=Path('/tmp/ct'), skip_setup=True)
         """
+        # Normalize platform name (windows-portable -> windows_portable)
+        platform_name = platform_name.lower().replace("-", "_")
+
         # Check if level is in config
         if level not in self.config.levels:
             self._log(f"[{level.value.upper()}] SKIPPED (not in config)")

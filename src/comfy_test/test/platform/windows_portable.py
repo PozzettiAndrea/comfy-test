@@ -132,6 +132,10 @@ def _get_cache_dir() -> Path:
 class WindowsPortableTestPlatform(TestPlatform):
     """Windows Portable platform implementation for ComfyUI testing."""
 
+    def __init__(self, log_callback: Callable[[str], None] = None):
+        super().__init__(log_callback)
+        self._wheel_dir: Optional[Path] = None
+
     @property
     def name(self) -> str:
         return "windows_portable"
@@ -139,6 +143,14 @@ class WindowsPortableTestPlatform(TestPlatform):
     @property
     def executable_suffix(self) -> str:
         return ".exe"
+
+    def _uv_install(self, python: Path, args: list, cwd: Path) -> None:
+        """Run uv pip install with local wheels if available."""
+        cmd = [str(python), "-m", "uv", "pip", "install"]
+        if self._wheel_dir and self._wheel_dir.exists():
+            cmd.extend(["--find-links", str(self._wheel_dir)])
+        cmd.extend(args)
+        self._run_command(cmd, cwd=cwd)
 
     def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
         """
@@ -239,14 +251,18 @@ class WindowsPortableTestPlatform(TestPlatform):
             for dll in python_embeded.glob("*.dll"):
                 dll.chmod(dll.stat().st_mode | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
 
+        # Install uv into embedded Python for faster package installs
+        self._log("Installing uv into embedded Python...")
+        self._run_command(
+            [str(python), "-m", "pip", "install", "uv"],
+            cwd=comfyui_dir,
+        )
+
         # Install ComfyUI's requirements (portable may be missing newer deps like sqlalchemy)
         comfyui_reqs = comfyui_dir / "requirements.txt"
         if comfyui_reqs.exists():
             self._log("Installing ComfyUI requirements...")
-            self._run_command(
-                [str(python), "-m", "pip", "install", "-r", str(comfyui_reqs)],
-                cwd=comfyui_dir,
-            )
+            self._uv_install(python, ["-r", str(comfyui_reqs)], comfyui_dir)
 
         return TestPaths(
             work_dir=work_dir,
@@ -278,6 +294,7 @@ class WindowsPortableTestPlatform(TestPlatform):
 
         # Build local dev wheels (comfy-env with junction fix, etc.)
         wheel_dir = _build_local_wheels(paths.work_dir, self._log)
+        self._wheel_dir = wheel_dir  # Store for _uv_install
 
         # Install local wheels FIRST with --force-reinstall to override any cached PyPI versions
         # This ensures comfy-env with junction fix is used instead of PyPI version
@@ -287,20 +304,17 @@ class WindowsPortableTestPlatform(TestPlatform):
                 self._log(f"Installing {len(wheel_files)} local wheel(s) (force-reinstall)...")
                 for whl in wheel_files:
                     self._log(f"  Installing {whl.name}...")
-                    self._run_command(
-                        [str(paths.python), "-m", "pip", "install", str(whl),
-                         "--force-reinstall", "--no-cache-dir", "--no-deps"],
-                        cwd=target_dir,
+                    self._uv_install(
+                        paths.python,
+                        [str(whl), "--force-reinstall", "--no-cache", "--no-deps"],
+                        target_dir,
                     )
 
         # Install requirements.txt (install.py may depend on these)
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
-            self._run_command(
-                [str(paths.python), "-m", "pip", "install", "-r", str(requirements_file)],
-                cwd=target_dir,
-            )
+            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"
@@ -527,15 +541,11 @@ class WindowsPortableTestPlatform(TestPlatform):
             cwd=paths.custom_nodes_dir,
         )
 
-        # Install requirements.txt first (using embedded Python's pip)
+        # Install requirements.txt first (using uv for speed)
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log(f"  Installing {name} requirements...")
-            self._run_command(
-                [str(paths.python), "-m", "pip", "install",
-                 "-r", str(requirements_file)],
-                cwd=target_dir,
-            )
+            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"
