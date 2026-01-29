@@ -152,6 +152,14 @@ class WindowsPortableTestPlatform(TestPlatform):
         cmd.extend(args)
         self._run_command(cmd, cwd=cwd)
 
+    def _pip_install(self, python: Path, args: list, cwd: Path) -> None:
+        """Run pip install with local wheels if available (matches user experience)."""
+        cmd = [str(python), "-m", "pip", "install"]
+        if self._wheel_dir and self._wheel_dir.exists():
+            cmd.extend(["--find-links", str(self._wheel_dir)])
+        cmd.extend(args)
+        self._run_command(cmd, cwd=cwd)
+
     def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
         """
         Set up ComfyUI Portable for testing on Windows.
@@ -311,10 +319,11 @@ class WindowsPortableTestPlatform(TestPlatform):
                     )
 
         # Install requirements.txt (install.py may depend on these)
+        # Uses pip (not uv) to match user experience
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
+            self._pip_install(paths.python, ["-r", str(requirements_file)], target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"
@@ -541,11 +550,11 @@ class WindowsPortableTestPlatform(TestPlatform):
             cwd=paths.custom_nodes_dir,
         )
 
-        # Install requirements.txt first (using uv for speed)
+        # Install requirements.txt first (using pip to match user experience)
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log(f"  Installing {name} requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
+            self._pip_install(paths.python, ["-r", str(requirements_file)], target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"

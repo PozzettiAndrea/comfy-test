@@ -143,6 +143,26 @@ class WindowsTestPlatform(TestPlatform):
         cmd.extend(args)
         self._run_command(cmd, cwd=cwd)
 
+    def _get_ci_python(self, paths_python: Path) -> Path:
+        """Get the correct Python for CI environments.
+
+        In GitHub Actions, sys.executable points to system Python but deps
+        are in the venv at ~/venv/venv. Use venv Python if available.
+        """
+        if os.environ.get("GITHUB_ACTIONS"):
+            venv_python = Path.home() / "venv" / "venv" / "Scripts" / "python.exe"
+            if venv_python.exists():
+                return venv_python
+        return paths_python
+
+    def _pip_install(self, python: Path, args: list, cwd: Path) -> None:
+        """Run pip install with local wheels if available (matches user experience)."""
+        cmd = [str(python), "-m", "pip", "install"]
+        if self._wheel_dir and self._wheel_dir.exists():
+            cmd.extend(["--find-links", str(self._wheel_dir)])
+        cmd.extend(args)
+        self._run_command(cmd, cwd=cwd)
+
     def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
         """
         Set up ComfyUI for testing on Windows.
@@ -239,11 +259,12 @@ class WindowsTestPlatform(TestPlatform):
         shutil.copytree(node_dir, target_dir, ignore=_gitignore_filter(node_dir, paths.work_dir))
 
         # Install requirements.txt first (install.py may depend on these)
-        # Uses --find-links for local wheels (comfy-env, etc.)
+        # Uses pip (not uv) to match user experience
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], cwd=target_dir)
+            python = self._get_ci_python(paths.python)
+            self._pip_install(python, ["-r", str(requirements_file)], cwd=target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"
@@ -334,10 +355,12 @@ class WindowsTestPlatform(TestPlatform):
         )
 
         # Install requirements.txt first (with local wheels)
+        # Uses pip (not uv) to match user experience
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log(f"  Installing {name} requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], cwd=target_dir)
+            python = self._get_ci_python(paths.python)
+            self._pip_install(python, ["-r", str(requirements_file)], cwd=target_dir)
 
         # Run install.py if present
         install_py = target_dir / "install.py"

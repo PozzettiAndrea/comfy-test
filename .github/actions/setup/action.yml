@@ -38,7 +38,7 @@ runs:
           ~/.cache/ms-playwright
           ~/Library/Caches/ms-playwright
           ~/AppData/Local/ms-playwright
-        key: comfy-env-v3-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
+        key: comfy-env-v4-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
 
     - name: Setup environment (cache miss)
       if: steps.env-cache.outputs.cache-hit != 'true'
@@ -69,6 +69,10 @@ runs:
           echo "Extracting..."
           "/c/Program Files/7-Zip/7z.exe" x ~/venv/portable.7z -o"$HOME/venv" -y
           rm ~/venv/portable.7z
+
+          # Install uv into embedded Python for faster ComfyUI setup
+          echo "Installing uv into embedded Python..."
+          ~/venv/ComfyUI_windows_portable/python_embeded/python.exe -m pip install uv
         else
           echo "Cloning ComfyUI..."
           git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ~/venv/ComfyUI
@@ -121,4 +125,4 @@ runs:
           ~/.cache/ms-playwright
           ~/Library/Caches/ms-playwright
           ~/AppData/Local/ms-playwright
-        key: comfy-env-v3-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
+        key: comfy-env-v4-${{ runner.os }}-py${{ inputs.python-version }}-${{ inputs.platform || 'standard' }}
