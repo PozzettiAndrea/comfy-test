@@ -270,12 +270,13 @@ class WindowsTestPlatform(TestPlatform):
         install_py = target_dir / "install.py"
         if install_py.exists():
             self._log("Running install.py...")
+            python = self._get_ci_python(paths.python)
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
             # Pass wheel dir so pixi/pip inside install.py can use local wheels
             if self._wheel_dir and self._wheel_dir.exists():
                 install_env["COMFY_LOCAL_WHEELS"] = str(self._wheel_dir)
             self._run_command(
-                [str(paths.python), str(install_py)],
+                [str(python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
             )
@@ -290,8 +291,9 @@ class WindowsTestPlatform(TestPlatform):
         """Start ComfyUI server on Windows."""
         self._log(f"Starting ComfyUI server on port {port}...")
 
+        python = self._get_ci_python(paths.python)
         cmd = [
-            str(paths.python),
+            str(python),
             "-u",  # Unbuffered stdout/stderr for immediate output
             str(paths.comfyui_dir / "main.py"),
             "--listen", "127.0.0.1",
@@ -366,11 +368,12 @@ class WindowsTestPlatform(TestPlatform):
         install_py = target_dir / "install.py"
         if install_py.exists():
             self._log(f"  Running {name} install.py...")
+            python = self._get_ci_python(paths.python)
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
             if self._wheel_dir and self._wheel_dir.exists():
                 install_env["COMFY_LOCAL_WHEELS"] = str(self._wheel_dir)
             self._run_command(
-                [str(paths.python), str(install_py)],
+                [str(python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
             )
