@@ -80,10 +80,15 @@ runs:
         echo "Installing playwright..."
         uv pip install playwright
 
-        # Install Playwright browser (use python -m since venv isn't in PATH yet)
+        # Install Playwright browser (use venv python explicitly since PATH isn't updated yet)
         echo "Installing Playwright browser..."
-        python -m playwright install chromium
-        python -m playwright install-deps chromium || true
+        if [ -f ~/venv/venv/bin/python ]; then
+          ~/venv/venv/bin/python -m playwright install chromium
+          ~/venv/venv/bin/python -m playwright install-deps chromium || true
+        else
+          ~/venv/venv/Scripts/python -m playwright install chromium
+          ~/venv/venv/Scripts/python -m playwright install-deps chromium || true
+        fi
 
     - name: Activate venv (cache hit)
       if: steps.env-cache.outputs.cache-hit == 'true'
