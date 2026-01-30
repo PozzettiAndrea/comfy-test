@@ -90,12 +90,13 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}/ComfyUI_windows_portable
         run: |
+          # Run exact command from batch file (without pause)
           if [ "$COMFY_TEST_GPU" = "1" ]; then
             echo "Starting GPU server..."
-            cmd.exe /c "start /b run_nvidia_gpu.bat"
+            $PYTHON_EXE -s ComfyUI/main.py --windows-standalone-build &
           else
             echo "Starting CPU server..."
-            cmd.exe /c "start /b run_cpu.bat"
+            $PYTHON_EXE -s ComfyUI/main.py --cpu --windows-standalone-build &
           fi
 
           # Wait for server to be ready
