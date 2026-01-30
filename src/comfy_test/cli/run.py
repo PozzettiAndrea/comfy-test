@@ -9,6 +9,21 @@ from ..common.config_file import discover_config, load_config
 from ..common.errors import TestError, ConfigError
 
 
+def get_current_platform() -> str:
+    """Detect current OS and return matching platform name."""
+    if sys.platform == "linux":
+        return "linux"
+    elif sys.platform == "darwin":
+        return "macos"
+    elif sys.platform == "win32":
+        # Check if running from portable embedded Python
+        if "python_embeded" in sys.executable:
+            return "windows_portable"
+        return "windows"
+    else:
+        raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
+
 def detect_comfyui_parent(node_dir: Path) -> Optional[Path]:
     """Check if node_dir is inside a ComfyUI custom_nodes folder.
 
@@ -76,25 +91,19 @@ def cmd_run(args) -> int:
 
         server_url = getattr(args, 'server_url', None)
 
-        if args.platform:
-            results = [manager.run_platform(
-                args.platform,
-                args.dry_run,
-                level,
-                workflow_filter,
-                comfyui_dir=comfyui_dir,
-                skip_setup=True,
-                server_url=server_url,
-            )]
-        else:
-            results = manager.run_all(
-                args.dry_run,
-                level,
-                workflow_filter,
-                comfyui_dir=comfyui_dir,
-                skip_setup=True,
-                server_url=server_url,
-            )
+        # Auto-detect platform if not specified
+        platform = args.platform if args.platform else get_current_platform()
+        print(f"[comfy-test] Platform: {platform}")
+
+        results = [manager.run_platform(
+            platform,
+            args.dry_run,
+            level,
+            workflow_filter,
+            comfyui_dir=comfyui_dir,
+            skip_setup=True,
+            server_url=server_url,
+        )]
 
         # Report results
         print(f"\n{'='*60}")
@@ -155,21 +164,17 @@ def run_clean_test(node_dir: Path, args) -> int:
             level = TestLevel(args.level) if args.level else None
             workflow_filter = getattr(args, 'workflow', None)
 
-            if args.platform:
-                results = [manager.run_platform(
-                    args.platform,
-                    args.dry_run,
-                    level,
-                    workflow_filter,
-                    skip_setup=False,
-                )]
-            else:
-                results = manager.run_all(
-                    args.dry_run,
-                    level,
-                    workflow_filter,
-                    skip_setup=False,
-                )
+            # Auto-detect platform if not specified
+            platform = args.platform if args.platform else get_current_platform()
+            print(f"[comfy-test] Platform: {platform}")
+
+            results = [manager.run_platform(
+                platform,
+                args.dry_run,
+                level,
+                workflow_filter,
+                skip_setup=False,
+            )]
 
             # Report results
             print(f"\n{'='*60}")
