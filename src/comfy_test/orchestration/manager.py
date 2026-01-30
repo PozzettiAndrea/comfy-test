@@ -178,6 +178,7 @@ class TestManager:
         workflow_filter: Optional[str] = None,
         comfyui_dir: Optional[Path] = None,
         skip_setup: bool = False,
+        server_url: Optional[str] = None,
     ) -> List[TestResult]:
         """Run tests on all enabled platforms.
 
@@ -187,6 +188,7 @@ class TestManager:
             workflow_filter: If specified, only run this workflow
             comfyui_dir: Use existing ComfyUI directory
             skip_setup: If True, skip node installation (assumes node is already installed)
+            server_url: If provided, connect to existing server instead of starting one
 
         Returns:
             List of TestResult for each platform
@@ -207,7 +209,8 @@ class TestManager:
 
             result = self.run_platform(
                 platform_name, dry_run, level, workflow_filter,
-                comfyui_dir=comfyui_dir, skip_setup=skip_setup
+                comfyui_dir=comfyui_dir, skip_setup=skip_setup,
+                server_url=server_url
             )
             results.append(result)
 
@@ -221,6 +224,7 @@ class TestManager:
         workflow_filter: Optional[str] = None,
         comfyui_dir: Optional[Path] = None,
         skip_setup: bool = False,
+        server_url: Optional[str] = None,
     ) -> TestResult:
         """Run tests on a specific platform.
 
@@ -231,12 +235,13 @@ class TestManager:
             workflow_filter: If specified, only run this workflow (e.g., 'fix_normals.json')
             comfyui_dir: Use existing ComfyUI directory
             skip_setup: If True, skip node installation (assumes node is already installed)
+            server_url: If provided, connect to existing server instead of starting one
 
         Returns:
             TestResult for the platform
         """
         # Import here to avoid circular imports
-        from ..comfyui.server import ComfyUIServer
+        from ..comfyui.server import ComfyUIServer, ExternalComfyUIServer
         from ..comfyui.workflow import WorkflowRunner
         from ..platforms.windows.isolation import WindowsIsolation
         from ..reporting.screenshot import ScreenshotError
@@ -441,13 +446,19 @@ class TestManager:
 
                 # === Start server for remaining levels ===
                 # Node discovery happens via ComfyUI's own loading mechanism
-                self._log("\nStarting ComfyUI server...")
-                with ComfyUIServer(
-                    platform, paths, self.config,
-                    cuda_mock_packages=cuda_packages,
-                    log_callback=self._log,
-                    env_vars=env_vars,
-                ) as server:
+                if server_url:
+                    self._log(f"\nConnecting to existing server at {server_url}...")
+                    server_instance = ExternalComfyUIServer(server_url, log_callback=self._log)
+                else:
+                    self._log("\nStarting ComfyUI server...")
+                    server_instance = ComfyUIServer(
+                        platform, paths, self.config,
+                        cuda_mock_packages=cuda_packages,
+                        log_callback=self._log,
+                        env_vars=env_vars,
+                    )
+
+                with server_instance as server:
                     api = server.get_api()
 
                     # === REGISTRATION LEVEL ===

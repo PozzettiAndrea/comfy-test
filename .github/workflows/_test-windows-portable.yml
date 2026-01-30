@@ -15,7 +15,7 @@ on:
         default: false
 
 jobs:
-  test:
+  windows-portable-test:
     runs-on: ${{ inputs.gpu && fromJSON('["self-hosted", "windows", "gpu"]') || 'windows-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
@@ -23,6 +23,7 @@ jobs:
       COMFY_TEST_GPU: ${{ inputs.gpu && '1' || '' }}
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}/ComfyUI_windows_portable/ComfyUI
+      PYTHON_EXE: ${{ github.workspace }}/ComfyUI_windows_portable/python_embeded/python.exe
       TOOLS_VENV: ${{ github.workspace }}/.tools-venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
     steps:
@@ -45,14 +46,17 @@ jobs:
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          # Tools venv (for playwright only)
           python -m venv $TOOLS_VENV
-          $TOOLS_VENV/Scripts/pip install uv playwright
+          $TOOLS_VENV/Scripts/pip install playwright
 
+          # Download portable ComfyUI
           curl -L --fail -o portable.7z \
             "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
           "/c/Program Files/7-Zip/7z.exe" x portable.7z -y
           rm portable.7z
 
+          # Install playwright browsers
           $TOOLS_VENV/Scripts/playwright install chromium
 
       # --- Save cache ---
@@ -65,9 +69,10 @@ jobs:
             ${{ github.workspace }}/ComfyUI_windows_portable
           key: setup-windows-portable
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test (fresh, to embedded Python) ---
       - name: Install comfy-test
-        run: pip install comfy-test
+        shell: bash
+        run: $PYTHON_EXE -m pip install comfy-test
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -78,13 +83,35 @@ jobs:
         shell: bash
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          PYTHON_EXE="$COMFYUI_DIR/../python_embeded/python.exe"
           [ -f requirements.txt ] && $PYTHON_EXE -m pip install -r requirements.txt || true
           [ -f install.py ] && $PYTHON_EXE install.py || true
 
+      - name: Start ComfyUI server
+        shell: bash
+        working-directory: ${{ github.workspace }}/ComfyUI_windows_portable
+        run: |
+          if [ "$COMFY_TEST_GPU" = "1" ]; then
+            echo "Starting GPU server..."
+            cmd.exe /c "start /b run_nvidia_gpu.bat"
+          else
+            echo "Starting CPU server..."
+            cmd.exe /c "start /b run_cpu.bat"
+          fi
+
+          # Wait for server to be ready
+          echo "Waiting for server..."
+          for i in {1..120}; do
+            if curl -s http://localhost:8188/system_stats > /dev/null 2>&1; then
+              echo "Server is ready!"
+              break
+            fi
+            sleep 1
+          done
+
       - name: Run tests
+        shell: bash
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: comfy-test run
+        run: $PYTHON_EXE -m comfy_test run --server-url http://localhost:8188
 
       - uses: actions/upload-artifact@v4
         if: always()

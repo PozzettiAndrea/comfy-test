@@ -15,7 +15,7 @@ on:
         default: false
 
 jobs:
-  test:
+  macos-test:
     runs-on: ${{ inputs.gpu && fromJSON('["self-hosted", "macos", "gpu"]') || 'macos-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:

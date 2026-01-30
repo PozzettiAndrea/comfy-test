@@ -263,3 +263,103 @@ class ComfyUIServer:
 
     def __exit__(self, *args) -> None:
         self.stop()
+
+
+class ExternalComfyUIServer:
+    """Connects to an existing ComfyUI server.
+
+    Use this when the server is started externally (e.g., via batch file).
+
+    Args:
+        url: Server URL (e.g., "http://localhost:8188")
+        log_callback: Optional callback for logging
+
+    Example:
+        >>> with ExternalComfyUIServer("http://localhost:8188") as server:
+        ...     api = server.get_api()
+        ...     nodes = api.get_object_info()
+    """
+
+    def __init__(
+        self,
+        url: str,
+        log_callback: Optional[Callable[[str], None]] = None,
+    ):
+        self._url = url.rstrip("/")
+        self._log = log_callback or (lambda msg: print(msg))
+        self._api: Optional[ComfyUIAPI] = None
+        self._extra_log_listeners: List[Callable[[str], None]] = []
+
+    @property
+    def base_url(self) -> str:
+        """Get server base URL."""
+        return self._url
+
+    def add_log_listener(self, callback: Callable[[str], None]) -> None:
+        """Add an extra log listener (no-op for external server)."""
+        self._extra_log_listeners.append(callback)
+
+    def remove_log_listener(self, callback: Callable[[str], None]) -> None:
+        """Remove an extra log listener."""
+        if callback in self._extra_log_listeners:
+            self._extra_log_listeners.remove(callback)
+
+    def start(self, wait_timeout: int = 60) -> None:
+        """Connect to the external server and verify it's ready.
+
+        Args:
+            wait_timeout: Maximum seconds to wait for server to respond
+
+        Raises:
+            ServerError: If server is not responding
+        """
+        self._log(f"Connecting to existing server at {self._url}...")
+
+        api = ComfyUIAPI(self._url, timeout=5)
+        start_time = time.time()
+
+        while time.time() - start_time < wait_timeout:
+            try:
+                if api.health_check():
+                    self._log("Connected to server!")
+                    self._api = api
+                    return
+            except Exception:
+                pass
+            time.sleep(1)
+
+        api.close()
+        raise ServerError(
+            f"Could not connect to server at {self._url}",
+            f"Waited {wait_timeout} seconds"
+        )
+
+    def stop(self) -> None:
+        """Close connection (does NOT stop the external server)."""
+        if self._api:
+            self._api.close()
+            self._api = None
+
+    def get_api(self) -> ComfyUIAPI:
+        """Get API client for the server.
+
+        Returns:
+            ComfyUIAPI instance
+
+        Raises:
+            ServerError: If not connected
+        """
+        if self._api is None:
+            raise ServerError("Not connected to server")
+        return self._api
+
+    def get_import_errors(self) -> List[str]:
+        """Get import errors (not available for external server)."""
+        return []
+
+    def __enter__(self) -> "ExternalComfyUIServer":
+        self.start()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.stop()

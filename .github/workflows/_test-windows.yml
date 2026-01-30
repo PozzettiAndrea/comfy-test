@@ -15,7 +15,7 @@ on:
         default: false
 
 jobs:
-  test:
+  windows-test:
     runs-on: ${{ inputs.gpu && fromJSON('["self-hosted", "windows", "gpu"]') || 'windows-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:

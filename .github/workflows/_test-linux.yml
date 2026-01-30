@@ -15,7 +15,7 @@ on:
         default: false
 
 jobs:
-  test:
+  linux-test:
     runs-on: ${{ inputs.gpu && fromJSON('["self-hosted", "linux", "gpu"]') || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:

@@ -74,6 +74,8 @@ def cmd_run(args) -> int:
         level = TestLevel(args.level) if args.level else None
         workflow_filter = getattr(args, 'workflow', None)
 
+        server_url = getattr(args, 'server_url', None)
+
         if args.platform:
             results = [manager.run_platform(
                 args.platform,
@@ -82,6 +84,7 @@ def cmd_run(args) -> int:
                 workflow_filter,
                 comfyui_dir=comfyui_dir,
                 skip_setup=True,
+                server_url=server_url,
             )]
         else:
             results = manager.run_all(
@@ -90,6 +93,7 @@ def cmd_run(args) -> int:
                 workflow_filter,
                 comfyui_dir=comfyui_dir,
                 skip_setup=True,
+                server_url=server_url,
             )
 
         # Report results
@@ -235,5 +239,9 @@ def add_run_parser(subparsers):
     run_parser.add_argument(
         "--workflow", "-W",
         help="Run only this specific workflow",
+    )
+    run_parser.add_argument(
+        "--server-url",
+        help="Connect to existing ComfyUI server instead of starting one",
     )
     run_parser.set_defaults(func=cmd_run)
