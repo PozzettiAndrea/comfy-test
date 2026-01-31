@@ -348,8 +348,31 @@ class WorkflowScreenshot:
                         body: JSON.stringify({ prompt: output })
                     });
 
+                    // Get response as text first to debug any parsing issues
+                    const responseText = await validateResp.text();
+
+                    // Try to parse it
+                    let data;
+                    try {
+                        data = JSON.parse(responseText);
+                    } catch (parseErr) {
+                        // Include raw response in error for debugging
+                        const preview = responseText.substring(0, 200);
+                        const hexPreview = Array.from(responseText.substring(0, 10))
+                            .map(c => c.charCodeAt(0).toString(16).padStart(2, '0'))
+                            .join(' ');
+                        return {
+                            success: false,
+                            error: {
+                                message: parseErr.toString() +
+                                    ' | Response preview: ' + preview +
+                                    ' | Hex: ' + hexPreview +
+                                    ' | Length: ' + responseText.length
+                            }
+                        };
+                    }
+
                     if (!validateResp.ok) {
-                        const data = await validateResp.json();
                         return { success: false, error: data.error, node_errors: data.node_errors };
                     }
 
