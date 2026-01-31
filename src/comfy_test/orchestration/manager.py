@@ -111,7 +111,7 @@ class TestManager:
         self.config = config
         self.node_dir = Path(node_dir) if node_dir else Path.cwd()
         self.output_dir = Path(output_dir) if output_dir else None  # External output dir
-        self._original_log = log_callback or (lambda msg: print(msg))
+        self._original_log = log_callback or (lambda msg: print(msg.encode('ascii', errors='replace').decode('ascii') if isinstance(msg, str) else msg))
         self._session_log: List[str] = []  # Capture ALL logs for session.log
         self._session_start_time: float = 0  # Track start time for timestamps
         self._session_log_file: Optional[Path] = None  # Live log file
