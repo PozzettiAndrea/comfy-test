@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 from ..common.config import TestLevel
+
+
+def _safe_str(s) -> str:
+    """Sanitize string for Windows cp1252 console encoding."""
+    return str(s).encode('ascii', errors='replace').decode('ascii')
 from ..common.config_file import discover_config, load_config
 from ..common.errors import TestError, ConfigError
 
@@ -117,7 +122,7 @@ def cmd_run(args) -> int:
             if not result.success:
                 all_passed = False
                 if result.error:
-                    print(f"    Error: {result.error}")
+                    print(f"    Error: {_safe_str(result.error)}")
 
         return 0 if all_passed else 1
 
@@ -188,7 +193,7 @@ def run_clean_test(node_dir: Path, args) -> int:
                 if not result.success:
                     all_passed = False
                     if result.error:
-                        print(f"    Error: {result.error}")
+                        print(f"    Error: {_safe_str(result.error)}")
 
             return 0 if all_passed else 1
 
