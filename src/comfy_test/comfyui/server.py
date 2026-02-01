@@ -38,7 +38,7 @@ class ComfyUIServer:
         platform: "TestPlatform",
         paths: "TestPaths",
         config: "TestConfig",
-        port: int = 8188,
+        port: Optional[int] = None,
         cuda_mock_packages: Optional[List[str]] = None,
         log_callback: Optional[Callable[[str], None]] = None,
         env_vars: Optional[dict] = None,
@@ -46,6 +46,10 @@ class ComfyUIServer:
         self.platform = platform
         self.paths = paths
         self.config = config
+        # Use random port to avoid conflicts with user's regular ComfyUI (8188)
+        if port is None:
+            import random
+            port = random.randint(41880, 41899)
         self.port = port
         self.cuda_mock_packages = cuda_mock_packages or []
         self.env_vars = env_vars or {}

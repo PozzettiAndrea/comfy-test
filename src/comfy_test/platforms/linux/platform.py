@@ -21,6 +21,10 @@ PYPI_INDEX = "https://pypi.org/simple"
 class LinuxPlatform(TestPlatform):
     """Linux platform implementation for ComfyUI testing."""
 
+    def __init__(self, log_callback=None):
+        super().__init__(log_callback)
+        self._venv_python: Optional[Path] = None
+
     @property
     def name(self) -> str:
         return "linux"
@@ -39,7 +43,11 @@ class LinuxPlatform(TestPlatform):
 
     def _pip_install_requirements(self, requirements_file: Path, cwd: Path) -> None:
         """Install requirements with proper PyTorch index for GPU/CPU mode."""
-        cmd = ["uv", "pip", "install", "--system"]
+        # Use venv python if available, otherwise fallback to system
+        if self._venv_python:
+            cmd = ["uv", "pip", "install", "--python", str(self._venv_python)]
+        else:
+            cmd = ["uv", "pip", "install", "--system"]
 
         # Use local wheels if available (for local testing with ct test)
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
@@ -58,14 +66,22 @@ class LinuxPlatform(TestPlatform):
         """
         Set up ComfyUI for testing on Linux.
 
-        1. Clone ComfyUI from GitHub
-        2. Install requirements to system Python
-        3. Install PyTorch (CPU or CUDA)
+        1. Create venv in work directory
+        2. Clone ComfyUI from GitHub
+        3. Install requirements to venv
+        4. Install PyTorch (CPU or CUDA)
         """
         work_dir = Path(work_dir).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
         comfyui_dir = work_dir / "ComfyUI"
+        venv_dir = work_dir / ".venv"
+
+        # Create venv (isolated from system Python)
+        self._log("Creating virtual environment...")
+        self._run_command(["uv", "venv", str(venv_dir), "--python", "3.10"], cwd=work_dir)
+        python = venv_dir / "bin" / "python"
+        self._venv_python = python
 
         # Clone ComfyUI
         self._log(f"Cloning ComfyUI ({config.comfyui_version})...")
@@ -82,9 +98,6 @@ class LinuxPlatform(TestPlatform):
         # Create custom_nodes directory
         custom_nodes_dir = comfyui_dir / "custom_nodes"
         custom_nodes_dir.mkdir(exist_ok=True)
-
-        # Use system Python
-        python = Path(sys.executable)
 
         # Install ComfyUI requirements (uses CUDA index in GPU mode)
         self._log("Installing ComfyUI requirements...")
@@ -112,30 +125,64 @@ class LinuxPlatform(TestPlatform):
 
         target_dir = paths.custom_nodes_dir / node_name
 
-        # Create symlink
-        self._log(f"Linking {node_name} to custom_nodes/...")
+        # Copy node (not symlink) for full isolation
+        self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
-            if target_dir.is_symlink():
-                target_dir.unlink()
-            else:
-                shutil.rmtree(target_dir)
+            shutil.rmtree(target_dir)
 
-        target_dir.symlink_to(node_dir)
+        # Parse .gitignore patterns
+        gitignore_patterns = set()
+        gitignore_path = node_dir / ".gitignore"
+        if gitignore_path.exists():
+            for line in gitignore_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    # Normalize pattern (remove trailing /)
+                    pattern = line.rstrip("/")
+                    gitignore_patterns.add(pattern)
+
+        # Always ignore .git
+        gitignore_patterns.add(".git")
+
+        def ignore_patterns(directory, files):
+            """Ignore files matching .gitignore patterns."""
+            ignored = []
+            dir_path = Path(directory)
+            for f in files:
+                # Check exact match
+                if f in gitignore_patterns:
+                    ignored.append(f)
+                    continue
+                # Check wildcard patterns (simple glob)
+                for pattern in gitignore_patterns:
+                    if pattern.startswith("*") and f.endswith(pattern[1:]):
+                        ignored.append(f)
+                        break
+                    elif pattern.startswith("_") and f.startswith(pattern.rstrip("*")):
+                        # Handle _env_* style patterns
+                        ignored.append(f)
+                        break
+            return ignored
+
+        shutil.copytree(node_dir, target_dir, ignore=ignore_patterns)
 
         # Install requirements.txt first (install.py may depend on these)
-        requirements_file = node_dir / "requirements.txt"
+        requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
-            self._pip_install_requirements(requirements_file, node_dir)
+            self._pip_install_requirements(requirements_file, target_dir)
 
         # Run install.py if present
-        install_py = node_dir / "install.py"
+        install_py = target_dir / "install.py"
         if install_py.exists():
             self._log("Running install.py...")
-            install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
+            install_env = {
+                "COMFY_ENV_CUDA_VERSION": "12.8",
+                "COMFY_ENV_CACHE_DIR": str(paths.work_dir / ".comfy-env"),
+            }
             self._run_command(
                 [str(paths.python), str(install_py)],
-                cwd=node_dir,
+                cwd=target_dir,
                 env=install_env,
             )
 

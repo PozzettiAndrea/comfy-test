@@ -225,6 +225,7 @@ class TestManager:
         comfyui_dir: Optional[Path] = None,
         skip_setup: bool = False,
         server_url: Optional[str] = None,
+        work_dir: Optional[Path] = None,
     ) -> TestResult:
         """Run tests on a specific platform.
 
@@ -236,6 +237,7 @@ class TestManager:
             comfyui_dir: Use existing ComfyUI directory
             skip_setup: If True, skip node installation (assumes node is already installed)
             server_url: If provided, connect to existing server instead of starting one
+            work_dir: Use this directory for work instead of creating a temp directory
 
         Returns:
             TestResult for the platform
@@ -323,10 +325,18 @@ class TestManager:
             platform = get_platform(platform_name, self._log)
             platform_config = self.config.get_platform_config(platform_name)
 
-            # Create temporary work directory
-            # ignore_cleanup_errors=True prevents WinError 32 when worker processes still have files open
-            with tempfile.TemporaryDirectory(prefix="comfy_test_", ignore_cleanup_errors=True) as work_dir:
+            # Use provided work_dir or create temporary directory
+            # contextlib.nullcontext provides a no-op context manager for persistent workspaces
+            import contextlib
+            if work_dir:
                 work_path = Path(work_dir)
+                work_path.mkdir(parents=True, exist_ok=True)
+                work_context = contextlib.nullcontext(work_path)
+            else:
+                work_context = tempfile.TemporaryDirectory(prefix="comfy_test_", ignore_cleanup_errors=True)
+
+            with work_context as work_dir_result:
+                work_path = Path(work_dir_result) if isinstance(work_dir_result, str) else work_dir_result
 
                 # Enable isolation for Windows platforms (no Docker available)
                 is_windows = platform_name in ("windows", "windows_portable")

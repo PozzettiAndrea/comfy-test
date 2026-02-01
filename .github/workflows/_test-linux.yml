@@ -16,6 +16,7 @@ on:
 
 jobs:
   linux-test:
+    name: linux-test${{ inputs.gpu && '-gpu' || '' }}
     runs-on: ${{ inputs.gpu && fromJSON('["self-hosted", "linux", "gpu"]') || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
@@ -26,6 +27,8 @@ jobs:
       TOOLS_VENV: ${{ github.workspace }}/.tools-venv
       COMFY_VENV: ${{ github.workspace }}/.comfy-venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
+      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.python
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
     steps:
       - name: Free disk space
         if: ${{ !inputs.gpu }}
@@ -34,9 +37,8 @@ jobs:
           sudo apt-get clean &
           wait
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      # --- Install uv (manages Python) ---
+      - uses: astral-sh/setup-uv@v4
 
       # --- Single cache ---
       - uses: actions/cache/restore@v4
@@ -47,20 +49,28 @@ jobs:
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
             ${{ env.COMFY_VENV }}
-          key: setup-${{ runner.os }}-v2
+            ${{ env.UV_PYTHON_INSTALL_DIR }}
+          key: setup-${{ runner.os }}-uv-v1
 
       # --- Setup (skip if cached) ---
       - name: Setup environment
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: |
-          python -m venv $TOOLS_VENV
-          $TOOLS_VENV/bin/pip install uv playwright
+          # Install Python via uv (into workspace)
+          uv python install 3.13
 
+          # Create tools venv
+          uv venv $TOOLS_VENV --python 3.13
+          $TOOLS_VENV/bin/pip install playwright
+
+          # Clone ComfyUI
           git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
 
-          python -m venv $COMFY_VENV
-          $TOOLS_VENV/bin/uv pip install --python "$COMFY_VENV" -r $COMFYUI_DIR/requirements.txt
+          # Create ComfyUI venv
+          uv venv $COMFY_VENV --python 3.13
+          uv pip install --python $COMFY_VENV -r $COMFYUI_DIR/requirements.txt
 
+          # Install playwright browsers
           $TOOLS_VENV/bin/playwright install chromium
           $TOOLS_VENV/bin/playwright install-deps chromium || true
 
@@ -73,7 +83,8 @@ jobs:
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
             ${{ env.COMFY_VENV }}
-          key: setup-${{ runner.os }}-v2
+            ${{ env.UV_PYTHON_INSTALL_DIR }}
+          key: setup-${{ runner.os }}-uv-v1
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
@@ -87,7 +98,7 @@ jobs:
       - name: Install node dependencies
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          [ -f requirements.txt ] && $TOOLS_VENV/bin/uv pip install --python "$COMFY_VENV" -r requirements.txt || true
+          [ -f requirements.txt ] && uv pip install --python "$COMFY_VENV" -r requirements.txt || true
           [ -f install.py ] && $COMFY_VENV/bin/python install.py || true
 
       - name: Run tests
@@ -101,3 +112,10 @@ jobs:
           path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}/comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
+
+      # --- Cleanup (no trace on self-hosted) ---
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          rm -rf "$GITHUB_WORKSPACE"/* || true
+          rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true

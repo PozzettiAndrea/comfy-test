@@ -139,13 +139,14 @@ def cmd_run(args) -> int:
 def run_clean_test(node_dir: Path, args) -> int:
     """Run tests in a fresh ComfyUI environment.
 
-    1. Clone ComfyUI to temp dir
-    2. Copy node into custom_nodes/
-    3. Install node dependencies
-    4. Run tests
-    5. Cleanup temp dir
+    1. Create workspace in ~/test_workspaces/
+    2. Clone ComfyUI and create venv
+    3. Copy node into custom_nodes/
+    4. Install node dependencies
+    5. Run tests
+    6. Workspace persists for debugging (delete manually)
     """
-    import tempfile
+    from datetime import datetime
     from ..orchestration.manager import TestManager
 
     print(f"[comfy-test] Clean mode: testing {node_dir.name}")
@@ -157,45 +158,52 @@ def run_clean_test(node_dir: Path, args) -> int:
         else:
             config = discover_config()
 
-        # Create temp directory for fresh ComfyUI
-        with tempfile.TemporaryDirectory(prefix="comfy_test_clean_", ignore_cleanup_errors=True) as temp_dir:
-            print(f"[comfy-test] Work directory: {temp_dir}")
+        # Create persistent workspace directory
+        workspaces_dir = Path.home() / "test_workspaces"
+        workspaces_dir.mkdir(exist_ok=True)
 
-            # Create manager
-            output_dir = Path(args.output_dir) if args.output_dir else None
-            manager = TestManager(config, node_dir=node_dir, output_dir=output_dir)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        work_dir = workspaces_dir / f"{node_dir.name}-{timestamp}"
+        work_dir.mkdir()
 
-            # Run tests (skip_setup=False to do full setup)
-            level = TestLevel(args.level) if args.level else None
-            workflow_filter = getattr(args, 'workflow', None)
+        print(f"[comfy-test] Work directory: {work_dir}")
 
-            # Auto-detect platform if not specified
-            platform = args.platform if args.platform else get_current_platform()
-            print(f"[comfy-test] Platform: {platform}")
+        # Create manager
+        output_dir = Path(args.output_dir) if args.output_dir else None
+        manager = TestManager(config, node_dir=node_dir, output_dir=output_dir)
 
-            results = [manager.run_platform(
-                platform,
-                args.dry_run,
-                level,
-                workflow_filter,
-                skip_setup=False,
-            )]
+        # Run tests (skip_setup=False to do full setup)
+        level = TestLevel(args.level) if args.level else None
+        workflow_filter = getattr(args, 'workflow', None)
 
-            # Report results
-            print(f"\n{'='*60}")
-            print("RESULTS")
-            print(f"{'='*60}")
+        # Auto-detect platform if not specified
+        platform = args.platform if args.platform else get_current_platform()
+        print(f"[comfy-test] Platform: {platform}")
 
-            all_passed = True
-            for result in results:
-                status = "PASS" if result.success else "FAIL"
-                print(f"  {result.platform}: {status}")
-                if not result.success:
-                    all_passed = False
-                    if result.error:
-                        print(f"    Error: {_safe_str(result.error)}")
+        results = [manager.run_platform(
+            platform,
+            args.dry_run,
+            level,
+            workflow_filter,
+            skip_setup=False,
+            work_dir=work_dir,
+        )]
 
-            return 0 if all_passed else 1
+        # Report results
+        print(f"\n{'='*60}")
+        print("RESULTS")
+        print(f"{'='*60}")
+
+        all_passed = True
+        for result in results:
+            status = "PASS" if result.success else "FAIL"
+            print(f"  {result.platform}: {status}")
+            if not result.success:
+                all_passed = False
+                if result.error:
+                    print(f"    Error: {_safe_str(result.error)}")
+
+        return 0 if all_passed else 1
 
     except ConfigError as e:
         print(f"Configuration error: {e.message}", file=sys.stderr)

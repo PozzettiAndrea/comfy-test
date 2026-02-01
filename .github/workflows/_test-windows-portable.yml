@@ -16,6 +16,7 @@ on:
 
 jobs:
   windows-portable-test:
+    name: windows-portable-test${{ inputs.gpu && '-gpu' || '' }}
     runs-on: ${{ inputs.gpu && fromJSON('["self-hosted", "windows", "gpu"]') || 'windows-latest' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
@@ -26,10 +27,11 @@ jobs:
       PYTHON_EXE: ${{ github.workspace }}/ComfyUI_windows_portable/python_embeded/python.exe
       TOOLS_VENV: ${{ github.workspace }}/.tools-venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
+      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.python
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
     steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      # --- Install uv (manages Python for tools venv) ---
+      - uses: astral-sh/setup-uv@v4
 
       # --- Single cache ---
       - uses: actions/cache/restore@v4
@@ -39,15 +41,19 @@ jobs:
             ${{ env.TOOLS_VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ github.workspace }}/ComfyUI_windows_portable
-          key: setup-windows-portable
+            ${{ env.UV_PYTHON_INSTALL_DIR }}
+          key: setup-windows-portable-uv-v1
 
       # --- Setup (skip if cached) ---
       - name: Setup environment
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          # Install Python via uv (into workspace)
+          uv python install 3.13
+
           # Tools venv (for playwright only)
-          python -m venv $TOOLS_VENV
+          uv venv $TOOLS_VENV --python 3.13
           $TOOLS_VENV/Scripts/pip install playwright
 
           # Download portable ComfyUI
@@ -67,7 +73,8 @@ jobs:
             ${{ env.TOOLS_VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ github.workspace }}/ComfyUI_windows_portable
-          key: setup-windows-portable
+            ${{ env.UV_PYTHON_INSTALL_DIR }}
+          key: setup-windows-portable-uv-v1
 
       # --- Install comfy-test (fresh, to embedded Python) ---
       - name: Install comfy-test
@@ -132,3 +139,11 @@ jobs:
           path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}/comfy-test-results/
           if-no-files-found: ignore
           include-hidden-files: true
+
+      # --- Cleanup (no trace on self-hosted) ---
+      - name: Cleanup workspace
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE"/* || true
+          rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
