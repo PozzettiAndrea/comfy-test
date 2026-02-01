@@ -1,0 +1,72 @@
+# Publish test results to gh-pages - called by test-matrix.yml
+name: Publish Results
+
+on:
+  workflow_call:
+
+jobs:
+  publish:
+    if: always()
+    runs-on: ubuntu-latest
+    environment: publish
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install comfy-test
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Enable parallel checkout
+        run: git config --global checkout.workers 0
+
+      - name: Checkout existing gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Prepare gh-pages structure
+        run: |
+          mkdir -p gh-pages
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BRANCH="${{ github.ref_name }}"
+            TARGET="gh-pages/$BRANCH"
+          else
+            TARGET="gh-pages/_pr"
+          fi
+          rm -rf "$TARGET"
+          mkdir -p "$TARGET"
+          for dir in artifacts/results-*; do
+            if [ -d "$dir" ]; then
+              name=$(basename "$dir" | sed 's/results-//')
+              mkdir -p "$TARGET/$name"
+              # Results are 2 levels deep: run_id/platform_dir/
+              # Use glob to copy contents directly to flatten structure
+              cp -r "$dir"/*/*/* "$TARGET/$name/" 2>/dev/null || true
+            fi
+          done
+          touch gh-pages/.nojekyll
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "TARGET=$TARGET" >> $GITHUB_ENV
+
+      - name: Generate index pages
+        if: github.event_name == 'push'
+        run: |
+          comfy-test generate-index "gh-pages/$BRANCH" --repo-name "${{ github.repository }}"
+          comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
+
+      - name: Publish to gh-pages
+        if: github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: gh-pages
+          keep_files: true

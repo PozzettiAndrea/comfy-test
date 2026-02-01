@@ -1,0 +1,21 @@
+# comfy-test configuration file
+# All workflows in workflows/ folder are auto-discovered and tested.
+# Screenshots are always taken for all workflows.
+
+[test]
+# Test levels: "all" or list of specific levels
+# Available: syntax, install, registration, instantiation, static_capture, validation, execution
+levels = "all"
+# Publish test results to GitHub Pages (set to false to disable)
+publish = true
+
+[test.workflows]
+# Workflows requiring GPU for execution. Skipped on CI (no GPU), run locally.
+# Use "all" or list specific files: ["workflow.json", "rigging.json"]
+gpu = "all"
+
+[test.platforms]
+linux = true
+macos = true
+windows = true
+windows_portable = true

@@ -1,0 +1,142 @@
+# =============================================================================
+# ComfyUI Custom Node Test Matrix
+# =============================================================================
+# Consumer repos call this workflow:
+#   uses: PozzettiAndrea/comfy-test/.github/workflows/test-matrix.yml@main
+# =============================================================================
+
+name: ComfyUI Installation Test Matrix
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        description: "Path to comfy-test.toml config file"
+        type: string
+        default: "comfy-test.toml"
+      timeout-minutes:
+        description: "Job timeout in minutes"
+        type: number
+        default: 60
+      run-gpu:
+        description: "DEPRECATED - GPU tests now auto-run when gpu=[...] is defined in config"
+        type: boolean
+        default: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Setup: parse platform config
+  # ---------------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      # CPU platforms
+      run-linux: ${{ steps.platforms.outputs.linux }}
+      run-macos: ${{ steps.platforms.outputs.macos }}
+      run-windows: ${{ steps.platforms.outputs.windows }}
+      run-windows-portable: ${{ steps.platforms.outputs.windows-portable }}
+      # GPU platforms (separate toggles)
+      run-linux-gpu: ${{ steps.platforms.outputs.linux-gpu }}
+      run-windows-gpu: ${{ steps.platforms.outputs.windows-gpu }}
+      run-windows-portable-gpu: ${{ steps.platforms.outputs.windows-portable-gpu }}
+      # Workflow lists
+      has-cpu: ${{ steps.platforms.outputs.has-cpu }}
+      has-gpu: ${{ steps.platforms.outputs.has-gpu }}
+      # Publish
+      run-publish: ${{ steps.platforms.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse platform config
+        id: platforms
+        run: |
+          config="${{ inputs.config-file }}"
+          get_platform() {
+            [ -f "$config" ] && grep -E "^$1\s*=" "$config" 2>/dev/null | grep -qi "false" && echo "false" || echo "true"
+          }
+          # CPU platforms
+          echo "linux=$(get_platform linux)" >> $GITHUB_OUTPUT
+          echo "macos=$(get_platform macos)" >> $GITHUB_OUTPUT
+          echo "windows=$(get_platform windows)" >> $GITHUB_OUTPUT
+          echo "windows-portable=$(get_platform windows_portable)" >> $GITHUB_OUTPUT
+          # GPU platforms (separate toggles, default to true if not specified)
+          echo "linux-gpu=$(get_platform linux_gpu)" >> $GITHUB_OUTPUT
+          echo "windows-gpu=$(get_platform windows_gpu)" >> $GITHUB_OUTPUT
+          echo "windows-portable-gpu=$(get_platform windows_portable_gpu)" >> $GITHUB_OUTPUT
+
+          # Check if cpu/gpu workflow lists are defined (non-empty)
+          has_workflows() {
+            [ -f "$config" ] && grep -qE "^$1\s*=" "$config" 2>/dev/null && echo "true" || echo "false"
+          }
+          echo "has-cpu=$(has_workflows cpu)" >> $GITHUB_OUTPUT
+          echo "has-gpu=$(has_workflows gpu)" >> $GITHUB_OUTPUT
+
+          # Publish toggle (defaults to true)
+          echo "publish=$(get_platform publish)" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # Approval gate: requires manual approval before tests run
+  # ---------------------------------------------------------------------------
+  approve:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - run: echo "Approved"
+
+  # ---------------------------------------------------------------------------
+  # CPU tests (GitHub-hosted runners) - only if cpu workflows defined
+  # ---------------------------------------------------------------------------
+  linux-cpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true'
+    uses: ./.github/workflows/_test-linux.yml
+
+  macos-cpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true'
+    uses: ./.github/workflows/_test-macos.yml
+
+  windows-cpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true'
+    uses: ./.github/workflows/_test-windows.yml
+
+  windows-portable-cpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true'
+    uses: ./.github/workflows/_test-windows-portable.yml
+
+  # ---------------------------------------------------------------------------
+  # GPU tests (self-hosted runners) - only if gpu workflows defined AND platform enabled
+  # ---------------------------------------------------------------------------
+  linux-gpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-linux-gpu == 'true'
+    uses: ./.github/workflows/_test-linux-gpu.yml
+    with:
+      config-file: ${{ inputs.config-file }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+
+  windows-gpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-gpu == 'true'
+    uses: ./.github/workflows/_test-windows-gpu.yml
+    with:
+      config-file: ${{ inputs.config-file }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+
+  windows-portable-gpu:
+    needs: [setup, approve]
+    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-portable-gpu == 'true'
+    uses: ./.github/workflows/_test-windows-portable-gpu.yml
+    with:
+      config-file: ${{ inputs.config-file }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+
+  # ---------------------------------------------------------------------------
+  # Publish results
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [setup, linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, linux-gpu, windows-gpu, windows-portable-gpu]
+    if: always() && needs.setup.outputs.run-publish == 'true'
+    uses: ./.github/workflows/_publish-results.yml
