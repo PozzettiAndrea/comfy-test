@@ -60,8 +60,9 @@ def cmd_run(args) -> int:
         workspaces_dir = get_workspace_dir()
         workspaces_dir.mkdir(exist_ok=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        work_dir = workspaces_dir / f"{node_dir.name}-{timestamp}"
+        timestamp = datetime.now().strftime("%H%M")
+        short_name = node_dir.name.removeprefix("ComfyUI-")
+        work_dir = workspaces_dir / f"{short_name}-{timestamp}"
         work_dir.mkdir()
 
         print(f"[comfy-test] Workspace: {work_dir}")
@@ -73,9 +74,16 @@ def cmd_run(args) -> int:
         # Auto-detect platform if not specified
         platform = args.platform if args.platform else get_current_platform()
 
+        # Handle --portable flag
+        if args.portable:
+            if platform not in ("windows", "windows_portable"):
+                print("Error: --portable flag is only valid on Windows", file=sys.stderr)
+                return 1
+            platform = "windows_portable"
+
         # Build output path: logs_dir/NodeName-XXXX/branch/platform
         # For now just: logs_dir/NodeName-XXXX/platform
-        run_id = f"{node_dir.name}-{timestamp[:4]}"
+        run_id = f"{short_name}-{timestamp}"
         output_dir = logs_dir / run_id / platform
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +102,6 @@ def cmd_run(args) -> int:
             args.dry_run,
             level,
             workflow_filter,
-            skip_setup=False,
             work_dir=work_dir,
         )]
 
@@ -154,6 +161,11 @@ def add_run_parser(subparsers):
         "--gpu",
         action="store_true",
         help="Enable GPU mode (uses real CUDA instead of mocking)",
+    )
+    run_parser.add_argument(
+        "--portable",
+        action="store_true",
+        help="Use Windows Portable mode (only valid on Windows)",
     )
     run_parser.add_argument(
         "--workflow", "-W",

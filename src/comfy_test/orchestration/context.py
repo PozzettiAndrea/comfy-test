@@ -42,7 +42,6 @@ class LevelContext:
     work_dir: Optional[Path] = None  # Custom work directory (default: temp)
     comfyui_dir: Optional[Path] = None  # Existing ComfyUI to use
     server_url: Optional[str] = None  # External server URL
-    skip_setup: bool = False  # Skip node installation
     workflow_filter: Optional[str] = None  # Run only this workflow
 
     # Accumulated by levels (None/empty until set)

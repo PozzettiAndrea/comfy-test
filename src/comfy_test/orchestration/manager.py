@@ -139,7 +139,6 @@ class TestManager:
         level: Optional[TestLevel] = None,
         workflow_filter: Optional[str] = None,
         comfyui_dir: Optional[Path] = None,
-        skip_setup: bool = False,
         server_url: Optional[str] = None,
     ) -> List[TestResult]:
         """Run tests on all enabled platforms.
@@ -149,7 +148,6 @@ class TestManager:
             level: Maximum test level to run
             workflow_filter: If specified, only run this workflow
             comfyui_dir: Use existing ComfyUI directory
-            skip_setup: If True, skip node installation
             server_url: If provided, connect to existing server
 
         Returns:
@@ -171,7 +169,7 @@ class TestManager:
 
             result = self.run_platform(
                 platform_name, dry_run, level, workflow_filter,
-                comfyui_dir=comfyui_dir, skip_setup=skip_setup,
+                comfyui_dir=comfyui_dir,
                 server_url=server_url
             )
             results.append(result)
@@ -185,7 +183,6 @@ class TestManager:
         level: Optional[TestLevel] = None,
         workflow_filter: Optional[str] = None,
         comfyui_dir: Optional[Path] = None,
-        skip_setup: bool = False,
         server_url: Optional[str] = None,
         work_dir: Optional[Path] = None,
     ) -> TestResult:
@@ -197,7 +194,6 @@ class TestManager:
             level: Maximum test level to run
             workflow_filter: If specified, only run this workflow
             comfyui_dir: Use existing ComfyUI directory
-            skip_setup: If True, skip node installation
             server_url: If provided, connect to existing server
             work_dir: Use this directory for work
 
@@ -253,7 +249,6 @@ class TestManager:
             work_dir=work_dir,
             comfyui_dir=comfyui_dir,
             server_url=server_url,
-            skip_setup=skip_setup,
             workflow_filter=workflow_filter,
         )
 

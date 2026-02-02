@@ -36,10 +36,9 @@ def get_platform(platform_name: str, log_callback=None) -> "TestPlatform":
 def run(ctx: LevelContext) -> LevelContext:
     """Run INSTALL level.
 
-    Sets up ComfyUI and installs the custom node. This level handles three cases:
-    1. skip_setup=True: Use existing ComfyUI with node already installed
-    2. comfyui_dir set: Use existing ComfyUI but install node
-    3. Neither: Full setup - clone ComfyUI and install node
+    Sets up ComfyUI and installs the custom node. This level handles two cases:
+    1. comfyui_dir set: Use existing ComfyUI but install node fresh
+    2. Neither: Full setup - clone ComfyUI and install node
 
     Args:
         ctx: Level context
@@ -61,9 +60,7 @@ def run(ctx: LevelContext) -> LevelContext:
         work_path = Path(tempfile.mkdtemp(prefix="comfy_test_"))
 
     # Setup based on mode
-    if ctx.skip_setup:
-        paths = _setup_existing_skip_install(ctx, work_path)
-    elif ctx.comfyui_dir:
+    if ctx.comfyui_dir:
         paths = _setup_existing_with_install(ctx, platform, work_path)
     else:
         paths = _setup_full(ctx, platform, work_path)
@@ -96,28 +93,6 @@ def run(ctx: LevelContext) -> LevelContext:
         paths=paths,
         cuda_packages=tuple(cuda_packages),
         env_vars=env_vars,
-    )
-
-
-def _setup_existing_skip_install(ctx: LevelContext, work_path: Path) -> TestPaths:
-    """Use existing ComfyUI with node already installed."""
-    if not ctx.comfyui_dir:
-        raise TestError(
-            "comfyui_dir required when skip_setup=True",
-            "Use auto-detect or provide --comfyui-dir"
-        )
-
-    ctx.log(f"Using existing ComfyUI: {ctx.comfyui_dir}")
-    ctx.log("Node already installed, skipping installation")
-    comfyui_path = Path(ctx.comfyui_dir).resolve()
-
-    python_exe = _find_python(ctx.platform_name, comfyui_path)
-
-    return TestPaths(
-        work_dir=work_path,
-        comfyui_dir=comfyui_path,
-        python=python_exe,
-        custom_nodes_dir=comfyui_path / "custom_nodes",
     )
 
 

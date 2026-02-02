@@ -22,6 +22,8 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: ${{ inputs.gpu && '1' || '' }}
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}/ComfyUI
       TOOLS_VENV: ${{ github.workspace }}/.tools-venv
@@ -105,7 +107,7 @@ jobs:
         if: always()
         with:
           name: results-windows-${{ inputs.gpu && 'gpu' || 'cpu' }}
-          path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}/comfy-test-results/
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
           include-hidden-files: true
 

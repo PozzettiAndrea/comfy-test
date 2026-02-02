@@ -133,7 +133,7 @@ def ensure_dependencies(
     try:
         # Install playwright and pillow
         result = subprocess.run(
-            [python, "-m", "pip", "install", "playwright", "pillow"],
+            ["uv", "pip", "install", "--python", python, "playwright", "pillow"],
             capture_output=True,
             text=True,
         )
