@@ -57,17 +57,17 @@ jobs:
 
           # Create tools venv
           uv venv $env:TOOLS_VENV --python 3.13
-          & "$env:TOOLS_VENV/Scripts/pip" install playwright
+          & "$env:TOOLS_VENV\Scripts\pip" install playwright
 
           # Clone ComfyUI
           git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $env:COMFYUI_DIR
 
           # Create ComfyUI venv
           uv venv $env:COMFY_VENV --python 3.13
-          uv pip install --python $env:COMFY_VENV -r "$env:COMFYUI_DIR/requirements.txt"
+          uv pip install --python $env:COMFY_VENV -r "$env:COMFYUI_DIR\requirements.txt"
 
           # Install playwright browsers
-          & "$env:TOOLS_VENV/Scripts/playwright" install chromium
+          & "$env:TOOLS_VENV\Scripts\playwright" install chromium
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
@@ -85,7 +85,7 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & "$env:COMFY_VENV/Scripts/pip" install comfy-test
+          & "$env:COMFY_VENV\Scripts\pip" install comfy-test
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -100,14 +100,14 @@ jobs:
             uv pip install --python $env:COMFY_VENV -r requirements.txt
           }
           if (Test-Path "install.py") {
-            & "$env:COMFY_VENV/Scripts/python" install.py
+            & "$env:COMFY_VENV\Scripts\python" install.py
           }
 
       - name: Run tests
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          & "$env:COMFY_VENV/Scripts/comfy-test" run
+          & "$env:COMFY_VENV\Scripts\comfy-test" run
 
       - uses: actions/upload-artifact@v4
         if: always()
