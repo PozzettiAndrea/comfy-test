@@ -21,7 +21,7 @@ from .common.errors import (
 )
 
 # Convenience functions
-from .runner import run_tests, verify_nodes
+from .runner import run_tests
 
 __all__ = [
     # Config
@@ -45,5 +45,4 @@ __all__ = [
     "DownloadError",
     # Convenience
     "run_tests",
-    "verify_nodes",
 ]

@@ -47,36 +47,3 @@ def run_tests(
         return [manager.run_platform(platform, dry_run)]
     else:
         return manager.run_all(dry_run)
-
-
-def verify_nodes(
-    config: Optional[TestConfig | Path | str] = None,
-    node_dir: Optional[Path] = None,
-    platform: Optional[str] = None,
-) -> List[TestResult]:
-    """Verify node registration only (no workflow execution).
-
-    Args:
-        config: TestConfig, path to config file, or None to auto-discover
-        node_dir: Path to custom node directory (default: current directory)
-        platform: Specific platform to test, or None for current platform
-
-    Returns:
-        List of TestResult
-
-    Example:
-        >>> results = verify_nodes()
-        >>> if results[0].success:
-        ...     print("All nodes registered successfully!")
-    """
-    # Load config
-    if config is None:
-        config = discover_config(node_dir)
-    elif isinstance(config, (str, Path)):
-        config = load_config(config)
-
-    # Create manager
-    manager = TestManager(config, node_dir)
-
-    # Run verification only
-    return manager.verify_only(platform)

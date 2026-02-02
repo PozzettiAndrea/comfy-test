@@ -1,8 +1,8 @@
 # comfy-test
 
-Installation testing infrastructure for ComfyUI custom nodes.
+Testing infrastructure for ComfyUI custom nodes.
 
-Test your nodes install and work correctly across **Linux**, **Windows**, and **Windows Portable** - with just config files, no pytest code needed.
+Test your nodes install and work correctly across **Linux**, **macOS**, **Windows**, and **Windows Portable**. No pytest code needed.
 
 ## Quick Start
 
@@ -12,14 +12,10 @@ Add these files to your custom node repository:
 
 ```toml
 [test]
-name = "ComfyUI-MyNode"
+# Name is auto-detected from directory
 
-[test.verification]
-expected_nodes = ["MyNode1", "MyNode2"]
-
-[test.workflow]
-file = "tests/workflows/smoke_test.json"
-timeout = 120
+[test.workflows]
+cpu = "all"  # Run all workflows in workflows/ folder
 ```
 
 ### 2. `.github/workflows/test-install.yml`
@@ -33,23 +29,35 @@ jobs:
     uses: PozzettiAndrea/comfy-test/.github/workflows/test-matrix.yml@main
 ```
 
-### 3. `tests/workflows/smoke_test.json`
+### 3. `workflows/test.json`
 
 A minimal ComfyUI workflow that uses your nodes. Export from ComfyUI.
 
 **Done!** Push to GitHub and your tests will run automatically on all platforms.
 
-## What It Tests
+## Test Levels
 
-1. **Setup** - Clones ComfyUI, creates environment, installs dependencies
-2. **Install** - Copies your node, runs `install.py`, installs `requirements.txt`
-3. **Verify** - Starts ComfyUI, checks your nodes appear in `/object_info`
-4. **Validate** - Runs 4-level workflow validation (see below)
-5. **Execute** - Runs your test workflow, verifies it completes without errors
+comfy-test runs 7 test levels in sequence:
+
+| Level | Name | What It Does |
+|-------|------|--------------|
+| 1 | **SYNTAX** | Check project structure (pyproject.toml/requirements.txt), CP1252 compatibility |
+| 2 | **INSTALL** | Clone ComfyUI, create environment, install node + dependencies |
+| 3 | **REGISTRATION** | Start server, verify nodes appear in `/object_info` |
+| 4 | **INSTANTIATION** | Test each node's constructor |
+| 5 | **STATIC_CAPTURE** | Screenshot workflows (no execution) |
+| 6 | **VALIDATION** | 4-level workflow validation (schema, graph, introspection, partial execution) |
+| 7 | **EXECUTION** | Run workflows end-to-end, capture outputs |
+
+Each level depends on previous levels. You can run up to a specific level with `--level`:
+
+```bash
+comfy-test run --level registration  # Runs: SYNTAX → INSTALL → REGISTRATION
+```
 
 ## Workflow Validation (4 Levels)
 
-When a workflow file is configured, comfy-test runs comprehensive validation before execution:
+The VALIDATION level runs comprehensive checks before execution:
 
 | Level | Name | What It Checks |
 |-------|------|----------------|
@@ -58,121 +66,88 @@ When a workflow file is configured, comfy-test runs comprehensive validation bef
 | 3 | **Introspection** | Node definitions are well-formed (INPUT_TYPES, RETURN_TYPES, FUNCTION) |
 | 4 | **Partial Execution** | Runs non-CUDA nodes to verify they work |
 
-### Level 1: Schema Validation
-
-Validates widget values in your workflow against node schemas from `/object_info`:
-
-- **Enum values** - Checks dropdown selections are in the allowed list
-- **INT/FLOAT ranges** - Validates numbers are within min/max bounds
-- **Type checking** - Ensures STRING, BOOLEAN, INT, FLOAT values have correct types
-
-```
-[schema] Node 5 (LoadTrellis2Models): 'attn_backend': 'auto' not in allowed values ['flash_attn', 'xformers', 'sdpa', 'sageattn']
-```
-
-### Level 2: Graph Validation
-
-Validates the workflow graph structure:
-
-- **Node existence** - All linked nodes actually exist
-- **Connection types** - Output types match input types (IMAGE -> IMAGE)
-- **Slot validity** - Input/output slot indices are valid
-
-```
-[graph] Node 12 (SaveImage): Type mismatch: KSampler outputs LATENT, but SaveImage expects IMAGE
-```
-
-### Level 3: Node Introspection
-
-Validates node definitions from the ComfyUI API:
-
-- **INPUT_TYPES** - Returns valid dict with required/optional structure
-- **RETURN_TYPES** - Is a list matching RETURN_NAMES length
-- **FUNCTION** - Method name is defined
-
-```
-[introspection] Node 3 (BrokenNode): Node has no FUNCTION defined
-```
-
-### Level 4: Partial Execution
-
-Executes the "prefix" of your workflow - nodes that don't require CUDA:
-
-- Identifies nodes that don't depend on CUDA packages
-- Converts workflow to ComfyUI prompt format
-- Submits partial workflow to the API
-- Reports which nodes executed successfully
-
-This catches runtime errors in non-GPU code paths (file loading, preprocessing, etc.) even on CPU-only CI.
-
-```
-[Step 3c/4] Partial execution (3 non-CUDA nodes)...
-  Executed 3 nodes successfully
-```
-
 ### Detecting CUDA Nodes
 
-To mark nodes as requiring CUDA (so they're excluded from partial execution), list them in your `comfy-test.toml`:
+To mark nodes as requiring CUDA (excluded from partial execution), use `comfy-env.toml`:
 
 ```toml
-[test.validation]
-cuda_node_types = ["KSampler", "VAEDecode", "MyGPUNode"]
+[cuda]
+packages = ["nvdiffrast", "flash-attn"]
 ```
-
-Or use `comfy-env.toml` to specify CUDA packages - any node importing those packages will be detected automatically.
 
 ## Configuration Reference
 
+### Minimal Config
+
 ```toml
 [test]
-name = "ComfyUI-MyNode"           # Test suite name
-comfyui_version = "latest"        # ComfyUI version (tag, commit, or "latest")
-python_version = "3.10"           # Python version
-timeout = 300                     # Setup timeout in seconds
+# Everything has sensible defaults - this is all you need
 
+[test.workflows]
+cpu = "all"
+```
+
+### Full Config Example
+
+```toml
+[test]
+# Name is auto-detected from directory name (e.g., "ComfyUI-MyNode")
+
+# ComfyUI version to test against
+comfyui_version = "latest"  # or a tag like "v0.2.0" or commit hash
+
+# Python version (default: random from 3.11, 3.12, 3.13)
+python_version = "3.11"
+
+# Test levels to run (default: all)
+# Options: syntax, install, registration, instantiation, static_capture, validation, execution
+levels = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"]
+# Or use: levels = "all"
+
+# Enable/disable platforms (all enabled by default)
 [test.platforms]
-linux = true                      # Test on Linux
-windows = true                    # Test on Windows
-windows_portable = true           # Test on Windows Portable
+linux = true
+macos = true
+windows = true
+windows_portable = true
 
-[test.verification]
-expected_nodes = [                # Nodes that must exist after install
-    "MyNode1",
-    "MyNode2",
-]
+# Workflow configuration
+[test.workflows]
+# Workflows to run on CPU runners (GitHub-hosted)
+cpu = "all"  # or list specific files: ["test_basic.json", "test_advanced.json"]
 
-[test.workflow]
-file = "tests/workflows/smoke.json"  # Workflow to run
-timeout = 120                        # Workflow timeout
+# Workflows to run on GPU runners (self-hosted)
+gpu = ["test_gpu.json"]
+
+# Timeout for workflow execution in seconds (default: 3600)
+timeout = 120
+
+# Platform-specific settings
+[test.linux]
+enabled = true
+skip_workflow = false  # Skip workflow execution, only verify registration
+
+[test.macos]
+enabled = true
+skip_workflow = false
+
+[test.windows]
+enabled = true
+skip_workflow = false
 
 [test.windows_portable]
-comfyui_portable_version = "latest"  # Portable version to download
+enabled = true
+skip_workflow = false
+comfyui_portable_version = "latest"  # Portable-specific version
 ```
 
-## CUDA Packages on CPU-only CI
+### Workflow Discovery
 
-comfy-test runs on CPU-only GitHub Actions runners. For nodes that use CUDA packages (nvdiffrast, flash-attn, etc.):
-
-1. **Installation works** - comfy-test sets `COMFY_ENV_CUDA_VERSION=12.8` so comfy-env can resolve wheel URLs even without a GPU
-2. **Import may fail** - CUDA packages typically fail to import without a GPU
-
-**Best practice for CUDA nodes:**
-- Use lazy imports in production (better UX, graceful errors)
-- Consider strict imports mode for testing to catch missing deps
-
-```python
-# In your node's __init__.py
-import os
-
-if os.environ.get('COMFY_TEST_STRICT_IMPORTS'):
-    # Test mode: import everything now to catch missing deps
-    import nvdiffrast  # Will fail on CPU, but that's expected
-else:
-    # Production: lazy import when needed
-    nvdiffrast = None
-```
-
-For full CUDA testing, use a self-hosted runner with a GPU.
+Workflows are auto-discovered from the `workflows/` folder:
+- All `.json` files in `workflows/` are found automatically
+- Use `cpu = "all"` to run all discovered workflows on CPU
+- Use `gpu = "all"` to run all discovered workflows on GPU
+- Or specify individual files: `cpu = ["basic.json", "advanced.json"]`
 
 ## CLI
 
@@ -180,18 +155,30 @@ For full CUDA testing, use a self-hosted runner with a GPU.
 # Install
 pip install comfy-test
 
-# Show config
-comfy-test info
+# Initialize config and GitHub workflow
+comfy-test init
 
 # Run tests locally
 comfy-test run --platform linux
 
+# Run specific level only
+comfy-test run --level registration
+
 # Dry run (show what would happen)
 comfy-test run --dry-run
 
-# Generate GitHub workflow
-comfy-test init-ci
+# Publish results to GitHub Pages
+comfy-test publish ./results --repo owner/repo
 ```
+
+## CUDA Packages on CPU-only CI
+
+comfy-test runs on CPU-only GitHub Actions runners. For nodes that use CUDA packages:
+
+1. **Installation works** - comfy-test sets `COMFY_ENV_CUDA_VERSION=12.8` so comfy-env can resolve wheel URLs
+2. **Import may fail** - CUDA packages typically fail to import without a GPU
+
+For full CUDA testing, use a self-hosted runner with a GPU.
 
 ## License
 

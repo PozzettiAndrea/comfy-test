@@ -4,7 +4,9 @@ This module provides the main test orchestration logic for running
 ComfyUI custom node installation tests across multiple platforms.
 """
 
-from .manager import TestManager, get_platform, ProgressSpinner
+from .manager import TestManager
+from .levels.install import get_platform
+from .levels.execution import ProgressSpinner
 from .results import (
     TestResult,
     TestState,

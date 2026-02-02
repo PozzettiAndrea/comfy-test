@@ -9,7 +9,6 @@ from pathlib import Path
 
 def cmd_publish(args) -> int:
     """Publish results to gh-pages."""
-    from ..reporting.merge import merge_with_gh_pages
     from ..reporting.html_report import generate_html_report
 
     results_dir = Path(args.results_dir).expanduser()
@@ -23,11 +22,6 @@ def cmd_publish(args) -> int:
         return 1
 
     repo = args.repo
-
-    # Merge if requested (for CPU-only CI runs to preserve GPU results)
-    if args.merge:
-        print("Merging with existing gh-pages results...")
-        merge_with_gh_pages(results_dir, repo, log_callback=print)
 
     # Generate HTML report
     print("Generating HTML report...")
@@ -123,10 +117,5 @@ def add_publish_parser(subparsers):
         "--repo", "-r",
         required=True,
         help="GitHub repo in format 'owner/repo'",
-    )
-    publish_parser.add_argument(
-        "--merge", "-m",
-        action="store_true",
-        help="Merge with existing gh-pages (use for CPU-only CI runs to preserve GPU results)",
     )
     publish_parser.set_defaults(func=cmd_publish)

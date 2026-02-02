@@ -1,4 +1,4 @@
-"""Init commands for comfy-test CLI."""
+"""Init command for comfy-test CLI."""
 
 import shutil
 import sys
@@ -7,13 +7,16 @@ from pathlib import Path
 
 
 def cmd_init(args) -> int:
-    """Handle init command - copy template files."""
+    """Initialize comfy-test config and GitHub workflow.
+
+    Creates:
+    - comfy-test.toml (config file)
+    - .github/workflows/ (GitHub Actions workflow)
+    """
     cwd = Path.cwd()
     config_path = cwd / "comfy-test.toml"
-    github_dir = cwd / ".github"
 
-    # Get templates directory from package root (moved to project root)
-    # Try package resources first, fall back to relative path
+    # Get templates directory from package
     try:
         templates = files("comfy_test") / "templates"
     except (TypeError, FileNotFoundError):
@@ -32,8 +35,9 @@ def cmd_init(args) -> int:
     shutil.copy(template_config, config_path)
     print(f"Created {config_path}")
 
-    # Copy github/ -> .github/
+    # Copy github/ -> .github/ (includes workflow)
     template_github = templates / "github"
+    github_dir = cwd / ".github"
     if template_github.is_dir():
         shutil.copytree(template_github, github_dir, dirs_exist_ok=True)
         print(f"Created {github_dir}/")
@@ -41,51 +45,15 @@ def cmd_init(args) -> int:
     return 0
 
 
-def cmd_init_ci(args) -> int:
-    """Generate GitHub Actions workflow file."""
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    workflow_content = '''name: Test Installation
-on: [push, pull_request]
-
-jobs:
-  test:
-    uses: PozzettiAndrea/comfy-test/.github/workflows/test-matrix.yml@main
-    with:
-      config-file: "comfy-test.toml"
-'''
-
-    with open(output_path, "w") as f:
-        f.write(workflow_content)
-
-    print(f"Generated GitHub Actions workflow: {output_path}")
-    return 0
-
-
 def add_init_parser(subparsers):
     """Add the init subcommand parser."""
     init_parser = subparsers.add_parser(
         "init",
-        help="Create a default comfy-test.toml config file",
+        help="Create comfy-test.toml config and GitHub workflow",
     )
     init_parser.add_argument(
         "--force", "-f",
         action="store_true",
-        help="Overwrite existing config file",
+        help="Overwrite existing files",
     )
     init_parser.set_defaults(func=cmd_init)
-
-
-def add_init_ci_parser(subparsers):
-    """Add the init-ci subcommand parser."""
-    init_ci_parser = subparsers.add_parser(
-        "init-ci",
-        help="Generate GitHub Actions workflow",
-    )
-    init_ci_parser.add_argument(
-        "--output", "-o",
-        default=".github/workflows/test-install.yml",
-        help="Output file path",
-    )
-    init_ci_parser.set_defaults(func=cmd_init_ci)

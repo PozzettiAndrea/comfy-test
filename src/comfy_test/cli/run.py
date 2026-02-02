@@ -1,17 +1,18 @@
 """Run command for comfy-test CLI."""
 
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ..common.config import TestLevel
+from ..common.config_file import discover_config, load_config
+from ..common.errors import TestError, ConfigError
+from .paths import are_paths_configured, run_setup_wizard, get_workspace_dir, get_logs_dir
 
 
 def _safe_str(s) -> str:
     """Sanitize string for Windows cp1252 console encoding."""
     return str(s).encode('ascii', errors='replace').decode('ascii')
-from ..common.config_file import discover_config, load_config
-from ..common.errors import TestError, ConfigError
 
 
 def get_current_platform() -> str:
@@ -21,7 +22,6 @@ def get_current_platform() -> str:
     elif sys.platform == "darwin":
         return "macos"
     elif sys.platform == "win32":
-        # Check if running from portable embedded Python
         if "python_embeded" in sys.executable:
             return "windows_portable"
         return "windows"
@@ -29,156 +29,65 @@ def get_current_platform() -> str:
         raise RuntimeError(f"Unsupported platform: {sys.platform}")
 
 
-def detect_comfyui_parent(node_dir: Path) -> Optional[Path]:
-    """Check if node_dir is inside a ComfyUI custom_nodes folder.
-
-    Expected structure: .../ComfyUI/custom_nodes/MyNode
-
-    Returns:
-        Path to ComfyUI directory if detected, None otherwise.
-    """
-    parent = node_dir.parent  # custom_nodes
-    if parent.name != "custom_nodes":
-        return None
-
-    comfyui = parent.parent  # ComfyUI
-    # Verify it's actually ComfyUI
-    if (comfyui / "main.py").exists() and (comfyui / "comfy").is_dir():
-        return comfyui
-
-    return None
-
-
 def cmd_run(args) -> int:
-    """Run tests.
+    """Run tests in a fresh ComfyUI environment.
 
-    Two modes:
-    1. Default: Auto-detect parent ComfyUI, skip setup, just run tests
-    2. --clean: Clone fresh ComfyUI to temp dir, copy node, run tests, cleanup
+    1. Create workspace in configured workspace dir
+    2. Clone ComfyUI and create venv
+    3. Copy node into custom_nodes/
+    4. Install node dependencies
+    5. Run tests
+    6. Output results to configured logs dir
     """
     from ..orchestration.manager import TestManager
 
     node_dir = Path.cwd()
 
-    # Handle --clean mode: fresh ComfyUI clone
-    if args.clean:
-        return run_clean_test(node_dir, args)
-
-    # Default: auto-detect parent ComfyUI
-    comfyui_dir = detect_comfyui_parent(node_dir)
-    if not comfyui_dir:
-        print("Error: Not inside a ComfyUI custom_nodes folder.", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Expected structure:", file=sys.stderr)
-        print("  ~/ComfyUI/custom_nodes/YourNode/  <-- run from here", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Or use --clean to test in a fresh ComfyUI:", file=sys.stderr)
-        print("  comfy-test run --clean", file=sys.stderr)
-        return 1
-
-    print(f"[comfy-test] Detected ComfyUI: {comfyui_dir}")
-    print(f"[comfy-test] Testing node: {node_dir.name}")
+    print(f"[comfy-test] Testing: {node_dir.name}")
 
     try:
+        # Check if paths are configured
+        if not are_paths_configured():
+            run_setup_wizard()
+
         # Load config
         if args.config:
             config = load_config(args.config)
         else:
             config = discover_config()
 
-        # Create manager
-        output_dir = Path(args.output_dir) if args.output_dir else None
-        manager = TestManager(config, node_dir=node_dir, output_dir=output_dir)
-
-        # Run tests (skip_setup=True since we're inside existing ComfyUI)
-        level = TestLevel(args.level) if args.level else None
-        workflow_filter = getattr(args, 'workflow', None)
-
-        server_url = getattr(args, 'server_url', None)
-
-        # Auto-detect platform if not specified
-        platform = args.platform if args.platform else get_current_platform()
-        print(f"[comfy-test] Platform: {platform}")
-
-        results = [manager.run_platform(
-            platform,
-            args.dry_run,
-            level,
-            workflow_filter,
-            comfyui_dir=comfyui_dir,
-            skip_setup=True,
-            server_url=server_url,
-        )]
-
-        # Report results
-        print(f"\n{'='*60}")
-        print("RESULTS")
-        print(f"{'='*60}")
-
-        all_passed = True
-        for result in results:
-            status = "PASS" if result.success else "FAIL"
-            print(f"  {result.platform}: {status}")
-            if not result.success:
-                all_passed = False
-                if result.error:
-                    print(f"    Error: {_safe_str(result.error)}")
-
-        return 0 if all_passed else 1
-
-    except ConfigError as e:
-        print(f"Configuration error: {e.message}", file=sys.stderr)
-        if e.details:
-            print(f"Details: {e.details}", file=sys.stderr)
-        return 1
-    except TestError as e:
-        print(f"Test error: {e.message}", file=sys.stderr)
-        return 1
-
-
-def run_clean_test(node_dir: Path, args) -> int:
-    """Run tests in a fresh ComfyUI environment.
-
-    1. Create workspace in ~/test_workspaces/
-    2. Clone ComfyUI and create venv
-    3. Copy node into custom_nodes/
-    4. Install node dependencies
-    5. Run tests
-    6. Workspace persists for debugging (delete manually)
-    """
-    from datetime import datetime
-    from ..orchestration.manager import TestManager
-
-    print(f"[comfy-test] Clean mode: testing {node_dir.name}")
-
-    try:
-        # Load config
-        if args.config:
-            config = load_config(args.config)
-        else:
-            config = discover_config()
-
-        # Create persistent workspace directory
-        workspaces_dir = Path.home() / "test_workspaces"
+        # Create workspace directory
+        workspaces_dir = get_workspace_dir()
         workspaces_dir.mkdir(exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         work_dir = workspaces_dir / f"{node_dir.name}-{timestamp}"
         work_dir.mkdir()
 
-        print(f"[comfy-test] Work directory: {work_dir}")
+        print(f"[comfy-test] Workspace: {work_dir}")
 
-        # Create manager
-        output_dir = Path(args.output_dir) if args.output_dir else None
-        manager = TestManager(config, node_dir=node_dir, output_dir=output_dir)
-
-        # Run tests (skip_setup=False to do full setup)
-        level = TestLevel(args.level) if args.level else None
-        workflow_filter = getattr(args, 'workflow', None)
+        # Create output directory in logs dir
+        logs_dir = get_logs_dir()
+        logs_dir.mkdir(exist_ok=True)
 
         # Auto-detect platform if not specified
         platform = args.platform if args.platform else get_current_platform()
+
+        # Build output path: logs_dir/NodeName-XXXX/branch/platform
+        # For now just: logs_dir/NodeName-XXXX/platform
+        run_id = f"{node_dir.name}-{timestamp[:4]}"
+        output_dir = logs_dir / run_id / platform
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"[comfy-test] Output: {output_dir}")
         print(f"[comfy-test] Platform: {platform}")
+
+        # Create manager
+        manager = TestManager(config, node_dir=node_dir, output_dir=output_dir)
+
+        # Run tests
+        level = TestLevel(args.level) if args.level else None
+        workflow_filter = getattr(args, 'workflow', None)
 
         results = [manager.run_platform(
             platform,
@@ -203,6 +112,7 @@ def run_clean_test(node_dir: Path, args) -> int:
                 if result.error:
                     print(f"    Error: {_safe_str(result.error)}")
 
+        print(f"\nOutput: {output_dir}")
         return 0 if all_passed else 1
 
     except ConfigError as e:
@@ -236,18 +146,9 @@ def add_run_parser(subparsers):
         help="Run only up to this level (overrides config)",
     )
     run_parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="Clone fresh ComfyUI to temp dir, copy node, run tests, cleanup",
-    )
-    run_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without doing it",
-    )
-    run_parser.add_argument(
-        "--output-dir", "-o",
-        help="Output directory for screenshots/logs/results.json",
     )
     run_parser.add_argument(
         "--gpu",
@@ -257,9 +158,5 @@ def add_run_parser(subparsers):
     run_parser.add_argument(
         "--workflow", "-W",
         help="Run only this specific workflow",
-    )
-    run_parser.add_argument(
-        "--server-url",
-        help="Connect to existing ComfyUI server instead of starting one",
     )
     run_parser.set_defaults(func=cmd_run)

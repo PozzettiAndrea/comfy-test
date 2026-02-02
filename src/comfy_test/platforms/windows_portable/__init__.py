@@ -8,8 +8,8 @@ from .download import (
     find_7z_executable,
     get_cache_dir,
 )
-from .ci import is_ci_environment, get_ci_env_vars
-from .local import is_gpu_mode_enabled, get_portable_cache_dir
+from .local import get_portable_cache_dir
+from ..common import is_ci_environment, get_ci_env_vars, is_gpu_mode_enabled
 
 __all__ = [
     "WindowsPortablePlatform",

@@ -1,26 +1,7 @@
-"""CI-specific behavior for Linux platform.
+"""CI-specific behavior for Linux platform."""
 
-This module contains GitHub Actions and CI-specific configuration and utilities.
-"""
-
-import os
 from pathlib import Path
-from typing import Dict, Any
-
-
-def get_ci_env_vars() -> Dict[str, str]:
-    """Get environment variables specific to CI runs.
-
-    Returns:
-        Dict of environment variables to set in CI.
-    """
-    env = {}
-
-    # GitHub Actions specific
-    if os.environ.get("GITHUB_ACTIONS"):
-        env["CI"] = "true"
-
-    return env
+from typing import Dict
 
 
 def get_ci_cache_paths(work_dir: Path) -> Dict[str, Path]:
@@ -36,8 +17,3 @@ def get_ci_cache_paths(work_dir: Path) -> Dict[str, Path]:
         "pip": Path.home() / ".cache" / "pip",
         "uv": Path.home() / ".cache" / "uv",
     }
-
-
-def is_ci_environment() -> bool:
-    """Check if running in a CI environment."""
-    return os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
