@@ -49,23 +49,22 @@ jobs:
       # --- Setup (skip if cached) ---
       - name: Setup environment
         if: steps.setup-cache.outputs.cache-hit != 'true'
-        shell: bash
+        shell: pwsh
         run: |
           # Install Python via uv (into workspace)
           uv python install 3.13
 
           # Tools venv (for playwright only)
-          uv venv $TOOLS_VENV --python 3.13
-          $TOOLS_VENV/Scripts/pip install playwright
+          uv venv $env:TOOLS_VENV --python 3.13
+          & "$env:TOOLS_VENV/Scripts/pip" install playwright
 
           # Download portable ComfyUI
-          curl -L --fail -o portable.7z \
-            "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z"
-          "/c/Program Files/7-Zip/7z.exe" x portable.7z -y
-          rm portable.7z
+          Invoke-WebRequest -Uri "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z" -OutFile "portable.7z"
+          & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y
+          Remove-Item portable.7z
 
           # Install playwright browsers
-          $TOOLS_VENV/Scripts/playwright install chromium
+          & "$env:TOOLS_VENV/Scripts/playwright" install chromium
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
@@ -80,13 +79,13 @@ jobs:
 
       # --- Install comfy-test (fresh, to embedded Python) ---
       - name: Install comfy-test
-        shell: bash
+        shell: pwsh
         run: |
-          $PYTHON_EXE -m pip install comfy-test
+          & $env:PYTHON_EXE -m pip install comfy-test
           # Install Playwright into embedded Python (not just TOOLS_VENV)
-          $PYTHON_EXE -m pip install playwright pillow
+          & $env:PYTHON_EXE -m pip install playwright pillow
           # Install browsers - uses PLAYWRIGHT_BROWSERS_PATH, downloads if version mismatch
-          $PYTHON_EXE -m playwright install chromium
+          & $env:PYTHON_EXE -m playwright install chromium
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -94,45 +93,53 @@ jobs:
           path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ github.event.repository.name }}
 
       - name: Install node dependencies
-        shell: bash
+        shell: pwsh
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          [ -f requirements.txt ] && $PYTHON_EXE -m pip install -r requirements.txt || true
-          [ -f install.py ] && $PYTHON_EXE install.py || true
+          if (Test-Path "requirements.txt") {
+            & $env:PYTHON_EXE -m pip install -r requirements.txt
+          }
+          if (Test-Path "install.py") {
+            & $env:PYTHON_EXE install.py
+          }
 
       - name: Install validate endpoint
-        shell: bash
+        shell: pwsh
         run: |
           # Install validate endpoint BEFORE server starts (server doesn't load new nodes after startup)
-          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git $COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint || true
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" 2>$null
+          $true  # Don't fail if already exists
 
       - name: Start ComfyUI server
-        shell: bash
+        shell: pwsh
         working-directory: ${{ github.workspace }}/ComfyUI_windows_portable
         run: |
           # Run exact command from batch file (without pause)
-          if [ "$COMFY_TEST_GPU" = "1" ]; then
-            echo "Starting GPU server..."
-            $PYTHON_EXE -s ComfyUI/main.py --windows-standalone-build &
-          else
-            echo "Starting CPU server..."
-            $PYTHON_EXE -s ComfyUI/main.py --cpu --windows-standalone-build &
-          fi
+          if ($env:COMFY_TEST_GPU -eq "1") {
+            Write-Host "Starting GPU server..."
+            Start-Process -FilePath $env:PYTHON_EXE -ArgumentList "-s", "ComfyUI/main.py", "--windows-standalone-build" -NoNewWindow
+          } else {
+            Write-Host "Starting CPU server..."
+            Start-Process -FilePath $env:PYTHON_EXE -ArgumentList "-s", "ComfyUI/main.py", "--cpu", "--windows-standalone-build" -NoNewWindow
+          }
 
           # Wait for server to be ready
-          echo "Waiting for server..."
-          for i in {1..120}; do
-            if curl -s http://localhost:8188/system_stats > /dev/null 2>&1; then
-              echo "Server is ready!"
+          Write-Host "Waiting for server..."
+          for ($i = 1; $i -le 120; $i++) {
+            try {
+              $response = Invoke-WebRequest -Uri "http://localhost:8188/system_stats" -UseBasicParsing -ErrorAction Stop
+              Write-Host "Server is ready!"
               break
-            fi
-            sleep 1
-          done
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
 
       - name: Run tests
-        shell: bash
+        shell: pwsh
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: $PYTHON_EXE -m comfy_test run --server-url http://localhost:8188
+        run: |
+          & $env:PYTHON_EXE -m comfy_test run --server-url http://localhost:8188
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -145,7 +152,7 @@ jobs:
       # --- Cleanup (no trace on self-hosted) ---
       - name: Cleanup workspace
         if: always()
-        shell: bash
+        shell: pwsh
         run: |
-          rm -rf "$GITHUB_WORKSPACE"/* || true
-          rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
+          Remove-Item -Path "$env:GITHUB_WORKSPACE/*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:GITHUB_WORKSPACE/.*" -Recurse -Force -ErrorAction SilentlyContinue

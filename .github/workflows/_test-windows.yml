@@ -50,24 +50,24 @@ jobs:
       # --- Setup (skip if cached) ---
       - name: Setup environment
         if: steps.setup-cache.outputs.cache-hit != 'true'
-        shell: bash
+        shell: pwsh
         run: |
           # Install Python via uv (into workspace)
           uv python install 3.13
 
           # Create tools venv
-          uv venv $TOOLS_VENV --python 3.13
-          $TOOLS_VENV/Scripts/pip install playwright
+          uv venv $env:TOOLS_VENV --python 3.13
+          & "$env:TOOLS_VENV/Scripts/pip" install playwright
 
           # Clone ComfyUI
-          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
+          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $env:COMFYUI_DIR
 
           # Create ComfyUI venv
-          uv venv $COMFY_VENV --python 3.13
-          uv pip install --python $COMFY_VENV -r $COMFYUI_DIR/requirements.txt
+          uv venv $env:COMFY_VENV --python 3.13
+          uv pip install --python $env:COMFY_VENV -r "$env:COMFYUI_DIR/requirements.txt"
 
           # Install playwright browsers
-          $TOOLS_VENV/Scripts/playwright install chromium
+          & "$env:TOOLS_VENV/Scripts/playwright" install chromium
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
@@ -83,8 +83,9 @@ jobs:
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
-        shell: bash
-        run: $COMFY_VENV/Scripts/pip install comfy-test
+        shell: pwsh
+        run: |
+          & "$env:COMFY_VENV/Scripts/pip" install comfy-test
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -92,16 +93,21 @@ jobs:
           path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ github.event.repository.name }}
 
       - name: Install node dependencies
-        shell: bash
+        shell: pwsh
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          [ -f requirements.txt ] && uv pip install --python "$COMFY_VENV" -r requirements.txt || true
-          [ -f install.py ] && $COMFY_VENV/Scripts/python install.py || true
+          if (Test-Path "requirements.txt") {
+            uv pip install --python $env:COMFY_VENV -r requirements.txt
+          }
+          if (Test-Path "install.py") {
+            & "$env:COMFY_VENV/Scripts/python" install.py
+          }
 
       - name: Run tests
-        shell: bash
+        shell: pwsh
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: $COMFY_VENV/Scripts/comfy-test run
+        run: |
+          & "$env:COMFY_VENV/Scripts/comfy-test" run
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -114,7 +120,7 @@ jobs:
       # --- Cleanup (no trace on self-hosted) ---
       - name: Cleanup workspace
         if: always()
-        shell: bash
+        shell: pwsh
         run: |
-          rm -rf "$GITHUB_WORKSPACE"/* || true
-          rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
+          Remove-Item -Path "$env:GITHUB_WORKSPACE/*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:GITHUB_WORKSPACE/.*" -Recurse -Force -ErrorAction SilentlyContinue
