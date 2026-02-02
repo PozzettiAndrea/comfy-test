@@ -27,64 +27,40 @@ jobs:
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI_windows_portable\ComfyUI
       PYTHON_EXE: ${{ github.workspace }}\ComfyUI_windows_portable\python_embeded\python.exe
-      TOOLS_VENV: ${{ github.workspace }}\.tools-venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
-      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}\.python
-      UV_CACHE_DIR: ${{ github.workspace }}\.uv-cache
     steps:
-      # --- Install uv (manages Python for tools venv) ---
-      - uses: astral-sh/setup-uv@v4
-
-      # --- Single cache ---
+      # --- Cache portable ComfyUI ---
       - uses: actions/cache/restore@v4
         id: setup-cache
         with:
           path: |
-            ${{ env.TOOLS_VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ github.workspace }}\ComfyUI_windows_portable
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-windows-portable-uv-v1
+          key: setup-windows-portable-v1
 
       # --- Setup (skip if cached) ---
-      - name: Setup environment
+      - name: Download portable ComfyUI
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          # Install Python via uv (into workspace)
-          uv python install 3.13
-
-          # Tools venv (for playwright only)
-          uv venv $env:TOOLS_VENV --python 3.13
-          uv pip install --python "$env:TOOLS_VENV" playwright
-
-          # Download portable ComfyUI
           Invoke-WebRequest -Uri "https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z" -OutFile "portable.7z"
           & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y
           Remove-Item portable.7z
-
-          # Install playwright browsers
-          & "$env:TOOLS_VENV\Scripts\playwright" install chromium
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
         with:
           path: |
-            ${{ env.TOOLS_VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ github.workspace }}\ComfyUI_windows_portable
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-windows-portable-uv-v1
+          key: setup-windows-portable-v1
 
       # --- Install comfy-test (fresh, to embedded Python) ---
       - name: Install comfy-test
         shell: powershell
         run: |
-          & $env:PYTHON_EXE -m pip install comfy-test
-          # Install Playwright into embedded Python (not just TOOLS_VENV)
-          & $env:PYTHON_EXE -m pip install playwright pillow
-          # Install browsers - uses PLAYWRIGHT_BROWSERS_PATH, downloads if version mismatch
+          & $env:PYTHON_EXE -m pip install comfy-test playwright pillow
           & $env:PYTHON_EXE -m playwright install chromium
 
       # --- Checkout and run ---
@@ -106,7 +82,6 @@ jobs:
       - name: Install validate endpoint
         shell: powershell
         run: |
-          # Install validate endpoint BEFORE server starts (server doesn't load new nodes after startup)
           git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint" 2>$null
           $true  # Don't fail if already exists
 
@@ -114,7 +89,6 @@ jobs:
         shell: powershell
         working-directory: ${{ github.workspace }}\ComfyUI_windows_portable
         run: |
-          # Run exact command from batch file (without pause)
           if ($env:COMFY_TEST_GPU -eq "1") {
             Write-Host "Starting GPU server..."
             Start-Process -FilePath $env:PYTHON_EXE -ArgumentList "-s", "ComfyUI\main.py", "--windows-standalone-build" -NoNewWindow
@@ -123,7 +97,6 @@ jobs:
             Start-Process -FilePath $env:PYTHON_EXE -ArgumentList "-s", "ComfyUI\main.py", "--cpu", "--windows-standalone-build" -NoNewWindow
           }
 
-          # Wait for server to be ready
           Write-Host "Waiting for server..."
           for ($i = 1; $i -le 120; $i++) {
             try {
@@ -145,7 +118,7 @@ jobs:
         if: always()
         with:
           name: results-windows-portable-${{ inputs.gpu && 'gpu' || 'cpu' }}
-          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}\
           if-no-files-found: ignore
           include-hidden-files: true
 
