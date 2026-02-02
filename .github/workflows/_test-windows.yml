@@ -32,8 +32,11 @@ jobs:
       UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}\.python
       UV_CACHE_DIR: ${{ github.workspace }}\.uv-cache
     steps:
-      # --- Install uv (manages Python) ---
+      # --- Install uv (manages Python) and pixi (for CUDA deps) ---
       - uses: astral-sh/setup-uv@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          run-install: false
 
       # --- Single cache ---
       - uses: actions/cache/restore@v4

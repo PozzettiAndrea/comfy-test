@@ -29,6 +29,11 @@ jobs:
       PYTHON_EXE: ${{ github.workspace }}\ComfyUI_windows_portable\python_embeded\python.exe
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
     steps:
+      # --- Install pixi (for CUDA deps) ---
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          run-install: false
+
       # --- Cache portable ComfyUI ---
       - uses: actions/cache/restore@v4
         id: setup-cache

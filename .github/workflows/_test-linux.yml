@@ -39,8 +39,11 @@ jobs:
           sudo apt-get clean &
           wait
 
-      # --- Install uv (manages Python) ---
+      # --- Install uv (manages Python) and pixi (for CUDA deps) ---
       - uses: astral-sh/setup-uv@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          run-install: false
 
       # --- Single cache ---
       - uses: actions/cache/restore@v4
@@ -63,7 +66,7 @@ jobs:
 
           # Create tools venv
           uv venv $TOOLS_VENV --python 3.13
-          $TOOLS_VENV/bin/pip install playwright
+          uv pip install --python $TOOLS_VENV playwright
 
           # Clone ComfyUI
           git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
@@ -73,8 +76,8 @@ jobs:
           uv pip install --python $COMFY_VENV -r $COMFYUI_DIR/requirements.txt
 
           # Install playwright browsers
-          $TOOLS_VENV/bin/playwright install chromium
-          $TOOLS_VENV/bin/playwright install-deps chromium || true
+          $TOOLS_VENV/bin/python -m playwright install chromium
+          $TOOLS_VENV/bin/python -m playwright install-deps chromium || true
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
@@ -90,7 +93,7 @@ jobs:
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
-        run: $COMFY_VENV/bin/pip install comfy-test
+        run: uv pip install --python $COMFY_VENV comfy-test
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
