@@ -41,7 +41,7 @@ jobs:
           path: |
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ github.workspace }}\ComfyUI_windows_portable
-          key: setup-windows-portable-v1
+          key: setup-windows-portable-${{ inputs.gpu && 'gpu' || 'hosted' }}-v1
 
       # --- Setup (skip if cached) ---
       - name: Download portable ComfyUI
@@ -59,7 +59,7 @@ jobs:
           path: |
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ github.workspace }}\ComfyUI_windows_portable
-          key: setup-windows-portable-v1
+          key: setup-windows-portable-${{ inputs.gpu && 'gpu' || 'hosted' }}-v1
 
       # --- Install comfy-test (fresh, to embedded Python) ---
       - name: Install comfy-test

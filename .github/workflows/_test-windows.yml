@@ -48,7 +48,7 @@ jobs:
             ${{ env.COMFYUI_DIR }}
             ${{ env.COMFY_VENV }}
             ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-${{ runner.os }}-uv-v1
+          key: setup-${{ runner.os }}-${{ inputs.gpu && 'gpu' || 'hosted' }}-uv-v1
 
       # --- Setup (skip if cached) ---
       - name: Setup environment
@@ -82,7 +82,7 @@ jobs:
             ${{ env.COMFYUI_DIR }}
             ${{ env.COMFY_VENV }}
             ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-${{ runner.os }}-uv-v1
+          key: setup-${{ runner.os }}-${{ inputs.gpu && 'gpu' || 'hosted' }}-uv-v1
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
