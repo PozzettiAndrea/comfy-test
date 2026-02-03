@@ -116,7 +116,7 @@ jobs:
           Write-Host "Waiting for server..."
           for ($i = 1; $i -le 120; $i++) {
             try {
-              $response = Invoke-WebRequest -Uri "http://localhost:8188/system_stats" -UseBasicParsing -ErrorAction Stop
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop
               Write-Host "Server is ready!"
               break
             } catch {
@@ -128,7 +128,7 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          & $env:PYTHON_EXE -m comfy_test run --server-url http://localhost:8188
+          & $env:PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8188
 
       - uses: actions/upload-artifact@v4
         if: always()
