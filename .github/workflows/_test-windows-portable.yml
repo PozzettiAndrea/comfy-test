@@ -57,6 +57,13 @@ jobs:
         shell: powershell
         run: Remove-Item portable.7z
 
+      - name: Install Playwright browsers
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          & $env:PYTHON_EXE -m pip install playwright
+          & $env:PYTHON_EXE -m playwright install chromium
+
       # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
@@ -70,8 +77,7 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & $env:PYTHON_EXE -m pip install comfy-test playwright pillow
-          & $env:PYTHON_EXE -m playwright install chromium
+          & $env:PYTHON_EXE -m pip install comfy-test pillow
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -92,7 +98,7 @@ jobs:
       - name: Install validate endpoint
         shell: powershell
         run: |
-          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint" 2>$null
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
           $true  # Don't fail if already exists
 
       - name: Start ComfyUI server
