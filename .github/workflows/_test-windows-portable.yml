@@ -50,7 +50,7 @@ jobs:
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y
+          & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y -bsp1
 
       - name: Remove portable archive
         if: steps.setup-cache.outputs.cache-hit != 'true'
