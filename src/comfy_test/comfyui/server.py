@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Optional, Callable, List, TYPE_CHECKING
 
+import requests
+
 from .api import ComfyUIAPI
 from ..common.errors import ServerError, TestTimeoutError
 
@@ -319,23 +321,44 @@ class ExternalComfyUIServer:
         """
         self._log(f"Connecting to existing server at {self._url}...")
 
-        api = ComfyUIAPI(self._url, timeout=5)
+        api = ComfyUIAPI(self._url, timeout=10)  # Increased from 5s for slow CI
         start_time = time.time()
+        attempt = 0
+        last_error: Optional[str] = None
 
         while time.time() - start_time < wait_timeout:
+            attempt += 1
+            elapsed = time.time() - start_time
+
             try:
-                if api.health_check():
-                    self._log("Connected to server!")
+                response = api.session.get(
+                    f"{api.base_url}/system_stats",
+                    timeout=api.timeout,
+                )
+                if response.status_code == 200:
+                    self._log(f"Connected to server! (attempt {attempt}, {elapsed:.1f}s)")
                     self._api = api
                     return
-            except Exception:
-                pass
+                last_error = f"HTTP {response.status_code}: {response.reason}"
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"Connection error: {e}"
+            except requests.exceptions.Timeout:
+                last_error = f"Timeout after {api.timeout}s"
+            except requests.RequestException as e:
+                last_error = f"Request error: {type(e).__name__}: {e}"
+            except Exception as e:
+                last_error = f"Unexpected: {type(e).__name__}: {e}"
+
+            # Log progress every 10 seconds
+            if attempt == 1 or int(elapsed) % 10 == 0:
+                self._log(f"  Waiting... attempt {attempt}, {elapsed:.1f}s elapsed. Error: {last_error}")
+
             time.sleep(1)
 
         api.close()
         raise ServerError(
             f"Could not connect to server at {self._url}",
-            f"Waited {wait_timeout} seconds"
+            f"Waited {wait_timeout} seconds ({attempt} attempts)\nLast error: {last_error}"
         )
 
     def stop(self) -> None:
