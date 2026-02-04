@@ -28,8 +28,11 @@ jobs:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
       UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}\.python
       UV_CACHE_DIR: ${{ github.workspace }}\.uv-cache
-      LOCAL_CACHE_DIR: ${{ runner.tool_cache }}\comfy-test-cache\windows-gpu-v1
     steps:
+      - name: Set cache directory
+        shell: powershell
+        run: echo "LOCAL_CACHE_DIR=$env:RUNNER_TOOL_CACHE\comfy-test-cache\windows-gpu-v1" >> $env:GITHUB_ENV
+
       - uses: astral-sh/setup-uv@v4
 
       # --- Restore local cache ---

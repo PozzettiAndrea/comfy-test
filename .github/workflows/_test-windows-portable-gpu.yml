@@ -25,8 +25,11 @@ jobs:
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI_windows_portable\ComfyUI
       PYTHON_EXE: ${{ github.workspace }}\ComfyUI_windows_portable\python_embeded\python.exe
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
-      LOCAL_CACHE_DIR: ${{ runner.tool_cache }}\comfy-test-cache\windows-portable-gpu-v1
     steps:
+      - name: Set cache directory
+        shell: powershell
+        run: echo "LOCAL_CACHE_DIR=$env:RUNNER_TOOL_CACHE\comfy-test-cache\windows-portable-gpu-v1" >> $env:GITHUB_ENV
+
       # --- Restore local cache ---
       - name: Restore local cache
         id: local-cache
