@@ -77,7 +77,8 @@ jobs:
       - name: Run tests
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
-        run: & "$env:COMFY_VENV\Scripts\comfy-test" run --comfyui-dir "$env:COMFYUI_DIR" --deps-installed
+        run: |
+          & "$env:COMFY_VENV\Scripts\comfy-test" run --comfyui-dir "$env:COMFYUI_DIR" --deps-installed
 
       - uses: actions/upload-artifact@v4
         if: always()

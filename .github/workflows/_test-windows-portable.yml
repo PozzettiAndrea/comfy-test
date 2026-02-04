@@ -44,7 +44,8 @@ jobs:
       - name: Extract portable ComfyUI
         if: steps.github-cache.outputs.cache-hit != 'true'
         shell: powershell
-        run: & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y -bsp1
+        run: |
+          & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y -bsp1
 
       - name: Remove portable archive
         if: steps.github-cache.outputs.cache-hit != 'true'
@@ -61,7 +62,8 @@ jobs:
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
         shell: powershell
-        run: & $env:PYTHON_EXE -m pip install comfy-test pillow
+        run: |
+          & $env:PYTHON_EXE -m pip install comfy-test pillow
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
