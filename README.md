@@ -52,7 +52,7 @@ comfy-test runs 7 test levels in sequence:
 Each level depends on previous levels. You can run up to a specific level with `--level`:
 
 ```bash
-comfy-test run --level registration  # Runs: SYNTAX → INSTALL → REGISTRATION
+comfy-test run --level registration  # Runs: SYNTAX -> INSTALL -> REGISTRATION
 ```
 
 ## Workflow Validation (4 Levels)
