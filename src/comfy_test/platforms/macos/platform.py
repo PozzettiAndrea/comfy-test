@@ -128,6 +128,10 @@ class MacOSPlatform(TestPlatform):
 
         target_dir = paths.custom_nodes_dir / node_name
 
+        if deps_installed:
+            self._log("Skipping symlink, requirements.txt, and install.py (--deps-installed)")
+            return
+
         # Create symlink (macOS supports symlinks natively)
         self._log(f"Linking {node_name} to custom_nodes/...")
         if target_dir.exists():
@@ -137,10 +141,6 @@ class MacOSPlatform(TestPlatform):
                 shutil.rmtree(target_dir)
 
         target_dir.symlink_to(node_dir)
-
-        if deps_installed:
-            self._log("Skipping requirements.txt and install.py (--deps-installed)")
-            return
 
         # Install requirements.txt first
         requirements_file = node_dir / "requirements.txt"

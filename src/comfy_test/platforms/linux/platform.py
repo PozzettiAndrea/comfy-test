@@ -125,6 +125,10 @@ class LinuxPlatform(TestPlatform):
 
         target_dir = paths.custom_nodes_dir / node_name
 
+        if deps_installed:
+            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
+            return
+
         # Copy node (not symlink) for full isolation
         self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
@@ -165,10 +169,6 @@ class LinuxPlatform(TestPlatform):
             return ignored
 
         shutil.copytree(node_dir, target_dir, ignore=ignore_patterns)
-
-        if deps_installed:
-            self._log("Skipping requirements.txt and install.py (--deps-installed)")
-            return
 
         # Install requirements.txt first (install.py may depend on these)
         requirements_file = target_dir / "requirements.txt"

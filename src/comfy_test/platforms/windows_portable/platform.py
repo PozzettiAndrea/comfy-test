@@ -253,15 +253,15 @@ class WindowsPortablePlatform(TestPlatform):
         node_name = node_dir.name
         target_dir = paths.custom_nodes_dir / node_name
 
+        if deps_installed:
+            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
+            return
+
         self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
             shutil.rmtree(target_dir)
 
         shutil.copytree(node_dir, target_dir, ignore=_gitignore_filter(node_dir, paths.work_dir))
-
-        if deps_installed:
-            self._log("Skipping requirements.txt and install.py (--deps-installed)")
-            return
 
         # Build local dev wheels
         wheel_dir = _build_local_wheels(paths.work_dir, self._log)

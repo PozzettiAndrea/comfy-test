@@ -259,16 +259,16 @@ class WindowsPlatform(TestPlatform):
 
         target_dir = paths.custom_nodes_dir / node_name
 
+        if deps_installed:
+            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
+            return
+
         # Copy node directory
         self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
             shutil.rmtree(target_dir)
 
         shutil.copytree(node_dir, target_dir, ignore=_gitignore_filter(node_dir, paths.work_dir))
-
-        if deps_installed:
-            self._log("Skipping requirements.txt and install.py (--deps-installed)")
-            return
 
         # Install requirements.txt first (install.py may depend on these)
         # Uses pip (not uv) to match user experience
