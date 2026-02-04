@@ -35,9 +35,11 @@ jobs:
       # --- Install uv (manages Python) and pixi (for CUDA deps) ---
       - uses: astral-sh/setup-uv@v4
 
-      # --- Single cache ---
-      - uses: actions/cache/restore@v4
-        id: setup-cache
+      # --- Local cache for self-hosted (instant, no download) ---
+      - name: Local cache (self-hosted)
+        if: ${{ inputs.gpu }}
+        id: local-cache
+        uses: MasterworksIO/action-local-cache@2
         with:
           path: |
             ${{ env.TOOLS_VENV }}
@@ -45,11 +47,25 @@ jobs:
             ${{ env.COMFYUI_DIR }}
             ${{ env.COMFY_VENV }}
             ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-${{ runner.os }}-${{ inputs.gpu && 'gpu' || 'hosted' }}-uv-v1
+          key: setup-windows-gpu-v1
 
-      # --- Setup (skip if cached) ---
+      # --- GitHub cache for hosted runners ---
+      - name: GitHub cache (hosted)
+        if: ${{ !inputs.gpu }}
+        id: github-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TOOLS_VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+            ${{ env.COMFY_VENV }}
+            ${{ env.UV_PYTHON_INSTALL_DIR }}
+          key: setup-${{ runner.os }}-hosted-uv-v1
+
+      # --- Setup (skip if either cache hit) ---
       - name: Setup environment
-        if: steps.setup-cache.outputs.cache-hit != 'true'
+        if: steps.local-cache.outputs.cache-hit != 'true' && steps.github-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           # Install Python via uv (into workspace)
@@ -68,18 +84,6 @@ jobs:
 
           # Install playwright browsers
           & "$env:TOOLS_VENV\Scripts\playwright" install chromium
-
-      # --- Save cache ---
-      - uses: actions/cache/save@v4
-        if: steps.setup-cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ${{ env.TOOLS_VENV }}
-            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-            ${{ env.COMFYUI_DIR }}
-            ${{ env.COMFY_VENV }}
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-${{ runner.os }}-${{ inputs.gpu && 'gpu' || 'hosted' }}-uv-v1
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
