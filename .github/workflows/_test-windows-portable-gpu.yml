@@ -45,6 +45,7 @@ jobs:
             Write-Host "No local cache found"
             echo "cache-hit=false" >> $env:GITHUB_OUTPUT
           }
+          exit 0  # robocopy returns 1 on success, force exit 0
 
       # --- Setup (skip if cache hit) ---
       - name: Download portable ComfyUI
@@ -80,6 +81,7 @@ jobs:
           robocopy "$env:PLAYWRIGHT_BROWSERS_PATH" "$env:LOCAL_CACHE_DIR\playwright" /E /MT /NFL /NDL /NJH /NJS
           robocopy "$env:GITHUB_WORKSPACE\ComfyUI_windows_portable" "$env:LOCAL_CACHE_DIR\ComfyUI_windows_portable" /E /MT /NFL /NDL /NJH /NJS
           Write-Host "Cache saved!"
+          exit 0  # robocopy returns 1 on success, force exit 0
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test

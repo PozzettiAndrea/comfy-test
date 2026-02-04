@@ -53,6 +53,7 @@ jobs:
             Write-Host "No local cache found"
             echo "cache-hit=false" >> $env:GITHUB_OUTPUT
           }
+          exit 0  # robocopy returns 1 on success, force exit 0
 
       # --- Setup (skip if cache hit) ---
       - name: Setup environment
@@ -80,6 +81,7 @@ jobs:
           robocopy "$env:COMFY_VENV" "$env:LOCAL_CACHE_DIR\comfy-venv" /E /MT /NFL /NDL /NJH /NJS
           robocopy "$env:UV_PYTHON_INSTALL_DIR" "$env:LOCAL_CACHE_DIR\python" /E /MT /NFL /NDL /NJH /NJS
           Write-Host "Cache saved!"
+          exit 0  # robocopy returns 1 on success, force exit 0
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
