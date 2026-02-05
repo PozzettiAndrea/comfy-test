@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
       PYTHONUNBUFFERED: "1"
+      COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
       NODE_NAME: ${{ github.event.repository.name }}
