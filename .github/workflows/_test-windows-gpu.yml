@@ -23,75 +23,88 @@ jobs:
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI
-      TOOLS_VENV: ${{ github.workspace }}\.tools-venv
-      COMFY_VENV: ${{ github.workspace }}\.comfy-venv
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
-      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}\.python
-      UV_CACHE_DIR: ${{ github.workspace }}\.uv-cache
+      PYTHON_DIR: ${{ github.workspace }}\python
+      PYTHON_EXE: ${{ github.workspace }}\python\python.exe
     steps:
       - name: Set cache directory
         shell: powershell
-        run: echo "LOCAL_CACHE_DIR=$env:RUNNER_TOOL_CACHE\comfy-test-cache\windows-gpu-v1" >> $env:GITHUB_ENV
-
-      - uses: astral-sh/setup-uv@v4
+        run: echo "LOCAL_CACHE_DIR=$env:RUNNER_TOOL_CACHE\comfy-test-cache\windows-gpu-v2" >> $env:GITHUB_ENV
 
       # --- Restore local cache ---
       - name: Restore local cache
         id: local-cache
         shell: powershell
         run: |
-          if (Test-Path "$env:LOCAL_CACHE_DIR") {
+          if (Test-Path "$env:LOCAL_CACHE_DIR\python") {
             Write-Host "Restoring from local cache..."
-            robocopy "$env:LOCAL_CACHE_DIR\tools-venv" "$env:TOOLS_VENV" /E /MT /NFL /NDL /NJH /NJS
-            robocopy "$env:LOCAL_CACHE_DIR\playwright" "$env:PLAYWRIGHT_BROWSERS_PATH" /E /MT /NFL /NDL /NJH /NJS
+            robocopy "$env:LOCAL_CACHE_DIR\python" "$env:PYTHON_DIR" /E /MT /NFL /NDL /NJH /NJS
             robocopy "$env:LOCAL_CACHE_DIR\ComfyUI" "$env:COMFYUI_DIR" /E /MT /NFL /NDL /NJH /NJS
-            robocopy "$env:LOCAL_CACHE_DIR\comfy-venv" "$env:COMFY_VENV" /E /MT /NFL /NDL /NJH /NJS
-            robocopy "$env:LOCAL_CACHE_DIR\python" "$env:UV_PYTHON_INSTALL_DIR" /E /MT /NFL /NDL /NJH /NJS
             Write-Host "Cache restored!"
             echo "cache-hit=true" >> $env:GITHUB_OUTPUT
           } else {
             Write-Host "No local cache found"
             echo "cache-hit=false" >> $env:GITHUB_OUTPUT
           }
-          exit 0  # robocopy returns 1 on success, force exit 0
+          exit 0
 
-      # --- Setup (skip if cache hit) ---
-      - name: Setup environment
+      # --- Setup Python (skip if cache hit) ---
+      - name: Setup Python
         if: steps.local-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          uv python install 3.13
-          uv venv $env:TOOLS_VENV --python 3.13
-          uv pip install --python "$env:TOOLS_VENV" playwright
-          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $env:COMFYUI_DIR
-          # Patch requirements.txt to remove torch/torchvision/torchaudio (we install CUDA versions separately)
-          (Get-Content "$env:COMFYUI_DIR\requirements.txt") | Where-Object { $_ -notmatch '^(torch|torchvision|torchaudio)$' } | Set-Content "$env:COMFYUI_DIR\requirements.txt"
-          uv venv $env:COMFY_VENV --python 3.13
-          uv pip install --python $env:COMFY_VENV torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
-          uv pip install --python $env:COMFY_VENV -r "$env:COMFYUI_DIR\requirements.txt"
-          & "$env:TOOLS_VENV\Scripts\playwright" install chromium
+          Write-Host "Downloading Python embeddable..."
+          $pythonUrl = "https://www.python.org/ftp/python/3.13.0/python-3.13.0-embed-amd64.zip"
+          Invoke-WebRequest -Uri $pythonUrl -OutFile python.zip
+          Expand-Archive python.zip -DestinationPath $env:PYTHON_DIR
+          Remove-Item python.zip
 
-      # --- Save local cache immediately after setup ---
+          # Enable pip (uncomment import site in ._pth file)
+          $pthFile = Get-ChildItem "$env:PYTHON_DIR\*.pth" | Select-Object -First 1
+          (Get-Content $pthFile) -replace '#import site','import site' | Set-Content $pthFile
+
+          # Install pip
+          Write-Host "Installing pip..."
+          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile get-pip.py
+          & $env:PYTHON_EXE get-pip.py --no-warn-script-location
+          Remove-Item get-pip.py
+
+          # Install CUDA torch
+          Write-Host "Installing CUDA torch..."
+          & $env:PYTHON_EXE -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 --no-warn-script-location
+
+          # Clone ComfyUI and install requirements
+          Write-Host "Cloning ComfyUI..."
+          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $env:COMFYUI_DIR
+
+          # Patch requirements.txt to remove torch (already installed with CUDA)
+          (Get-Content "$env:COMFYUI_DIR\requirements.txt") | Where-Object { $_ -notmatch '^(torch|torchvision|torchaudio)$' } | Set-Content "$env:COMFYUI_DIR\requirements.txt"
+
+          Write-Host "Installing ComfyUI requirements..."
+          & $env:PYTHON_EXE -m pip install -r "$env:COMFYUI_DIR\requirements.txt" --no-warn-script-location
+
+          # Install playwright
+          Write-Host "Installing playwright..."
+          & $env:PYTHON_EXE -m pip install playwright --no-warn-script-location
+          & $env:PYTHON_EXE -m playwright install chromium
+
+      # --- Save local cache ---
       - name: Save local cache
         if: steps.local-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
           Write-Host "Saving to local cache..."
           New-Item -ItemType Directory -Force -Path "$env:LOCAL_CACHE_DIR" | Out-Null
-          robocopy "$env:TOOLS_VENV" "$env:LOCAL_CACHE_DIR\tools-venv" /E /MT /NFL /NDL /NJH /NJS
-          robocopy "$env:PLAYWRIGHT_BROWSERS_PATH" "$env:LOCAL_CACHE_DIR\playwright" /E /MT /NFL /NDL /NJH /NJS
+          robocopy "$env:PYTHON_DIR" "$env:LOCAL_CACHE_DIR\python" /E /MT /NFL /NDL /NJH /NJS
           robocopy "$env:COMFYUI_DIR" "$env:LOCAL_CACHE_DIR\ComfyUI" /E /MT /NFL /NDL /NJH /NJS
-          robocopy "$env:COMFY_VENV" "$env:LOCAL_CACHE_DIR\comfy-venv" /E /MT /NFL /NDL /NJH /NJS
-          robocopy "$env:UV_PYTHON_INSTALL_DIR" "$env:LOCAL_CACHE_DIR\python" /E /MT /NFL /NDL /NJH /NJS
           Write-Host "Cache saved!"
-          exit 0  # robocopy returns 1 on success, force exit 0
+          exit 0
 
       # --- Verify CUDA torch ---
       - name: Verify CUDA torch
         shell: powershell
         run: |
           Write-Host "Verifying CUDA torch installation..."
-          & "$env:COMFY_VENV\Scripts\python.exe" -c @"
+          & $env:PYTHON_EXE -c @"
           import torch
           print('PyTorch:', torch.__version__)
           print('CUDA available:', torch.cuda.is_available())
@@ -100,10 +113,10 @@ jobs:
               print('Device:', torch.cuda.get_device_name(0))
           "@
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test (fresh each run) ---
       - name: Install comfy-test
         shell: powershell
-        run: uv pip install --python "$env:COMFY_VENV" comfy-test
+        run: & $env:PYTHON_EXE -m pip install comfy-test --no-warn-script-location
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -114,9 +127,8 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          & "$env:COMFY_VENV\Scripts\Activate.ps1"
-          if (Test-Path "requirements.txt") { uv pip install -r requirements.txt }
-          if (Test-Path "install.py") { python install.py }
+          if (Test-Path "requirements.txt") { & $env:PYTHON_EXE -m pip install -r requirements.txt --no-warn-script-location }
+          if (Test-Path "install.py") { & $env:PYTHON_EXE install.py }
 
       - name: Install validate endpoint
         shell: powershell
@@ -132,7 +144,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
 
           Write-Host "Starting GPU server (logging to $serverLog)..."
-          $serverProcess = Start-Process -FilePath "$env:COMFY_VENV\Scripts\python.exe" `
+          $env:COMFY_ENV_DEBUG = "1"
+          $serverProcess = Start-Process -FilePath $env:PYTHON_EXE `
             -ArgumentList "-u", "$env:COMFYUI_DIR\main.py", "--listen", "127.0.0.1", "--port", "8188" `
             -NoNewWindow -PassThru -RedirectStandardOutput $serverLog -RedirectStandardError "$env:COMFY_TEST_LOGS_DIR\server_stderr.log"
 
@@ -165,7 +178,7 @@ jobs:
             exit 1
           }
 
-          & "$env:COMFY_VENV\Scripts\comfy-test" run --server-url http://127.0.0.1:8188
+          & "$env:PYTHON_DIR\Scripts\comfy-test.exe" run --server-url http://127.0.0.1:8188
           $testExitCode = $LASTEXITCODE
 
           Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
@@ -180,7 +193,7 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
-      # --- Cleanup (no trace on self-hosted) ---
+      # --- Cleanup ---
       - name: Cleanup workspace
         if: always()
         shell: powershell
