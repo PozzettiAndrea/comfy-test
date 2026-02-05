@@ -84,6 +84,7 @@ jobs:
         run: |
           & "$env:COMFY_VENV\Scripts\Activate.ps1"
           if (Test-Path "requirements.txt") { uv pip install -r requirements.txt }
+          $env:UV_PYTHON_INSTALL_DIR = $null
           if (Test-Path "install.py") { python install.py }
 
       - name: Install validate endpoint

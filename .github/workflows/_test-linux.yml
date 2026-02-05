@@ -87,6 +87,7 @@ jobs:
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
           [ -f requirements.txt ] && uv pip install --python "$COMFY_VENV" -r requirements.txt || true
+          unset UV_PYTHON_INSTALL_DIR
           [ -f install.py ] && $COMFY_VENV/bin/python install.py || true
 
       - name: Install validate endpoint
