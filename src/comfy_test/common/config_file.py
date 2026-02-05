@@ -285,7 +285,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
             if workflows_dir.exists():
                 return sorted(workflows_dir.glob("*.json"))
             return []
-        return [workflows_dir / f for f in value]
+        return [workflows_dir / (f if f.endswith(".json") else f + ".json") for f in value]
 
     # Auto-discover all workflows (alphabetical order)
     workflows = resolve_workflows("all")
