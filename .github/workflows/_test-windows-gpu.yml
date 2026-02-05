@@ -59,7 +59,7 @@ jobs:
           Remove-Item python.zip
 
           # Enable pip (uncomment import site in ._pth file)
-          $pthFile = Get-ChildItem "$env:PYTHON_DIR\*.pth" | Select-Object -First 1
+          $pthFile = Get-ChildItem "$env:PYTHON_DIR\*._pth" | Select-Object -First 1
           (Get-Content $pthFile) -replace '#import site','import site' | Set-Content $pthFile
 
           # Install pip
