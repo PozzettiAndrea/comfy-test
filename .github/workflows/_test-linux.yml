@@ -85,18 +85,37 @@ jobs:
       - name: Run tests
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          echo "Starting CPU server..."
-          $COMFY_VENV/bin/python -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8188 --cpu &
+          mkdir -p "$COMFY_TEST_LOGS_DIR"
+          SERVER_LOG="$COMFY_TEST_LOGS_DIR/server.log"
+
+          echo "Starting CPU server (logging to $SERVER_LOG)..."
+          $COMFY_VENV/bin/python -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8188 --cpu > "$SERVER_LOG" 2>&1 &
           SERVER_PID=$!
 
-          echo "Waiting for server..."
-          for i in $(seq 1 120); do
+          echo "Waiting for server (up to 5 minutes)..."
+          SERVER_READY=0
+          for i in $(seq 1 300); do
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server process died!"
+              echo "=== Server log ==="
+              cat "$SERVER_LOG" || true
+              exit 1
+            fi
             if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
-              echo "Server is ready!"
+              echo "Server is ready after $i seconds!"
+              SERVER_READY=1
               break
             fi
             sleep 1
           done
+
+          if [ "$SERVER_READY" != "1" ]; then
+            echo "Server failed to start within 5 minutes"
+            echo "=== Server log ==="
+            cat "$SERVER_LOG" || true
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
+          fi
 
           $COMFY_VENV/bin/comfy-test run --server-url http://127.0.0.1:8188
           TEST_EXIT_CODE=$?
@@ -108,6 +127,7 @@ jobs:
         if: always()
         with:
           name: results-linux-cpu
-          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          path: |
+            ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
           include-hidden-files: true

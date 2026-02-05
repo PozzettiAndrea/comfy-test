@@ -111,16 +111,30 @@ jobs:
         shell: powershell
         working-directory: ${{ github.workspace }}\ComfyUI_windows_portable
         run: |
+          New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
+
           Write-Host "Starting GPU server via batch file..."
           $serverProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run_nvidia_gpu.bat" -NoNewWindow -PassThru
 
-          Write-Host "Waiting for server..."
-          for ($i = 1; $i -le 120; $i++) {
+          Write-Host "Waiting for server (up to 5 minutes)..."
+          $serverReady = $false
+          for ($i = 1; $i -le 300; $i++) {
+            if ($serverProcess.HasExited) {
+              Write-Host "Server process died! Exit code: $($serverProcess.ExitCode)"
+              exit 1
+            }
             try {
               Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop | Out-Null
-              Write-Host "Server is ready!"
+              Write-Host "Server is ready after $i seconds!"
+              $serverReady = $true
               break
             } catch { Start-Sleep -Seconds 1 }
+          }
+
+          if (-not $serverReady) {
+            Write-Host "Server failed to start within 5 minutes"
+            Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+            exit 1
           }
 
           Set-Location "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
