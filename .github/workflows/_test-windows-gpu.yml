@@ -62,29 +62,28 @@ jobs:
           $pthFile = Get-ChildItem "$env:PYTHON_DIR\*._pth" | Select-Object -First 1
           (Get-Content $pthFile) -replace '#import site','import site' | Set-Content $pthFile
 
-          # Install pip
-          Write-Host "Installing pip..."
-          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile get-pip.py
-          & $env:PYTHON_EXE get-pip.py --no-warn-script-location
-          Remove-Item get-pip.py
+          # Download uv binary (fast pip replacement)
+          Write-Host "Downloading uv..."
+          Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip" -OutFile uv.zip
+          Expand-Archive uv.zip -DestinationPath $env:PYTHON_DIR -Force
+          Remove-Item uv.zip
+          $env:UV = "$env:PYTHON_DIR\uv.exe"
 
-          # Install CUDA torch
-          Write-Host "Installing CUDA torch..."
-          & $env:PYTHON_EXE -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 --no-warn-script-location
-
-          # Clone ComfyUI and install requirements
+          # Clone ComfyUI
           Write-Host "Cloning ComfyUI..."
           git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $env:COMFYUI_DIR
 
-          # Patch requirements.txt to remove torch (already installed with CUDA)
-          (Get-Content "$env:COMFYUI_DIR\requirements.txt") | Where-Object { $_ -notmatch '^(torch|torchvision|torchaudio)$' } | Set-Content "$env:COMFYUI_DIR\requirements.txt"
-
+          # Install ComfyUI requirements (includes CPU torch)
           Write-Host "Installing ComfyUI requirements..."
-          & $env:PYTHON_EXE -m pip install -r "$env:COMFYUI_DIR\requirements.txt" --no-warn-script-location
+          & $env:UV pip install --python $env:PYTHON_EXE -r "$env:COMFYUI_DIR\requirements.txt"
+
+          # Upgrade to CUDA torch
+          Write-Host "Installing CUDA torch..."
+          & $env:UV pip install --python $env:PYTHON_EXE --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 
           # Install playwright
           Write-Host "Installing playwright..."
-          & $env:PYTHON_EXE -m pip install playwright --no-warn-script-location
+          & $env:UV pip install --python $env:PYTHON_EXE playwright
           & $env:PYTHON_EXE -m playwright install chromium
 
       # --- Save local cache ---
