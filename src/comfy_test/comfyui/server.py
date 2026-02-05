@@ -181,22 +181,10 @@ class ComfyUIServer:
         while time.time() - start_time < timeout:
             # Check if process died
             if self._process and self._process.poll() is not None:
-                # Let output thread finish
+                # Let output thread finish reading remaining output
                 if self._output_thread:
                     self._stop_output_thread = True
-                    self._output_thread.join(timeout=2)
-
-                # Drain any remaining output from pipes
-                try:
-                    remaining_stdout, remaining_stderr = self._process.communicate(timeout=5)
-                    if remaining_stdout:
-                        for line in remaining_stdout.strip().splitlines():
-                            self._output_lines.append(f"[stdout] {line}")
-                    if remaining_stderr:
-                        for line in remaining_stderr.strip().splitlines():
-                            self._output_lines.append(f"[stderr] {line}")
-                except Exception:
-                    pass  # Process already finished
+                    self._output_thread.join(timeout=5)  # Give threads time to finish
 
                 # Include captured output in error for debugging
                 output_tail = "\n".join(self._output_lines[-50:]) if self._output_lines else "(no output captured)"

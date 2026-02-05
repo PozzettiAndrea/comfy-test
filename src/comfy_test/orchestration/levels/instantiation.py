@@ -16,9 +16,11 @@ import os
 import json
 from pathlib import Path
 
-# Disable CUDA to prevent crashes on CPU-only machines
+# Disable CUDA on CPU-only machines to prevent crashes
 # (model_management.py calls torch.cuda at import time)
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+is_gpu_runner = {is_gpu_runner}
+if not is_gpu_runner:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # Mock CUDA packages if needed
 cuda_packages = {cuda_packages_json}
@@ -97,10 +99,12 @@ def run(ctx: LevelContext) -> LevelContext:
             ctx.log(f"Found CUDA packages to mock: {', '.join(cuda_packages)}")
 
     # Build the test script
+    is_gpu_runner = os.environ.get("COMFY_TEST_GPU") == "1"
     script = INSTANTIATION_SCRIPT.format(
         custom_nodes_dir=str(ctx.paths.custom_nodes_dir).replace("\\", "/"),
         node_name=ctx.node_dir.name,
         cuda_packages_json=json.dumps(list(cuda_packages)),
+        is_gpu_runner="True" if is_gpu_runner else "False",
     )
 
     # Run the script
