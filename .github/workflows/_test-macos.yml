@@ -86,7 +86,7 @@ jobs:
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
-        run: uv pip install --python $COMFY_VENV "comfy-test @ git+https://github.com/PozzettiAndrea/comfy-test.git"
+        run: uv pip install --python $COMFY_VENV comfy-test
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
