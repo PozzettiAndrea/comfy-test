@@ -63,10 +63,23 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         WorkflowExecutionError: If any workflow fails
     """
+    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     # Set up server connection if not already done (e.g., when skipping registration)
-    if ctx.server is None and ctx.server_url:
-        from ...comfyui.server import ExternalComfyUIServer
-        server = ExternalComfyUIServer(ctx.server_url, log_callback=ctx.log)
+    if ctx.server is None:
+        from ...comfyui.server import ComfyUIServer, ExternalComfyUIServer
+        if ctx.server_url:
+            ctx.log(f"Connecting to existing server at {ctx.server_url}...")
+            server = ExternalComfyUIServer(ctx.server_url, log_callback=ctx.log)
+        else:
+            ctx.log("Starting ComfyUI server...")
+            server = ComfyUIServer(
+                ctx.platform,
+                ctx.paths,
+                ctx.config,
+                cuda_mock_packages=list(ctx.cuda_packages) if ctx.cuda_packages else [],
+                log_callback=ctx.log,
+                env_vars=ctx.env_vars if ctx.env_vars else {},
+            )
         server.start()
         ctx = ctx.with_updates(server=server, api=server.get_api())
 

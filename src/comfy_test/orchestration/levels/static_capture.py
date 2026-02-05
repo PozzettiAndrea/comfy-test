@@ -20,6 +20,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         ImportError: If playwright is not installed (gracefully skipped)
     """
+    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     workflows = ctx.config.workflow.workflows
 
     if not workflows:

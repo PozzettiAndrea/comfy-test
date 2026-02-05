@@ -49,6 +49,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If setup fails
     """
+    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     platform = get_platform(ctx.platform_name, ctx.log)
 
     # Determine work directory

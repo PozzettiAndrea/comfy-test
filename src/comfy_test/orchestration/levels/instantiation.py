@@ -101,6 +101,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If any node fails to instantiate
     """
+    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     ctx.log("Testing node constructors...")
 
     # Get CUDA packages if not already set (e.g., when INSTALL was skipped)

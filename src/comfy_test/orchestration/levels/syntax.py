@@ -23,6 +23,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If checks fail
     """
+    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     _check_project_structure(ctx)
     _check_unicode_characters(ctx)
     return ctx

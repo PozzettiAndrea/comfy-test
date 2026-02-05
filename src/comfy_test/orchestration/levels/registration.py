@@ -19,6 +19,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If node import fails
     """
+    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     from ...comfyui.server import ComfyUIServer, ExternalComfyUIServer
 
     # Start or connect to server
