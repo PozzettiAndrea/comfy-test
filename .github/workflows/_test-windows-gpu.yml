@@ -83,10 +83,10 @@ jobs:
           Write-Host "Cache saved!"
           exit 0  # robocopy returns 1 on success, force exit 0
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test from GitHub (fresh) ---
       - name: Install comfy-test
         shell: powershell
-        run: uv pip install --python "$env:COMFY_VENV" comfy-test
+        run: uv pip install --python "$env:COMFY_VENV" "comfy-test @ git+https://github.com/PozzettiAndrea/comfy-test.git"
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4

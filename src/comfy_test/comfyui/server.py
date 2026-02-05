@@ -185,6 +185,19 @@ class ComfyUIServer:
                 if self._output_thread:
                     self._stop_output_thread = True
                     self._output_thread.join(timeout=2)
+
+                # Drain any remaining output from pipes
+                try:
+                    remaining_stdout, remaining_stderr = self._process.communicate(timeout=5)
+                    if remaining_stdout:
+                        for line in remaining_stdout.strip().splitlines():
+                            self._output_lines.append(f"[stdout] {line}")
+                    if remaining_stderr:
+                        for line in remaining_stderr.strip().splitlines():
+                            self._output_lines.append(f"[stderr] {line}")
+                except Exception:
+                    pass  # Process already finished
+
                 # Include captured output in error for debugging
                 output_tail = "\n".join(self._output_lines[-50:]) if self._output_lines else "(no output captured)"
                 raise ServerError(

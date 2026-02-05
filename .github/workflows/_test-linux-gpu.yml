@@ -78,9 +78,9 @@ jobs:
           rsync -a "$UV_PYTHON_INSTALL_DIR/" "$LOCAL_CACHE_DIR/python/"
           echo "Cache saved!"
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test from GitHub (fresh) ---
       - name: Install comfy-test
-        run: uv pip install --python $COMFY_VENV comfy-test
+        run: uv pip install --python $COMFY_VENV "comfy-test @ git+https://github.com/PozzettiAndrea/comfy-test.git"
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
