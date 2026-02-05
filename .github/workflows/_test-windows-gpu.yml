@@ -145,8 +145,9 @@ jobs:
 
           Write-Host "Starting GPU server (logging to $serverLog)..."
           $env:COMFY_ENV_DEBUG = "1"
+          Set-Location $env:COMFYUI_DIR
           $serverProcess = Start-Process -FilePath $env:PYTHON_EXE `
-            -ArgumentList "-u", "$env:COMFYUI_DIR\main.py", "--listen", "127.0.0.1", "--port", "8188" `
+            -ArgumentList "-u", "main.py", "--listen", "127.0.0.1", "--port", "8188" `
             -NoNewWindow -PassThru -RedirectStandardOutput $serverLog -RedirectStandardError "$env:COMFY_TEST_LOGS_DIR\server_stderr.log"
 
           Write-Host "Waiting for server (up to 5 minutes)..."
@@ -178,6 +179,7 @@ jobs:
             exit 1
           }
 
+          Set-Location "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
           & "$env:PYTHON_DIR\Scripts\comfy-test.exe" run --server-url http://127.0.0.1:8188
           $testExitCode = $LASTEXITCODE
 
