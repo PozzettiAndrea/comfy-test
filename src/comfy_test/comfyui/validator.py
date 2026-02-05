@@ -300,7 +300,13 @@ class WorkflowValidation:
         # ComfyUI allows some type coercion:
         # - "*" (any type) matches everything
         # - Exact type match
-        if output_type != target_input_type and output_type != "*" and target_input_type != "*":
+        # - Union types: "STRING,FILE_3D_GLB,FILE_3D_FBX" means any of those types
+        if output_type == "*" or target_input_type == "*":
+            return None
+
+        # Handle union types (comma-separated list of accepted types)
+        accepted_types = [t.strip() for t in target_input_type.split(",")]
+        if output_type not in accepted_types:
             return f"Type mismatch: {from_type} outputs {output_type}, but {to_type} expects {target_input_type}"
 
         return None
