@@ -117,6 +117,11 @@ jobs:
         shell: powershell
         run: |
           & "$env:PYTHON_DIR\uv.exe" pip install --python $env:PYTHON_EXE pip comfy-test
+          # Add ComfyUI to Python path (embeddable Python ignores PYTHONPATH)
+          $pthFile = Get-ChildItem "$env:PYTHON_DIR\*._pth" | Select-Object -First 1
+          if (-not (Select-String -Path $pthFile -Pattern ([regex]::Escape($env:COMFYUI_DIR)) -Quiet)) {
+            Add-Content -Path $pthFile -Value $env:COMFYUI_DIR
+          }
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
