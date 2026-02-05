@@ -93,9 +93,31 @@ jobs:
           [ -f requirements.txt ] && uv pip install --python "$COMFY_VENV" -r requirements.txt || true
           [ -f install.py ] && $COMFY_VENV/bin/python install.py || true
 
+      - name: Install validate endpoint
+        run: |
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
+
       - name: Run tests
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: $COMFY_VENV/bin/comfy-test run --comfyui-dir "$COMFYUI_DIR" --deps-installed
+        run: |
+          echo "Starting GPU server..."
+          $COMFY_VENV/bin/python -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8188 &
+          SERVER_PID=$!
+
+          echo "Waiting for server..."
+          for i in $(seq 1 120); do
+            if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
+              echo "Server is ready!"
+              break
+            fi
+            sleep 1
+          done
+
+          $COMFY_VENV/bin/comfy-test run --server-url http://127.0.0.1:8188
+          TEST_EXIT_CODE=$?
+
+          kill $SERVER_PID 2>/dev/null || true
+          exit $TEST_EXIT_CODE
 
       - uses: actions/upload-artifact@v4
         if: always()

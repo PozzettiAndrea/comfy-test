@@ -101,11 +101,33 @@ jobs:
           if (Test-Path "requirements.txt") { uv pip install -r requirements.txt }
           if (Test-Path "install.py") { python install.py }
 
+      - name: Install validate endpoint
+        shell: powershell
+        run: |
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
+          $true
+
       - name: Run tests
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          & "$env:COMFY_VENV\Scripts\comfy-test" run --comfyui-dir "$env:COMFYUI_DIR" --deps-installed
+          Write-Host "Starting GPU server..."
+          $serverProcess = Start-Process -FilePath "$env:COMFY_VENV\Scripts\python.exe" -ArgumentList "-u", "$env:COMFYUI_DIR\main.py", "--listen", "127.0.0.1", "--port", "8188" -NoNewWindow -PassThru
+
+          Write-Host "Waiting for server..."
+          for ($i = 1; $i -le 120; $i++) {
+            try {
+              Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop | Out-Null
+              Write-Host "Server is ready!"
+              break
+            } catch { Start-Sleep -Seconds 1 }
+          }
+
+          & "$env:COMFY_VENV\Scripts\comfy-test" run --server-url http://127.0.0.1:8188
+          $testExitCode = $LASTEXITCODE
+
+          Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+          exit $testExitCode
 
       - uses: actions/upload-artifact@v4
         if: always()
