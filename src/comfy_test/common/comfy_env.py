@@ -12,7 +12,7 @@ else:
 
 def get_node_reqs(node_dir: Path) -> List[Tuple[str, str]]:
     """
-    Read comfy-env.toml and return list of node dependencies.
+    Read comfy-env-root.toml and return list of node dependencies.
 
     Args:
         node_dir: Path to the custom node directory
@@ -20,7 +20,7 @@ def get_node_reqs(node_dir: Path) -> List[Tuple[str, str]]:
     Returns:
         List of (name, repo) tuples, e.g., [('GeometryPack', 'PozzettiAndrea/ComfyUI-GeometryPack')]
     """
-    config_path = Path(node_dir) / "comfy-env.toml"
+    config_path = Path(node_dir) / "comfy-env-root.toml"
     if not config_path.exists():
         return []
 
@@ -78,29 +78,33 @@ def get_env_vars(node_dir: Path) -> dict:
 
 def get_cuda_packages(node_dir: Path) -> List[str]:
     """
-    Read comfy-env.toml and return list of CUDA package names.
+    Read all comfy-env.toml files and return list of CUDA package names.
+
+    Searches recursively through the node directory for comfy-env.toml files
+    and extracts CUDA packages from [cuda].packages sections.
 
     Args:
         node_dir: Path to the custom node directory
 
     Returns:
-        List of CUDA package names (e.g., ['nvdiffrast', 'flash_attn'])
+        List of CUDA package names (e.g., ['nvdiffrast', 'flash_attn', 'cumesh'])
     """
-    config_path = Path(node_dir) / "comfy-env.toml"
-    if not config_path.exists():
-        return []
-
-    try:
-        config = tomllib.loads(config_path.read_text())
-    except Exception:
-        return []
-
     cuda_packages = []
-    for env_name, env_config in config.items():
-        if isinstance(env_config, dict) and "cuda" in env_config:
-            # Package names in config use hyphens, but Python imports use underscores
-            for pkg_name in env_config["cuda"].keys():
-                # Normalize: flash-attn -> flash_attn
-                cuda_packages.append(pkg_name.replace("-", "_"))
+
+    # Search all comfy-env.toml files in the node tree (not just root)
+    for config_path in Path(node_dir).rglob("comfy-env.toml"):
+        try:
+            config = tomllib.loads(config_path.read_text())
+        except Exception:
+            continue
+
+        # Parse [cuda].packages = [...] structure
+        cuda_section = config.get("cuda", {})
+        if isinstance(cuda_section, dict):
+            packages = cuda_section.get("packages", [])
+            if isinstance(packages, list):
+                for pkg in packages:
+                    # Normalize: flash-attn -> flash_attn
+                    cuda_packages.append(pkg.replace("-", "_"))
 
     return cuda_packages
