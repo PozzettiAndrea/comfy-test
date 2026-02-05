@@ -43,7 +43,9 @@ jobs:
             if [ -d "$dir" ]; then
               name=$(basename "$dir" | sed 's/results-//')
               mkdir -p "$TARGET/$name"
-              cp -r "$dir"/* "$TARGET/$name/" 2>/dev/null || true
+              # Results are 2 levels deep: run_id/platform_dir/
+              # Use glob to copy contents directly to flatten structure
+              cp -r "$dir"/*/*/* "$TARGET/$name/" 2>/dev/null || true
             fi
           done
           touch gh-pages/.nojekyll
