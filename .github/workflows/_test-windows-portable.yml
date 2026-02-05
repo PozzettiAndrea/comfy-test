@@ -158,8 +158,6 @@ jobs:
         if: always()
         with:
           name: results-windows-portable-cpu
-          path: |
-            ${{ env.COMFY_TEST_LOGS_DIR }}\
-            C:\comfy-envs\
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}\
           if-no-files-found: ignore
           include-hidden-files: true
