@@ -116,7 +116,8 @@ jobs:
       # --- Install comfy-test (fresh each run) ---
       - name: Install comfy-test
         shell: powershell
-        run: & $env:PYTHON_EXE -m pip install comfy-test --no-warn-script-location
+        run: |
+          & $env:PYTHON_EXE -m pip install comfy-test --no-warn-script-location
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
