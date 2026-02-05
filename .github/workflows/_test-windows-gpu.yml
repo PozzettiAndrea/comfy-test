@@ -116,7 +116,7 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & $env:PYTHON_EXE -m pip install comfy-test --no-warn-script-location
+          & "$env:PYTHON_DIR\uv.exe" pip install --python $env:PYTHON_EXE pip comfy-test
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
@@ -127,7 +127,7 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          if (Test-Path "requirements.txt") { & $env:PYTHON_EXE -m pip install -r requirements.txt --no-warn-script-location }
+          if (Test-Path "requirements.txt") { & "$env:PYTHON_DIR\uv.exe" pip install --python $env:PYTHON_EXE -r requirements.txt }
           if (Test-Path "install.py") { & $env:PYTHON_EXE install.py }
 
       - name: Install validate endpoint
