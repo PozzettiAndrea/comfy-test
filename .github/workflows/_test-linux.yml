@@ -106,6 +106,8 @@ jobs:
             fi
             if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
               echo "Server ready after ${i}s"
+              echo "=== Server startup log ==="
+              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
               exit 0
             fi
             sleep 1

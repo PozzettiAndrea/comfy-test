@@ -116,6 +116,8 @@ jobs:
             try {
               Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop | Out-Null
               Write-Host "Server ready after ${i}s"
+              Write-Host "=== Server startup log ==="
+              Get-Content "$env:COMFY_TEST_LOGS_DIR\server.log" -ErrorAction SilentlyContinue
               $serverReady = $true
               break
             } catch { Start-Sleep -Seconds 1 }
