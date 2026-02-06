@@ -1,79 +1,71 @@
-# Windows CPU test workflow (hosted) - called by test-matrix.yml
 name: Test Windows
 
 on:
   workflow_call:
-    inputs:
-      config-file:
-        type: string
-        default: "comfy-test.toml"
-      timeout-minutes:
-        type: number
-        default: 60
 
 jobs:
   windows-test:
     name: windows-test
     runs-on: windows-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: 60
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
-      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI
-      TOOLS_VENV: ${{ github.workspace }}\.tools-venv
-      COMFY_VENV: ${{ github.workspace }}\.comfy-venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
-      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}\.python
-      UV_CACHE_DIR: ${{ github.workspace }}\.uv-cache
     steps:
-      - uses: astral-sh/setup-uv@v4
+      - name: Get site-packages path
+        shell: powershell
+        run: |
+          $sp = python -c "import site; print(site.getsitepackages()[0])"
+          echo "SITE_PACKAGES=$sp" >> $env:GITHUB_ENV
+
+      - name: Install uv
+        run: pip install uv
 
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache
         with:
           path: |
-            ${{ env.TOOLS_VENV }}
+            ${{ env.SITE_PACKAGES }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-            ${{ env.COMFY_VENV }}
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-windows-hosted-uv-v2
+          key: setup-windows-cpu-v4
 
       # --- Setup (skip if cache hit) ---
-      - name: Setup environment
+      - name: Clone ComfyUI
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ${{ env.COMFYUI_DIR }}
+
+      - name: Install ComfyUI requirements
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: uv pip install --system -r ${{ env.COMFYUI_DIR }}\requirements.txt
+
+      - name: Install Playwright
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          uv python install 3.13
-          uv venv $env:TOOLS_VENV --python 3.13
-          uv pip install --python "$env:TOOLS_VENV" playwright
-          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $env:COMFYUI_DIR
-          uv venv $env:COMFY_VENV --python 3.13
-          uv pip install --python $env:COMFY_VENV -r "$env:COMFYUI_DIR\requirements.txt"
-          & "$env:TOOLS_VENV\Scripts\playwright" install chromium
+          uv pip install --system playwright
+          python -m playwright install chromium
 
-      # --- Save cache immediately after setup ---
+      # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
         with:
           path: |
-            ${{ env.TOOLS_VENV }}
+            ${{ env.SITE_PACKAGES }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-            ${{ env.COMFY_VENV }}
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-windows-hosted-uv-v2
+          key: setup-windows-cpu-v4
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
-        shell: powershell
-        run: uv pip install --upgrade --python "$env:COMFY_VENV" comfy-test
+        run: uv pip install --system --upgrade comfy-test
 
-      # --- Checkout and run ---
+      # --- Checkout ---
       - uses: actions/checkout@v4
         with:
           path: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ github.event.repository.name }}
@@ -82,8 +74,7 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          & "$env:COMFY_VENV\Scripts\Activate.ps1"
-          if (Test-Path "requirements.txt") { uv pip install -r requirements.txt }
+          if (Test-Path "requirements.txt") { uv pip install --system -r requirements.txt }
           if (Test-Path "install.py") { python install.py }
 
       - name: Install validate endpoint
@@ -92,58 +83,57 @@ jobs:
           git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
           $true
 
-      - name: Run tests
+      # --- Start server ---
+      - name: Start ComfyUI server
         shell: powershell
-        working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          $serverLog = "$env:COMFY_TEST_LOGS_DIR\server.log"
           New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
-
-          Write-Host "Starting CPU server (logging to $serverLog)..."
-          $serverProcess = Start-Process -FilePath "$env:COMFY_VENV\Scripts\python.exe" `
+          $serverProcess = Start-Process -FilePath "python" `
             -ArgumentList "-u", "$env:COMFYUI_DIR\main.py", "--listen", "127.0.0.1", "--port", "8188", "--cpu" `
-            -NoNewWindow -PassThru -RedirectStandardOutput $serverLog -RedirectStandardError "$env:COMFY_TEST_LOGS_DIR\server_stderr.log"
+            -NoNewWindow -PassThru -RedirectStandardOutput "$env:COMFY_TEST_LOGS_DIR\server.log" -RedirectStandardError "$env:COMFY_TEST_LOGS_DIR\server_stderr.log"
+          echo "SERVER_PID=$($serverProcess.Id)" >> $env:GITHUB_ENV
 
-          Write-Host "Waiting for server (up to 5 minutes)..."
+      - name: Wait for server
+        shell: powershell
+        run: |
           $serverReady = $false
           for ($i = 1; $i -le 300; $i++) {
-            if ($serverProcess.HasExited) {
-              Write-Host "Server process died! Exit code: $($serverProcess.ExitCode)"
-              Write-Host "=== Server stdout ==="
-              Get-Content $serverLog -ErrorAction SilentlyContinue
-              Write-Host "=== Server stderr ==="
+            $proc = Get-Process -Id $env:SERVER_PID -ErrorAction SilentlyContinue
+            if (-not $proc -or $proc.HasExited) {
+              Write-Host "Server process died!"
+              Get-Content "$env:COMFY_TEST_LOGS_DIR\server.log" -ErrorAction SilentlyContinue
               Get-Content "$env:COMFY_TEST_LOGS_DIR\server_stderr.log" -ErrorAction SilentlyContinue
               exit 1
             }
             try {
               Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop | Out-Null
-              Write-Host "Server is ready after $i seconds!"
+              Write-Host "Server ready after ${i}s"
               $serverReady = $true
               break
             } catch { Start-Sleep -Seconds 1 }
           }
-
           if (-not $serverReady) {
-            Write-Host "Server failed to start within 5 minutes"
-            Write-Host "=== Server stdout ==="
-            Get-Content $serverLog -ErrorAction SilentlyContinue
-            Write-Host "=== Server stderr ==="
+            Write-Host "Server failed to start"
+            Get-Content "$env:COMFY_TEST_LOGS_DIR\server.log" -ErrorAction SilentlyContinue
             Get-Content "$env:COMFY_TEST_LOGS_DIR\server_stderr.log" -ErrorAction SilentlyContinue
-            Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
             exit 1
           }
 
-          & "$env:COMFY_VENV\Scripts\comfy-test" run --server-url http://127.0.0.1:8188
-          $testExitCode = $LASTEXITCODE
+      # --- Run tests ---
+      - name: Run tests
+        working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
+        run: python -m comfy_test run --server-url http://127.0.0.1:8188
 
-          Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
-          exit $testExitCode
+      # --- Cleanup ---
+      - name: Stop server
+        if: always()
+        shell: powershell
+        run: Stop-Process -Id $env:SERVER_PID -Force -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-windows-cpu
-          path: |
-            ${{ env.COMFY_TEST_LOGS_DIR }}/
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}\
           if-no-files-found: ignore
           include-hidden-files: true

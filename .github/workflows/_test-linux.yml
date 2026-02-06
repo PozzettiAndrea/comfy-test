@@ -1,33 +1,20 @@
-# Linux CPU test workflow (hosted) - called by test-matrix.yml
 name: Test Linux
 
 on:
   workflow_call:
-    inputs:
-      config-file:
-        type: string
-        default: "comfy-test.toml"
-      timeout-minutes:
-        type: number
-        default: 60
 
 jobs:
   linux-test:
     name: linux-test
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: 60
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
-      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}/ComfyUI
-      TOOLS_VENV: ${{ github.workspace }}/.tools-venv
-      COMFY_VENV: ${{ github.workspace }}/.comfy-venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
-      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.python
-      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
     steps:
       - name: Free disk space
         run: |
@@ -35,50 +22,53 @@ jobs:
           sudo apt-get clean &
           wait
 
-      - uses: astral-sh/setup-uv@v4
+      - name: Get site-packages path
+        run: echo "SITE_PACKAGES=$(python3 -c 'import site; print(site.getsitepackages()[0])')" >> $GITHUB_ENV
 
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache
         with:
           path: |
-            ${{ env.TOOLS_VENV }}
+            ${{ env.SITE_PACKAGES }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-            ${{ env.COMFY_VENV }}
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-linux-hosted-uv-v2
+          key: setup-linux-cpu-v4
+
+      - name: Install uv
+        run: pip install uv
 
       # --- Setup (skip if cache hit) ---
-      - name: Setup environment
+      - name: Clone ComfyUI
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
+
+      - name: Install ComfyUI requirements
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: uv pip install --system -r $COMFYUI_DIR/requirements.txt
+
+      - name: Install Playwright
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: |
-          uv python install 3.13
-          uv venv $TOOLS_VENV --python 3.13
-          uv pip install --python $TOOLS_VENV playwright
-          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
-          uv venv $COMFY_VENV --python 3.13
-          uv pip install --python $COMFY_VENV -r $COMFYUI_DIR/requirements.txt
-          $TOOLS_VENV/bin/python -m playwright install chromium
-          $TOOLS_VENV/bin/python -m playwright install-deps chromium || true
+          uv pip install --system playwright
+          python3 -m playwright install chromium
+          python3 -m playwright install-deps chromium || true
 
-      # --- Save cache immediately after setup ---
+      # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
         with:
           path: |
-            ${{ env.TOOLS_VENV }}
+            ${{ env.SITE_PACKAGES }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-            ${{ env.COMFY_VENV }}
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: setup-linux-hosted-uv-v2
+          key: setup-linux-cpu-v4
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
-        run: uv pip install --upgrade --python $COMFY_VENV comfy-test
+        run: uv pip install --system --upgrade comfy-test
 
-      # --- Checkout and run ---
+      # --- Checkout ---
       - uses: actions/checkout@v4
         with:
           path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ github.event.repository.name }}
@@ -86,60 +76,52 @@ jobs:
       - name: Install node dependencies
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          [ -f requirements.txt ] && uv pip install --python "$COMFY_VENV" -r requirements.txt || true
-          unset UV_PYTHON_INSTALL_DIR
-          [ -f install.py ] && $COMFY_VENV/bin/python install.py || true
+          [ -f requirements.txt ] && uv pip install --system -r requirements.txt || true
+          [ -f install.py ] && python3 install.py || true
 
       - name: Install validate endpoint
-        run: |
-          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
+        run: git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
 
-      - name: Run tests
-        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
+      # --- Start server ---
+      - name: Start ComfyUI server
+        working-directory: ${{ env.COMFYUI_DIR }}
         run: |
           mkdir -p "$COMFY_TEST_LOGS_DIR"
-          SERVER_LOG="$COMFY_TEST_LOGS_DIR/server.log"
+          python3 -u main.py --listen 127.0.0.1 --port 8188 --cpu > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
 
-          echo "Starting CPU server (logging to $SERVER_LOG)..."
-          $COMFY_VENV/bin/python -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8188 --cpu > "$SERVER_LOG" 2>&1 &
-          SERVER_PID=$!
-
-          echo "Waiting for server (up to 5 minutes)..."
-          SERVER_READY=0
+      - name: Wait for server
+        run: |
           for i in $(seq 1 300); do
             if ! kill -0 $SERVER_PID 2>/dev/null; then
               echo "Server process died!"
-              echo "=== Server log ==="
-              cat "$SERVER_LOG" || true
+              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
               exit 1
             fi
             if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
-              echo "Server is ready after $i seconds!"
-              SERVER_READY=1
-              break
+              echo "Server ready after ${i}s"
+              exit 0
             fi
             sleep 1
           done
+          echo "Server failed to start"
+          cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+          exit 1
 
-          if [ "$SERVER_READY" != "1" ]; then
-            echo "Server failed to start within 5 minutes"
-            echo "=== Server log ==="
-            cat "$SERVER_LOG" || true
-            kill $SERVER_PID 2>/dev/null || true
-            exit 1
-          fi
+      # --- Run tests ---
+      - name: Run tests
+        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
+        run: python3 -m comfy_test run --server-url http://127.0.0.1:8188
 
-          $COMFY_VENV/bin/comfy-test run --server-url http://127.0.0.1:8188
-          TEST_EXIT_CODE=$?
-
-          kill $SERVER_PID 2>/dev/null || true
-          exit $TEST_EXIT_CODE
+      # --- Cleanup ---
+      - name: Stop server
+        if: always()
+        run: kill $SERVER_PID 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-linux-cpu
-          path: |
-            ${{ env.COMFY_TEST_LOGS_DIR }}/
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
           include-hidden-files: true

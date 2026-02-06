@@ -76,34 +76,21 @@ jobs:
     needs: setup
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true'
     uses: ./.github/workflows/_test-linux.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
 
   macos-cpu:
     needs: setup
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true'
     uses: ./.github/workflows/_test-macos.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
-      gpu: false
 
   windows-cpu:
     needs: setup
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true'
     uses: ./.github/workflows/_test-windows.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
 
   windows-portable-cpu:
     needs: setup
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true'
     uses: ./.github/workflows/_test-windows-portable.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
 
   # ---------------------------------------------------------------------------
   # GPU tests (self-hosted runners) - only if gpu workflows defined AND platform enabled

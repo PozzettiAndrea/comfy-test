@@ -1,26 +1,17 @@
-# Windows Portable CPU test workflow (hosted) - called by test-matrix.yml
 name: Test Windows Portable
 
 on:
   workflow_call:
-    inputs:
-      config-file:
-        type: string
-        default: "comfy-test.toml"
-      timeout-minutes:
-        type: number
-        default: 60
 
 jobs:
   windows-portable-test:
     name: windows-portable-test
     runs-on: windows-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: 60
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
-      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI_windows_portable\ComfyUI
       PYTHON_EXE: ${{ github.workspace }}\ComfyUI_windows_portable\python_embeded\python.exe
@@ -44,8 +35,7 @@ jobs:
       - name: Extract portable ComfyUI
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: powershell
-        run: |
-          & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y -bsp1
+        run: & "C:\Program Files\7-Zip\7z.exe" x portable.7z -y -bsp1
 
       - name: Remove portable archive
         if: steps.setup-cache.outputs.cache-hit != 'true'
@@ -59,7 +49,7 @@ jobs:
           & $env:PYTHON_EXE -m pip install playwright
           & $env:PYTHON_EXE -m playwright install chromium
 
-      # --- Save cache immediately after setup ---
+      # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
         with:
@@ -68,45 +58,12 @@ jobs:
             ${{ github.workspace }}\ComfyUI_windows_portable
           key: setup-windows-portable-hosted-v2
 
-      # --- Install comfy-test (fresh) ---
+      # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
         shell: powershell
-        run: |
-          & $env:PYTHON_EXE -m pip install --upgrade comfy-test pillow
+        run: & $env:PYTHON_EXE -m pip install --upgrade comfy-test pillow
 
-      # --- Verify base server before adding custom nodes ---
-      - name: Verify base server starts
-        shell: powershell
-        working-directory: ${{ github.workspace }}\ComfyUI_windows_portable
-        run: |
-          Write-Host "Verifying base ComfyUI server starts..."
-          $serverProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run_cpu.bat" -NoNewWindow -PassThru
-
-          $serverReady = $false
-          for ($i = 1; $i -le 60; $i++) {
-            if ($serverProcess.HasExited) {
-              Write-Host "Server process died! Exit code: $($serverProcess.ExitCode)"
-              exit 1
-            }
-            try {
-              Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop | Out-Null
-              Write-Host "Base server verified after $i seconds!"
-              $serverReady = $true
-              break
-            } catch { Start-Sleep -Seconds 1 }
-          }
-
-          # Kill the process tree (cmd.exe + python child)
-          taskkill /PID $serverProcess.Id /T /F 2>$null
-          Start-Sleep -Seconds 2
-
-          if (-not $serverReady) {
-            Write-Host "Base server failed to start within 60 seconds"
-            exit 1
-          }
-          Write-Host "Base server OK - proceeding with custom node installation"
-
-      # --- Checkout and run ---
+      # --- Checkout ---
       - uses: actions/checkout@v4
         with:
           path: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ github.event.repository.name }}
@@ -124,43 +81,51 @@ jobs:
           git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
           $true
 
-      - name: Run tests
+      # --- Start server ---
+      - name: Start ComfyUI server
         shell: powershell
         working-directory: ${{ github.workspace }}\ComfyUI_windows_portable
         run: |
           New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
-
-          Write-Host "Starting CPU server via batch file..."
           $env:COMFY_ENV_DEBUG = "1"
           $serverProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run_cpu.bat" -NoNewWindow -PassThru
+          echo "SERVER_PID=$($serverProcess.Id)" >> $env:GITHUB_ENV
 
-          Write-Host "Waiting for server (up to 5 minutes)..."
+      - name: Wait for server
+        shell: powershell
+        run: |
           $serverReady = $false
           for ($i = 1; $i -le 300; $i++) {
-            if ($serverProcess.HasExited) {
-              Write-Host "Server process died! Exit code: $($serverProcess.ExitCode)"
+            $proc = Get-Process -Id $env:SERVER_PID -ErrorAction SilentlyContinue
+            if (-not $proc -or $proc.HasExited) {
+              Write-Host "Server process died!"
               exit 1
             }
             try {
               Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -UseBasicParsing -ErrorAction Stop | Out-Null
-              Write-Host "Server is ready after $i seconds!"
+              Write-Host "Server ready after ${i}s"
               $serverReady = $true
               break
             } catch { Start-Sleep -Seconds 1 }
           }
-
           if (-not $serverReady) {
-            Write-Host "Server failed to start within 5 minutes"
-            Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "Server failed to start"
             exit 1
           }
 
-          Set-Location "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
+      # --- Run tests ---
+      - name: Run tests
+        shell: powershell
+        working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
+        run: |
           & $env:PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8188
-          $testExitCode = $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
-          exit $testExitCode
+      # --- Cleanup ---
+      - name: Stop server
+        if: always()
+        shell: powershell
+        run: taskkill /PID $env:SERVER_PID /T /F 2>$null; $true
 
       - uses: actions/upload-artifact@v4
         if: always()
