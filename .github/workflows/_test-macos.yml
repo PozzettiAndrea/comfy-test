@@ -18,6 +18,10 @@ jobs:
       VENV: ${{ github.workspace }}/.venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache

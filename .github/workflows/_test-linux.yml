@@ -24,6 +24,10 @@ jobs:
           sudo apt-get clean &
           wait
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache
