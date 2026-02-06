@@ -11,60 +11,62 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
-      UV_BREAK_SYSTEM_PACKAGES: "1"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI
+      VENV: ${{ github.workspace }}\.venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
     steps:
-      - name: Get site-packages path
-        shell: powershell
-        run: |
-          $sp = python -c "import site; print(site.getsitepackages()[0])"
-          echo "SITE_PACKAGES=$sp" >> $env:GITHUB_ENV
-
-      - name: Install uv
-        run: pip install uv
-
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache
         with:
           path: |
-            ${{ env.SITE_PACKAGES }}
+            ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
           key: setup-windows-cpu
 
       # --- Setup (skip if cache hit) ---
+      - name: Create venv and install uv
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          python -m venv $env:VENV
+          & "$env:VENV\Scripts\pip" install uv
+
       - name: Clone ComfyUI
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ${{ env.COMFYUI_DIR }}
 
       - name: Install ComfyUI requirements
         if: steps.setup-cache.outputs.cache-hit != 'true'
-        run: uv pip install --system -r ${{ env.COMFYUI_DIR }}\requirements.txt
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install -r "$env:COMFYUI_DIR\requirements.txt"
 
       - name: Install Playwright
         if: steps.setup-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          uv pip install --system playwright
-          python -m playwright install chromium
+          & "$env:VENV\Scripts\uv" pip install playwright
+          & "$env:VENV\Scripts\python" -m playwright install chromium
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
         with:
           path: |
-            ${{ env.SITE_PACKAGES }}
+            ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
           key: setup-windows-cpu
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
-        run: uv pip install --system --upgrade comfy-test
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install --upgrade comfy-test
 
       # --- Checkout ---
       - uses: actions/checkout@v4
@@ -75,8 +77,8 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          if (Test-Path "requirements.txt") { uv pip install --system -r requirements.txt }
-          if (Test-Path "install.py") { python install.py }
+          if (Test-Path "requirements.txt") { & "$env:VENV\Scripts\uv" pip install -r requirements.txt }
+          if (Test-Path "install.py") { & "$env:VENV\Scripts\python" install.py }
 
       - name: Install validate endpoint
         shell: powershell
@@ -89,7 +91,7 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
-          $serverProcess = Start-Process -FilePath "python" `
+          $serverProcess = Start-Process -FilePath "$env:VENV\Scripts\python" `
             -ArgumentList "-u", "$env:COMFYUI_DIR\main.py", "--listen", "127.0.0.1", "--port", "8188", "--cpu" `
             -NoNewWindow -PassThru -RedirectStandardOutput "$env:COMFY_TEST_LOGS_DIR\server.log" -RedirectStandardError "$env:COMFY_TEST_LOGS_DIR\server_stderr.log"
           echo "SERVER_PID=$($serverProcess.Id)" >> $env:GITHUB_ENV
@@ -122,8 +124,11 @@ jobs:
 
       # --- Run tests ---
       - name: Run tests
+        shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
-        run: python -m comfy_test run --server-url http://127.0.0.1:8188
+        run: |
+          & "$env:VENV\Scripts\python" -m comfy_test run --server-url http://127.0.0.1:8188
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # --- Cleanup ---
       - name: Stop server

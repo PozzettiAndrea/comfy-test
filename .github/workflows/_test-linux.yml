@@ -11,10 +11,10 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
-      UV_BREAK_SYSTEM_PACKAGES: "1"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}/ComfyUI
+      VENV: ${{ github.workspace }}/.venv
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
     steps:
       - name: Free disk space
@@ -23,51 +23,51 @@ jobs:
           sudo apt-get clean &
           wait
 
-      - name: Get site-packages path
-        run: echo "SITE_PACKAGES=$(python3 -c 'import site; print(site.getsitepackages()[0])')" >> $GITHUB_ENV
-
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache
         with:
           path: |
-            ${{ env.SITE_PACKAGES }}
+            ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
           key: setup-linux-cpu
 
-      - name: Install uv
-        run: pip install uv
-
       # --- Setup (skip if cache hit) ---
+      - name: Create venv and install uv
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m venv $VENV
+          $VENV/bin/pip install uv
+
       - name: Clone ComfyUI
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
 
       - name: Install ComfyUI requirements
         if: steps.setup-cache.outputs.cache-hit != 'true'
-        run: uv pip install --system -r $COMFYUI_DIR/requirements.txt
+        run: $VENV/bin/uv pip install -r $COMFYUI_DIR/requirements.txt
 
       - name: Install Playwright
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: |
-          uv pip install --system playwright
-          python3 -m playwright install chromium
-          python3 -m playwright install-deps chromium || true
+          $VENV/bin/uv pip install playwright
+          $VENV/bin/python -m playwright install chromium
+          $VENV/bin/python -m playwright install-deps chromium || true
 
       # --- Save cache ---
       - uses: actions/cache/save@v4
         if: steps.setup-cache.outputs.cache-hit != 'true'
         with:
           path: |
-            ${{ env.SITE_PACKAGES }}
+            ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
           key: setup-linux-cpu
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
-        run: uv pip install --system --upgrade comfy-test
+        run: $VENV/bin/uv pip install --upgrade comfy-test
 
       # --- Checkout ---
       - uses: actions/checkout@v4
@@ -77,8 +77,8 @@ jobs:
       - name: Install node dependencies
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          [ -f requirements.txt ] && uv pip install --system -r requirements.txt || true
-          [ -f install.py ] && python3 install.py || true
+          [ -f requirements.txt ] && $VENV/bin/uv pip install -r requirements.txt || true
+          [ -f install.py ] && $VENV/bin/python install.py || true
 
       - name: Install validate endpoint
         run: git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
@@ -88,7 +88,7 @@ jobs:
         working-directory: ${{ env.COMFYUI_DIR }}
         run: |
           mkdir -p "$COMFY_TEST_LOGS_DIR"
-          python3 -u main.py --listen 127.0.0.1 --port 8188 --cpu > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
+          $VENV/bin/python -u main.py --listen 127.0.0.1 --port 8188 --cpu > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
           echo "SERVER_PID=$!" >> $GITHUB_ENV
 
       - name: Wait for server
@@ -112,7 +112,7 @@ jobs:
       # --- Run tests ---
       - name: Run tests
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: python3 -m comfy_test run --server-url http://127.0.0.1:8188
+        run: $VENV/bin/python -m comfy_test run --server-url http://127.0.0.1:8188
 
       # --- Cleanup ---
       - name: Stop server
