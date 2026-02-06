@@ -1,0 +1,195 @@
+# Linux GPU test workflow (self-hosted) - called by test-matrix.yml
+name: Test Linux GPU
+
+on:
+  workflow_call:
+    inputs:
+      config-file:
+        type: string
+        default: "comfy-test.toml"
+      timeout-minutes:
+        type: number
+        default: 60
+
+jobs:
+  linux-gpu-test:
+    name: linux-gpu-test
+    runs-on: ["self-hosted", "linux", "gpu"]
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      COMFY_ENV_DEBUG: "1"
+      COMFY_TEST_GPU: "1"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      NODE_NAME: ${{ github.event.repository.name }}
+      COMFYUI_DIR: ${{ github.workspace }}/ComfyUI
+      PYTHON_DIR: ${{ github.workspace }}/python
+      PYTHON_EXE: ${{ github.workspace }}/python/bin/python3
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/python/.playwright
+      COMFY_ENV_CACHE_DIR: /home/administrator/.comfy-env
+    steps:
+      - name: Cleanup stale mounts
+        run: |
+          sudo umount "${{ github.workspace }}/python" 2>/dev/null || true
+          sudo umount "${{ github.workspace }}/ComfyUI" 2>/dev/null || true
+          rm -rf /tmp/ovl-* 2>/dev/null || true
+
+      - name: Set cache directory
+        run: echo "LOCAL_CACHE_DIR=$RUNNER_TOOL_CACHE/comfy-test-cache/linux-gpu-v2" >> $GITHUB_ENV
+
+      - uses: astral-sh/setup-uv@v4
+
+      # --- Restore local cache (overlayfs: instant, cache stays read-only) ---
+      - name: Restore local cache
+        id: local-cache
+        run: |
+          if [ -d "$LOCAL_CACHE_DIR" ]; then
+            echo "Restoring from local cache (overlayfs)..."
+            mkdir -p "$PYTHON_DIR" "$COMFYUI_DIR"
+            mkdir -p /tmp/ovl-python-upper /tmp/ovl-python-work
+            mkdir -p /tmp/ovl-comfy-upper /tmp/ovl-comfy-work
+            sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/python",upperdir=/tmp/ovl-python-upper,workdir=/tmp/ovl-python-work "$PYTHON_DIR"
+            sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/ComfyUI",upperdir=/tmp/ovl-comfy-upper,workdir=/tmp/ovl-comfy-work "$COMFYUI_DIR"
+            echo "Cache mounted!"
+            echo "cache-hit=true" >> $GITHUB_OUTPUT
+          else
+            echo "No local cache found"
+            echo "cache-hit=false" >> $GITHUB_OUTPUT
+          fi
+
+      # --- Setup (skip if cache hit) ---
+      - name: Setup environment
+        if: steps.local-cache.outputs.cache-hit != 'true'
+        run: |
+          # Download standalone Python (python-build-standalone)
+          echo "Downloading Python..."
+          curl -L -o python.tar.gz "https://github.com/indygreg/python-build-standalone/releases/download/20250106/cpython-3.13.1+20250106-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+          tar xzf python.tar.gz
+          rm python.tar.gz
+
+          # Clone ComfyUI
+          git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git $COMFYUI_DIR
+
+          # Patch requirements.txt to remove torch/torchvision/torchaudio (we install CUDA versions separately)
+          sed -i -E '/^(torch|torchvision|torchaudio)$/d' $COMFYUI_DIR/requirements.txt
+
+          # Install CUDA torch
+          uv pip install --python "$PYTHON_EXE" torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+
+          # Install ComfyUI requirements
+          uv pip install --python "$PYTHON_EXE" -r $COMFYUI_DIR/requirements.txt
+
+          # Install playwright
+          uv pip install --python "$PYTHON_EXE" playwright
+          $PYTHON_EXE -m playwright install chromium
+          $PYTHON_EXE -m playwright install-deps chromium || true
+
+      # --- Save local cache immediately after setup ---
+      - name: Save local cache
+        if: steps.local-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Saving to local cache..."
+          mkdir -p "$LOCAL_CACHE_DIR"
+          (echo "  Saving python..." && cp -a "$PYTHON_DIR/." "$LOCAL_CACHE_DIR/python/" && echo "  python done") &
+          (echo "  Saving ComfyUI..." && cp -a "$COMFYUI_DIR/." "$LOCAL_CACHE_DIR/ComfyUI/" && echo "  ComfyUI done") &
+          wait
+          echo "Cache saved!"
+
+      # --- Verify CUDA torch ---
+      - name: Verify CUDA torch
+        run: |
+          echo "Verifying CUDA torch installation..."
+          $PYTHON_EXE -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
+
+      # --- Install comfy-test (fresh) ---
+      - name: Install comfy-test
+        run: uv pip install --upgrade --python "$PYTHON_EXE" comfy-test
+
+      # --- Checkout and run ---
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ github.event.repository.name }}
+
+      - name: Install node dependencies
+        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
+        run: |
+          [ -f requirements.txt ] && uv pip install --python "$PYTHON_EXE" -r requirements.txt || true
+          [ -f install.py ] && $PYTHON_EXE install.py || true
+
+      - name: Install validate endpoint
+        run: |
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
+
+      - name: Acquire GPU lock
+        run: |
+          echo "Waiting for GPU lock..."
+          while ! mkdir /mnt/c/gpu-lock 2>/dev/null; do
+            sleep 10
+          done
+          echo "GPU lock acquired"
+
+      - name: Run tests
+        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
+        run: |
+          mkdir -p "$COMFY_TEST_LOGS_DIR"
+          SERVER_LOG="$COMFY_TEST_LOGS_DIR/server.log"
+
+          echo "Starting GPU server (logging to $SERVER_LOG)..."
+          $PYTHON_EXE -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8188 > "$SERVER_LOG" 2>&1 &
+          SERVER_PID=$!
+
+          echo "Waiting for server (up to 5 minutes)..."
+          SERVER_READY=0
+          for i in $(seq 1 300); do
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server process died!"
+              echo "=== Server log ==="
+              cat "$SERVER_LOG" || true
+              exit 1
+            fi
+            if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
+              echo "Server is ready after $i seconds!"
+              SERVER_READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$SERVER_READY" != "1" ]; then
+            echo "Server failed to start within 5 minutes"
+            echo "=== Server log ==="
+            cat "$SERVER_LOG" || true
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          xvfb-run --auto-servernum $PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8188
+          TEST_EXIT_CODE=$?
+
+          kill $SERVER_PID 2>/dev/null || true
+          exit $TEST_EXIT_CODE
+
+      - name: Release GPU lock
+        if: always()
+        run: rmdir /mnt/c/gpu-lock 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-linux-gpu
+          path: |
+            ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+      # --- Cleanup (unmount overlays, then wipe workspace) ---
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          sudo umount "$PYTHON_DIR" 2>/dev/null || true
+          sudo umount "$COMFYUI_DIR" 2>/dev/null || true
+          rm -rf "$GITHUB_WORKSPACE"/* || true
+          rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
+          rm -rf /tmp/ovl-* 2>/dev/null || true

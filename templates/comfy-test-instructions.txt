@@ -1,0 +1,23 @@
+Setup Instructions
+==================
+
+1. Run "comfy-test init" in your repo:
+   - Copies "comfy-test.toml" to your repo root
+   - Copies "github" folder to your repo root and renames it to ".github"
+
+2. Enable workflow write permissions:
+   - Go to Settings -> Actions -> General
+   - Under "Workflow permissions", select "Read and write permissions"
+   - Click Save
+
+3. Enable GitHub Pages (for test reports):
+   - Go to Settings -> Pages
+   - Under "Source", select "Deploy from a branch"
+   - Select "gh-pages" branch and "/ (root)"
+   - Click Save
+   - Note: The gh-pages branch is created automatically on first test run
+
+4. Create a "workflows" folder in your repo root with test workflow JSON files
+
+Your test reports will be available at:
+https://<username>.github.io/<repo-name>/

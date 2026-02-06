@@ -1,0 +1,155 @@
+name: Test Windows
+
+on:
+  workflow_call:
+
+jobs:
+  windows-test:
+    name: windows-test
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      COMFY_ENV_DEBUG: "1"
+      COMFY_TEST_GPU: "0"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
+      NODE_NAME: ${{ github.event.repository.name }}
+      COMFYUI_DIR: ${{ github.workspace }}\ComfyUI
+      VENV: ${{ github.workspace }}\.venv
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # --- Restore cache ---
+      - uses: actions/cache/restore@v4
+        id: setup-cache
+        with:
+          path: |
+            ${{ env.VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+          key: setup-windows-cpu
+
+      # --- Setup (skip if cache hit) ---
+      - name: Create venv and install uv
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          python -m venv $env:VENV
+          & "$env:VENV\Scripts\pip" install uv
+
+      - name: Clone ComfyUI
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ${{ env.COMFYUI_DIR }}
+
+      - name: Install ComfyUI requirements
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install -r "$env:COMFYUI_DIR\requirements.txt"
+
+      - name: Install Playwright
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install playwright
+          & "$env:VENV\Scripts\python" -m playwright install chromium
+
+      # --- Save cache ---
+      - uses: actions/cache/save@v4
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ env.VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+          key: setup-windows-cpu
+
+      # --- Verify base setup ---
+      - name: Verify base setup
+        shell: powershell
+        run: |
+          $env:PATH = "$env:VENV\Scripts;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem"
+          & "$env:VENV\Scripts\python" -c "import torch; print(f'torch {torch.__version__} OK')"
+          if ($LASTEXITCODE -ne 0) { Write-Host 'torch import failed'; exit 1 }
+          & "$env:VENV\Scripts\python" -u "$env:COMFYUI_DIR\main.py" --quick-test-for-ci --cpu
+          if ($LASTEXITCODE -ne 0) { Write-Host 'ComfyUI quick test failed'; exit 1 }
+
+      # --- Install comfy-test (always fresh) ---
+      - name: Install comfy-test
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install --upgrade comfy-test
+
+      # --- Checkout ---
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ github.event.repository.name }}
+
+      - name: Install node dependencies
+        shell: powershell
+        working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
+        run: |
+          if (Test-Path "requirements.txt") { & "$env:VENV\Scripts\uv" pip install -r requirements.txt }
+          if (Test-Path "install.py") { & "$env:VENV\Scripts\python" install.py }
+
+      - name: Install validate endpoint
+        shell: powershell
+        run: |
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
+          $true
+
+      # --- Start server ---
+      - name: Start ComfyUI server
+        shell: bash
+        working-directory: ${{ env.COMFYUI_DIR }}
+        run: |
+          mkdir -p "$COMFY_TEST_LOGS_DIR"
+          "$VENV/Scripts/python" -u main.py --listen 127.0.0.1 --port 8188 --cpu > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+
+      - name: Wait for server
+        shell: bash
+        run: |
+          for i in $(seq 1 300); do
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server process died!"
+              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+              exit 1
+            fi
+            if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              echo "=== Server startup log ==="
+              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to start"
+          cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+          exit 1
+
+      # --- Run tests ---
+      - name: Run tests
+        shell: bash
+        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
+        run: |
+          "$VENV/Scripts/python" -m comfy_test run --server-url http://127.0.0.1:8188
+
+      # --- Cleanup ---
+      - name: Stop server
+        if: always()
+        shell: bash
+        run: kill $SERVER_PID 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-windows-cpu
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+          include-hidden-files: true
