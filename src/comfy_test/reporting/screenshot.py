@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -240,13 +241,17 @@ class WorkflowScreenshot:
 
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=True)
+        self._browser = self._playwright.chromium.launch(
+            headless=True,
+            args=["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"],
+        )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
             device_scale_factor=2,  # HiDPI for crisp screenshots
         )
-        # Increase default timeout for CI environments (macOS can be slow)
-        self._page.set_default_timeout(60000)
+        # Increase default timeout for CI environments (macOS/WSL can be slow)
+        screenshot_timeout = int(os.environ.get("COMFY_TEST_SCREENSHOT_TIMEOUT", "120000"))
+        self._page.set_default_timeout(screenshot_timeout)
         # Capture browser console messages
         self._page.on("console", self._handle_console)
 
