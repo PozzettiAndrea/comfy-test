@@ -173,8 +173,8 @@ def run(ctx: LevelContext) -> LevelContext:
         all_errors = []
 
         for idx, workflow_file in enumerate(workflows, 1):
-            # Clear execution cache
-            ctx.api.free_memory(unload_models=False)
+            # Clear execution cache and unload models to prevent OOM on limited VRAM GPUs
+            ctx.api.free_memory(unload_models=True)
 
             # Reset workflow log
             current_workflow_log.clear()
