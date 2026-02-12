@@ -29,6 +29,15 @@ jobs:
       PYTHON_DIR: ${{ github.workspace }}\python
       PYTHON_EXE: ${{ github.workspace }}\python\python.exe
     steps:
+      - name: Acquire platform lock
+        shell: powershell
+        run: |
+          Write-Host "Waiting for windows-gpu lock..."
+          while (!(New-Item -ItemType Directory -Path "C:\windows-gpu-lock" -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Seconds 10
+          }
+          Write-Host "Platform lock acquired"
+
       - name: Cleanup stale VHDs
         shell: powershell
         run: |
@@ -269,3 +278,8 @@ jobs:
           }
           Remove-Item -Path "$env:GITHUB_WORKSPACE\*" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "$env:GITHUB_WORKSPACE\.*" -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: Release platform lock
+        if: always()
+        shell: powershell
+        run: Remove-Item -Path "C:\windows-gpu-lock" -Force -ErrorAction SilentlyContinue
