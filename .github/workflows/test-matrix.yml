@@ -29,6 +29,7 @@ jobs:
   # ---------------------------------------------------------------------------
   setup:
     runs-on: ubuntu-latest
+    environment: test
     outputs:
       # CPU platforms
       run-linux: ${{ steps.platforms.outputs.linux }}
@@ -75,34 +76,25 @@ jobs:
           echo "publish=$(get_platform publish)" >> $GITHUB_OUTPUT
 
   # ---------------------------------------------------------------------------
-  # Approval gate: requires manual approval before tests run
-  # ---------------------------------------------------------------------------
-  approve:
-    runs-on: ubuntu-latest
-    environment: test
-    steps:
-      - run: echo "Approved"
-
-  # ---------------------------------------------------------------------------
   # CPU tests (GitHub-hosted runners) - only if cpu workflows defined
   # ---------------------------------------------------------------------------
   linux-cpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true'
     uses: ./.github/workflows/_test-linux.yml
 
   macos-cpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true'
     uses: ./.github/workflows/_test-macos.yml
 
   windows-cpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true'
     uses: ./.github/workflows/_test-windows.yml
 
   windows-portable-cpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true'
     uses: ./.github/workflows/_test-windows-portable.yml
 
@@ -110,7 +102,7 @@ jobs:
   # GPU tests (self-hosted runners) - only if gpu workflows defined AND platform enabled
   # ---------------------------------------------------------------------------
   linux-gpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-linux-gpu == 'true'
     uses: ./.github/workflows/_test-linux-gpu.yml
     with:
@@ -118,7 +110,7 @@ jobs:
       timeout-minutes: ${{ inputs.timeout-minutes }}
 
   windows-gpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-gpu == 'true'
     uses: ./.github/workflows/_test-windows-gpu.yml
     with:
@@ -126,7 +118,7 @@ jobs:
       timeout-minutes: ${{ inputs.timeout-minutes }}
 
   windows-portable-gpu:
-    needs: [setup, approve]
+    needs: [setup]
     if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-portable-gpu == 'true'
     uses: ./.github/workflows/_test-windows-portable-gpu.yml
     with:
