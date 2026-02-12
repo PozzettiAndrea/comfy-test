@@ -162,6 +162,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
 
+          # Kill any stale process on port 8188 from a previous job
+          $stale = Get-NetTCPConnection -LocalPort 8188 -ErrorAction SilentlyContinue
+          if ($stale) {
+            Write-Host "Killing stale process on port 8188 (PID: $($stale.OwningProcess | Sort-Object -Unique))..."
+            $stale.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+          }
+
           Write-Host "Starting GPU server via batch file..."
           $env:COMFY_ENV_DEBUG = "1"
           $serverProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run_nvidia_gpu.bat" -NoNewWindow -PassThru
@@ -192,6 +200,10 @@ jobs:
           $testExitCode = $LASTEXITCODE
 
           Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+          # Belt and suspenders: kill anything still on port 8188
+          Get-NetTCPConnection -LocalPort 8188 -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
           exit $testExitCode
 
       - name: Release GPU lock

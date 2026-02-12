@@ -190,25 +190,28 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          $serverLog = "$env:COMFY_TEST_LOGS_DIR\server.log"
           New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
 
-          Write-Host "Starting GPU server (logging to $serverLog)..."
+          # Kill any stale process on port 8188 from a previous job
+          $stale = Get-NetTCPConnection -LocalPort 8188 -ErrorAction SilentlyContinue
+          if ($stale) {
+            Write-Host "Killing stale process on port 8188 (PID: $($stale.OwningProcess | Sort-Object -Unique))..."
+            $stale.OwningProcess | Sort-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+          }
+
+          Write-Host "Starting GPU server..."
           $env:COMFY_ENV_DEBUG = "1"
           $serverProcess = Start-Process -FilePath $env:PYTHON_EXE `
             -ArgumentList "-u", "main.py", "--listen", "127.0.0.1", "--port", "8188" `
             -WorkingDirectory $env:COMFYUI_DIR `
-            -NoNewWindow -PassThru -RedirectStandardOutput $serverLog -RedirectStandardError "$env:COMFY_TEST_LOGS_DIR\server_stderr.log"
+            -NoNewWindow -PassThru
 
           Write-Host "Waiting for server (up to 5 minutes)..."
           $serverReady = $false
           for ($i = 1; $i -le 300; $i++) {
             if ($serverProcess.HasExited) {
               Write-Host "Server process died! Exit code: $($serverProcess.ExitCode)"
-              Write-Host "=== Server stdout ==="
-              Get-Content $serverLog -ErrorAction SilentlyContinue
-              Write-Host "=== Server stderr ==="
-              Get-Content "$env:COMFY_TEST_LOGS_DIR\server_stderr.log" -ErrorAction SilentlyContinue
               exit 1
             }
             try {
@@ -221,10 +224,6 @@ jobs:
 
           if (-not $serverReady) {
             Write-Host "Server failed to start within 5 minutes"
-            Write-Host "=== Server stdout ==="
-            Get-Content $serverLog -ErrorAction SilentlyContinue
-            Write-Host "=== Server stderr ==="
-            Get-Content "$env:COMFY_TEST_LOGS_DIR\server_stderr.log" -ErrorAction SilentlyContinue
             Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
             exit 1
           }
@@ -234,6 +233,10 @@ jobs:
           $testExitCode = $LASTEXITCODE
 
           Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+          # Belt and suspenders: kill anything still on port 8188
+          Get-NetTCPConnection -LocalPort 8188 -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
           exit $testExitCode
 
       - name: Release GPU lock
