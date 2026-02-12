@@ -33,11 +33,12 @@ jobs:
       - name: Cleanup stale VHDs
         shell: powershell
         run: |
-          Get-ChildItem "$env:TEMP\diff-*.vhdx" -ErrorAction SilentlyContinue | ForEach-Object {
-            Dismount-VHD -Path $_.FullName -ErrorAction SilentlyContinue
-            Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'SilentlyContinue'
+          Get-ChildItem "$env:TEMP\diff-*.vhdx" -ErrorAction Ignore | ForEach-Object {
+            Dismount-VHD -Path $_.FullName -ErrorAction Ignore
+            if (Test-Path $_.FullName) { Remove-Item $_.FullName -Force -ErrorAction Ignore }
           }
-          Remove-Item "$env:RUNNER_TOOL_CACHE\comfy-test-cache\*\cache-tmp.vhdx" -Force -ErrorAction SilentlyContinue
+          Remove-Item "$env:RUNNER_TOOL_CACHE\comfy-test-cache\*\cache-tmp.vhdx" -Force -ErrorAction Ignore
 
       - name: Set cache directory
         shell: powershell
