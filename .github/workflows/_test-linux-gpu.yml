@@ -35,7 +35,6 @@ jobs:
         run: |
           sudo umount "${{ github.workspace }}/python" 2>/dev/null || true
           sudo umount "${{ github.workspace }}/ComfyUI" 2>/dev/null || true
-          rm -rf /tmp/ovl-* 2>/dev/null || true
 
       - name: Set cache directory
         run: echo "LOCAL_CACHE_DIR=$RUNNER_TOOL_CACHE/comfy-test-cache/linux-gpu-v2" >> $GITHUB_ENV
@@ -48,14 +47,16 @@ jobs:
         run: |
           if [ -d "$LOCAL_CACHE_DIR" ]; then
             echo "Restoring from local cache (overlayfs)..."
+            OVL="/tmp/ovl-${GITHUB_RUN_ID}"
             mkdir -p "$PYTHON_DIR" "$COMFYUI_DIR"
-            mkdir -p /tmp/ovl-python-upper /tmp/ovl-python-work
-            mkdir -p /tmp/ovl-comfy-upper /tmp/ovl-comfy-work
-            sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/python",upperdir=/tmp/ovl-python-upper,workdir=/tmp/ovl-python-work "$PYTHON_DIR"
-            sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/ComfyUI",upperdir=/tmp/ovl-comfy-upper,workdir=/tmp/ovl-comfy-work "$COMFYUI_DIR"
+            mkdir -p "$OVL/python-upper" "$OVL/python-work"
+            mkdir -p "$OVL/comfy-upper" "$OVL/comfy-work"
+            sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/python",upperdir="$OVL/python-upper",workdir="$OVL/python-work" "$PYTHON_DIR"
+            sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/ComfyUI",upperdir="$OVL/comfy-upper",workdir="$OVL/comfy-work" "$COMFYUI_DIR"
             # Pre-create bin/ in upper layer so uv's relative path traversal
             # (site-packages/../../../bin/) triggers proper overlayfs copy-up
-            mkdir -p /tmp/ovl-python-upper/bin
+            mkdir -p "$OVL/python-upper/bin"
+            echo "OVL_DIR=$OVL" >> $GITHUB_ENV
             echo "Cache mounted!"
             echo "cache-hit=true" >> $GITHUB_OUTPUT
           else
@@ -199,6 +200,7 @@ jobs:
         run: |
           sudo umount "$PYTHON_DIR" 2>/dev/null || true
           sudo umount "$COMFYUI_DIR" 2>/dev/null || true
+          rm -rf "$OVL_DIR" 2>/dev/null || true
           rm -rf "$GITHUB_WORKSPACE"/* || true
           rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
           rm -rf /tmp/ovl-* 2>/dev/null || true

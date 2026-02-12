@@ -56,8 +56,9 @@ jobs:
             $disk = Get-VHD -Path $diffVhd | Get-Disk
             $partition = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -eq 'Basic' }
             if (-not $partition.DriveLetter) {
-              $partition | Add-PartitionAccessPath -AccessPath "V:\" -ErrorAction SilentlyContinue
-              $dl = "V"
+              $used = (Get-PSDrive -PSProvider FileSystem).Name
+              $dl = [char[]](86..90) | Where-Object { [string]$_ -notin $used } | Select-Object -First 1
+              $partition | Add-PartitionAccessPath -AccessPath "${dl}:\" -ErrorAction SilentlyContinue
             } else {
               $dl = $partition.DriveLetter
             }
