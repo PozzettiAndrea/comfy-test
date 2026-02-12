@@ -37,7 +37,7 @@ jobs:
           sudo umount "${{ github.workspace }}/ComfyUI" 2>/dev/null || true
 
       - name: Set cache directory
-        run: echo "LOCAL_CACHE_DIR=$RUNNER_TOOL_CACHE/comfy-test-cache/linux-gpu-v2" >> $GITHUB_ENV
+        run: echo "LOCAL_CACHE_DIR=$RUNNER_TOOL_CACHE/comfy-test-cache/linux-gpu-v3" >> $GITHUB_ENV
 
       - uses: astral-sh/setup-uv@v4
 
