@@ -31,6 +31,14 @@ jobs:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/python/.playwright
       COMFY_ENV_CACHE_DIR: /home/administrator/.comfy-env
     steps:
+      - name: Acquire platform lock
+        run: |
+          echo "Waiting for linux-gpu lock..."
+          while ! mkdir /mnt/c/linux-gpu-lock 2>/dev/null; do
+            sleep 10
+          done
+          echo "Platform lock acquired"
+
       - name: Cleanup stale mounts
         run: |
           sudo umount "${{ github.workspace }}/python" 2>/dev/null || true
@@ -203,3 +211,7 @@ jobs:
           rm -rf "$OVL_DIR" 2>/dev/null || true
           rm -rf "$GITHUB_WORKSPACE"/* || true
           rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
+
+      - name: Release platform lock
+        if: always()
+        run: rmdir /mnt/c/linux-gpu-lock 2>/dev/null || true
