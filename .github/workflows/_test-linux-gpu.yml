@@ -203,4 +203,3 @@ jobs:
           rm -rf "$OVL_DIR" 2>/dev/null || true
           rm -rf "$GITHUB_WORKSPACE"/* || true
           rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
-          rm -rf /tmp/ovl-* 2>/dev/null || true
