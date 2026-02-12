@@ -11,6 +11,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"
+      PW_TEST_SCREENSHOT_NO_FONTS_READY: "1"
       COMFY_ENV_DEBUG: "1"
       COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
