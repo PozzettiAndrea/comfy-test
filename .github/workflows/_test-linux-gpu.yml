@@ -52,6 +52,9 @@ jobs:
             mkdir -p /tmp/ovl-comfy-upper /tmp/ovl-comfy-work
             sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/python",upperdir=/tmp/ovl-python-upper,workdir=/tmp/ovl-python-work "$PYTHON_DIR"
             sudo mount -t overlay overlay -o lowerdir="$LOCAL_CACHE_DIR/ComfyUI",upperdir=/tmp/ovl-comfy-upper,workdir=/tmp/ovl-comfy-work "$COMFYUI_DIR"
+            # Pre-create bin/ in upper layer so uv's relative path traversal
+            # (site-packages/../../../bin/) triggers proper overlayfs copy-up
+            mkdir -p /tmp/ovl-python-upper/bin
             echo "Cache mounted!"
             echo "cache-hit=true" >> $GITHUB_OUTPUT
           else

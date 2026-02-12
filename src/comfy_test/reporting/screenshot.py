@@ -1045,11 +1045,11 @@ class WorkflowScreenshot:
         final_screenshot_delay_ms: int = 5000,
         timeout: int = 300,
     ) -> List[Path]:
-        """Capture workflow execution as individual WebP frames for slider playback.
+        """Capture workflow execution as frames triggered by node execution events.
 
-        Takes periodic screenshots during execution and saves as compressed WebP.
-        Uses 1x scale (not HiDPI) to reduce file size. Also saves metadata.json
-        with timestamps and log snapshots for each frame.
+        Takes a screenshot each time a node finishes executing (via WebSocket
+        'executed' events), producing one frame per node instead of continuous
+        polling. Also saves metadata.json with timestamps and log snapshots.
 
         Optionally captures a high-quality PNG screenshot after execution completes,
         waiting for previews to fully render.
@@ -1057,13 +1057,13 @@ class WorkflowScreenshot:
         Args:
             workflow_path: Path to the workflow JSON file
             output_dir: Directory to save frames (e.g., videos/workflow_name/)
-            webp_quality: WebP compression quality 0-100 (default: 60, lower for video)
+            webp_quality: JPEG compression quality 0-100 (default: 60)
             log_lines: Optional list that accumulates log lines (for syncing logs to frames)
             final_screenshot_path: Optional path to save high-quality PNG after execution
             final_screenshot_delay_ms: Delay before final screenshot (default: 5000ms)
 
         Returns:
-            List of paths to saved WebP frames
+            List of paths to saved JPEG frames
 
         Raises:
             ScreenshotError: If capture or execution fails
@@ -1138,10 +1138,11 @@ class WorkflowScreenshot:
         except Exception:
             self._log("  Warning: WebSocket not ready, proceeding anyway")
 
-        # Inject WebSocket listener to track execution completion
+        # Inject WebSocket listener to track execution completion and per-node events
         self._page.evaluate("""
             window._executionComplete = false;
             window._executionError = null;
+            window._executedNodeCount = 0;
 
             if (window.app && window.app.api && window.app.api.socket) {
                 const origOnMessage = window.app.api.socket.onmessage;
@@ -1152,7 +1153,9 @@ class WorkflowScreenshot:
                     if (event && typeof event.data === 'string') {
                         try {
                             const msg = JSON.parse(event.data);
-                            if (msg && msg.type === 'execution_success') {
+                            if (msg && msg.type === 'executed' && msg.data && msg.data.node) {
+                                window._executedNodeCount++;
+                            } else if (msg && msg.type === 'execution_success') {
                                 window._executionComplete = true;
                             } else if (msg && msg.type === 'execution_error') {
                                 window._executionError = msg.data;
@@ -1192,32 +1195,34 @@ class WorkflowScreenshot:
             self._log("  Queuing workflow for execution...")
             self._page.evaluate("window.app.queuePrompt(0)")
 
-            # Capture loop - periodic screenshots with timeout
-            last_screenshot_time = 0
+            # Capture loop - screenshot on each node execution event
             frame_num = 1
-            screenshot_interval_ms = 100  # Capture every 100ms
+            last_executed_count = 0
             timed_out = False
 
             while time.time() - capture_start < timeout:
-                current_time = time.time()
-                elapsed = current_time - capture_start
+                elapsed = time.time() - capture_start
 
-                # Check execution state
+                # Check execution state and node execution count
                 state = self._page.evaluate("""
                     () => ({
                         complete: window._executionComplete,
-                        error: window._executionError
+                        error: window._executionError,
+                        executedCount: window._executedNodeCount
                     })
                 """)
 
-                # Take periodic screenshot
-                if (current_time - capture_start - last_screenshot_time) * 1000 >= screenshot_interval_ms:
+                # Take screenshot when new node(s) have executed
+                if state["executedCount"] > last_executed_count:
+                    # Brief pause to let the UI render the node's output
+                    self._page.wait_for_timeout(150)
+                    elapsed = time.time() - capture_start
                     temp_path = output_dir / f"frame_{frame_num:03d}.png"
-                    self._page.screenshot(path=str(temp_path), scale="css")  # 1x scale
+                    self._page.screenshot(path=str(temp_path), scale="css")
                     log_snapshot = "\n".join(log_lines) if log_lines else ""
                     temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
                     frame_num += 1
-                    last_screenshot_time = elapsed
+                    last_executed_count = state["executedCount"]
 
                 if state["complete"]:
                     if state["error"]:
@@ -1232,7 +1237,7 @@ class WorkflowScreenshot:
                         raise WorkflowError(f"Workflow execution failed: {error_msg}", workflow_file=str(workflow_path), node_error=node_error)
                     break
 
-                self._page.wait_for_timeout(20)
+                self._page.wait_for_timeout(100)
             else:
                 # Timeout reached
                 timed_out = True
@@ -1274,7 +1279,7 @@ class WorkflowScreenshot:
                 # Remove temp PNG
                 temp_path.unlink()
 
-            self._log(f"  {len(frame_paths)} unique frames saved as WebP")
+            self._log(f"  {len(frame_paths)} unique frames saved")
 
             # Capture high-quality final screenshot if requested
             if final_screenshot_path:
