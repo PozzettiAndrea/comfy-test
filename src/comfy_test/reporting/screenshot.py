@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import requests
 from pathlib import Path
 from typing import Optional, Callable, List, TYPE_CHECKING
@@ -272,6 +273,20 @@ class WorkflowScreenshot:
         """Clear captured console logs."""
         self._console_logs.clear()
 
+    def _safe_screenshot(self, path: str, **kwargs) -> bool:
+        """Take a screenshot, logging the full traceback on failure instead of crashing.
+
+        Returns:
+            True if screenshot succeeded, False if it failed.
+        """
+        try:
+            self._page.screenshot(path=path, **kwargs)
+            return True
+        except Exception:
+            self._log(f"  WARNING: Screenshot failed ({path}):")
+            self._log(traceback.format_exc())
+            return False
+
     def _screenshot_with_retry(self, path: str, retries: int = 3, **kwargs) -> None:
         """Take screenshot with retry logic for flaky CI environments.
 
@@ -287,8 +302,9 @@ class WorkflowScreenshot:
                 return
             except Exception as e:
                 last_error = e
+                self._log(f"  Screenshot attempt {attempt + 1}/{retries} failed:")
+                self._log(traceback.format_exc())
                 if attempt < retries - 1:
-                    self._log(f"  Screenshot attempt {attempt + 1} failed, retrying...")
                     self._page.wait_for_timeout(1000)  # Wait before retry
         raise last_error
 
@@ -954,8 +970,8 @@ class WorkflowScreenshot:
         try:
             # Take initial frame (before execution)
             initial_frame = temp_dir / "frame_000.png"
-            self._page.screenshot(path=str(initial_frame))
-            frames.append(Image.open(initial_frame))
+            if self._safe_screenshot(path=str(initial_frame)):
+                frames.append(Image.open(initial_frame))
 
             # Validate workflow using browser's graphToPrompt() conversion
             self._log("  Validating workflow...")
@@ -987,9 +1003,9 @@ class WorkflowScreenshot:
                 # Take periodic screenshot to catch execution state (green boxes)
                 if (current_time - last_screenshot_time) * 1000 >= screenshot_interval_ms:
                     frame_path = temp_dir / f"frame_{frame_num:03d}.png"
-                    self._page.screenshot(path=str(frame_path))
-                    frames.append(Image.open(frame_path))
-                    frame_num += 1
+                    if self._safe_screenshot(path=str(frame_path)):
+                        frames.append(Image.open(frame_path))
+                        frame_num += 1
                     last_screenshot_time = current_time
 
                 if state["complete"]:
@@ -1012,8 +1028,8 @@ class WorkflowScreenshot:
             # Final frame after completion
             self._page.wait_for_timeout(1000)  # Wait for final renders
             final_frame = temp_dir / f"frame_{frame_num:03d}.png"
-            self._page.screenshot(path=str(final_frame))
-            frames.append(Image.open(final_frame))
+            if self._safe_screenshot(path=str(final_frame)):
+                frames.append(Image.open(final_frame))
 
             self._log(f"  Captured {len(frames)} total frames")
 
@@ -1180,9 +1196,9 @@ class WorkflowScreenshot:
             frame_num = 0
             capture_start = time.time()
             temp_path = output_dir / f"frame_{frame_num:03d}.png"
-            self._page.screenshot(path=str(temp_path), scale="css")  # 1x scale
-            log_snapshot = "\n".join(log_lines) if log_lines else ""
-            temp_frames.append((temp_path, 0.0, log_snapshot))
+            if self._safe_screenshot(path=str(temp_path), scale="css"):
+                log_snapshot = "\n".join(log_lines) if log_lines else ""
+                temp_frames.append((temp_path, 0.0, log_snapshot))
 
             # Validate workflow using browser's graphToPrompt() conversion
             self._log("  Validating workflow...")
@@ -1218,10 +1234,10 @@ class WorkflowScreenshot:
                     self._page.wait_for_timeout(150)
                     elapsed = time.time() - capture_start
                     temp_path = output_dir / f"frame_{frame_num:03d}.png"
-                    self._page.screenshot(path=str(temp_path), scale="css")
-                    log_snapshot = "\n".join(log_lines) if log_lines else ""
-                    temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
-                    frame_num += 1
+                    if self._safe_screenshot(path=str(temp_path), scale="css"):
+                        log_snapshot = "\n".join(log_lines) if log_lines else ""
+                        temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
+                        frame_num += 1
                     last_executed_count = state["executedCount"]
 
                 if state["complete"]:
@@ -1247,9 +1263,9 @@ class WorkflowScreenshot:
             self._page.wait_for_timeout(1000)
             elapsed = time.time() - capture_start
             temp_path = output_dir / f"frame_{frame_num:03d}.png"
-            self._page.screenshot(path=str(temp_path), scale="css")
-            log_snapshot = "\n".join(log_lines) if log_lines else ""
-            temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
+            if self._safe_screenshot(path=str(temp_path), scale="css"):
+                log_snapshot = "\n".join(log_lines) if log_lines else ""
+                temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
 
             total_time = round(time.time() - capture_start, 2)
             self._log(f"  Captured {len(temp_frames)} frames over {total_time}s")
