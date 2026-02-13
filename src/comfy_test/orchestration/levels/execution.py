@@ -242,44 +242,53 @@ def run(ctx: LevelContext) -> LevelContext:
                 if hasattr(e, 'details') and e.details:
                     capture_log(f"    Details: {e.details}")
                 all_errors.append((workflow_file.name, str(e)))
+            except Exception as e:
+                status = "fail"
+                error_msg = str(e)
+                capture_log("    Status: FAILED (unexpected error)")
+                capture_log(f"    Error: {e}")
+                all_errors.append((workflow_file.name, str(e)))
             finally:
                 spinner.stop("PASS" if status == "pass" else "FAIL")
                 ctx.server.remove_log_listener(capture_log)
 
-            duration = time.time() - start_time
-            resource_metrics = resource_monitor.stop()
+                duration = time.time() - start_time
+                resource_metrics = resource_monitor.stop()
 
-            # Save resource timeline to CSV
-            if resource_metrics.get("timeline"):
-                csv_path = logs_dir / f"{workflow_file.stem}_resources.csv"
-                total_ram = resource_metrics.get("total_ram_gb", 16)
-                with open(csv_path, 'w') as f:
-                    f.write(f"# total_ram_gb={total_ram}\n")
-                    f.write("t,ram_gb,vram_gb\n")
-                    for sample in resource_metrics["timeline"]:
-                        vram_val = sample['vram'] if sample['vram'] is not None else ''
-                        f.write(f"{sample['t']},{sample['ram']},{vram_val}\n")
-                resource_metrics.pop("timeline", None)
+                # Save resource timeline to CSV
+                if resource_metrics.get("timeline"):
+                    csv_path = logs_dir / f"{workflow_file.stem}_resources.csv"
+                    total_ram = resource_metrics.get("total_ram_gb", 16)
+                    with open(csv_path, 'w') as f:
+                        f.write(f"# total_ram_gb={total_ram}\n")
+                        f.write("t,ram_gb,vram_gb\n")
+                        for sample in resource_metrics["timeline"]:
+                            vram_val = sample['vram'] if sample['vram'] is not None else ''
+                            f.write(f"{sample['t']},{sample['ram']},{vram_val}\n")
+                    resource_metrics.pop("timeline", None)
 
-            results.append({
-                "name": workflow_file.stem,
-                "status": status,
-                "duration_seconds": round(duration, 2),
-                "error": error_msg,
-                "hardware": hardware,
-                "resources": resource_metrics,
-            })
+                results.append({
+                    "name": workflow_file.stem,
+                    "status": status,
+                    "duration_seconds": round(duration, 2),
+                    "error": error_msg,
+                    "hardware": hardware,
+                    "resources": resource_metrics,
+                })
 
-            # Save per-workflow log
-            (logs_dir / f"{workflow_file.stem}.log").write_text(
-                "\n".join(current_workflow_log), encoding="utf-8"
-            )
-            if ws:
-                ws.save_console_logs(logs_dir / f"{workflow_file.stem}_console.log")
-                ws.clear_console_logs()
+                # Save per-workflow log (always, even on failure)
+                (logs_dir / f"{workflow_file.stem}.log").write_text(
+                    "\n".join(current_workflow_log), encoding="utf-8"
+                )
+                if ws:
+                    ws.save_console_logs(logs_dir / f"{workflow_file.stem}_console.log")
+                    ws.clear_console_logs()
 
-            # Unload models after each workflow to prevent OOM on limited VRAM GPUs
-            ctx.api.free_memory(unload_models=True)
+                # Unload models after each workflow to prevent OOM on limited VRAM GPUs
+                try:
+                    ctx.api.free_memory(unload_models=True)
+                except Exception:
+                    pass
 
     finally:
         if ws:
