@@ -214,7 +214,7 @@ def run(ctx: LevelContext) -> LevelContext:
                             log_lines=current_workflow_log,
                             webp_quality=60,
                             final_screenshot_path=final_screenshot_path,
-                            final_screenshot_delay_ms=5000,
+                            final_screenshot_delay_ms=10000,
                             timeout=get_workflow_timeout(ctx.config.workflow.timeout),
                         )
                         capture_log(f"    Captured {len(frames)} video frames")
