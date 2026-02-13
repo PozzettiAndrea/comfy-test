@@ -280,7 +280,7 @@ class WorkflowScreenshot:
             True if screenshot succeeded, False if it failed.
         """
         try:
-            self._page.screenshot(path=path, **kwargs)
+            self._page.screenshot(path=path, animations="disabled", **kwargs)
             return True
         except Exception:
             self._log(f"  WARNING: Screenshot failed ({path}):")
@@ -294,19 +294,22 @@ class WorkflowScreenshot:
             path: Path to save screenshot
             retries: Number of retry attempts (default 3)
             **kwargs: Additional arguments passed to page.screenshot()
+
+        Raises:
+            ScreenshotError: If all retry attempts fail
         """
         last_error = None
         for attempt in range(retries):
             try:
-                self._page.screenshot(path=path, **kwargs)
+                self._page.screenshot(path=path, animations="disabled", **kwargs)
                 return
             except Exception as e:
                 last_error = e
-                self._log(f"  Screenshot attempt {attempt + 1}/{retries} failed:")
+                self._log(f"  Screenshot attempt {attempt + 1}/{retries} failed: {e}")
                 self._log(traceback.format_exc())
                 if attempt < retries - 1:
                     self._page.wait_for_timeout(1000)  # Wait before retry
-        raise last_error
+        raise ScreenshotError(f"Screenshot failed after {retries} attempts", str(last_error))
 
     def stop(self) -> None:
         """Stop the headless browser."""
@@ -392,6 +395,51 @@ class WorkflowScreenshot:
             self._page.wait_for_timeout(2000)
         except Exception:
             pass  # Best effort
+
+    def _freeze_animations(self) -> None:
+        """Freeze all requestAnimationFrame loops to unblock the compositor.
+
+        Three.js and other WebGL renderers use rAF loops that keep the
+        browser compositor busy via SwiftShader, which can cause
+        page.screenshot() to hang indefinitely on CPU-only machines.
+
+        This replaces rAF with a no-op so no new render calls are queued.
+        The currently in-flight render (if any) finishes normally, and the
+        canvas retains its last rendered frame for the screenshot.
+        """
+        try:
+            self._page.evaluate("""
+                (() => {
+                    // Stop all rAF-based render loops (Three.js, gaussian viewers, etc.)
+                    if (!window._origRAF) {
+                        window._origRAF = window.requestAnimationFrame;
+                    }
+                    window.requestAnimationFrame = () => 0;
+
+                    // Also cancel any already-queued frames
+                    for (let i = 1; i < 10000; i++) {
+                        window.cancelAnimationFrame(i);
+                    }
+                })();
+            """)
+            # Wait for any in-flight SwiftShader render to complete
+            self._page.wait_for_timeout(2000)
+        except Exception:
+            pass  # Best effort
+
+    def _unfreeze_animations(self) -> None:
+        """Restore requestAnimationFrame after a freeze."""
+        try:
+            self._page.evaluate("""
+                (() => {
+                    if (window._origRAF) {
+                        window.requestAnimationFrame = window._origRAF;
+                        delete window._origRAF;
+                    }
+                })();
+            """)
+        except Exception:
+            pass
 
     def _validate_workflow_in_browser(self) -> dict:
         """Validate workflow using browser's graphToPrompt() conversion.
@@ -779,6 +827,10 @@ class WorkflowScreenshot:
 
         # Activate Load3d/Preview3D nodes so their Three.js viewports render
         self._trigger_3d_previews()
+
+        # Freeze rAF loops and WebGL contexts so the compositor can
+        # produce a frame without SwiftShader blocking indefinitely
+        self._freeze_animations()
 
         # Take screenshot with a temp file first
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -1259,8 +1311,11 @@ class WorkflowScreenshot:
                 timed_out = True
                 self._log(f"  WARNING: Workflow execution timeout after {timeout}s")
 
-            # Final frame after completion
+            # Final frame after completion — freeze rAF loops first so
+            # WebGL canvases (e.g. gaussian splat viewer) don't block the
+            # browser compositor under SwiftShader
             self._page.wait_for_timeout(1000)
+            self._freeze_animations()
             elapsed = time.time() - capture_start
             temp_path = output_dir / f"frame_{frame_num:03d}.png"
             if self._safe_screenshot(path=str(temp_path), scale="css"):
@@ -1306,8 +1361,10 @@ class WorkflowScreenshot:
                 self._fit_graph_to_view()
                 self._page.wait_for_timeout(500)
 
-                # Activate Load3d/Preview3D nodes so their Three.js viewports render
+                # Restore rAF so 3D viewers can render, then freeze again
+                self._unfreeze_animations()
                 self._trigger_3d_previews()
+                self._freeze_animations()
 
                 # Take high-quality screenshot at 2x scale
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
