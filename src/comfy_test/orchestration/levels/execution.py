@@ -215,6 +215,7 @@ def run(ctx: LevelContext) -> LevelContext:
                             webp_quality=60,
                             final_screenshot_path=final_screenshot_path,
                             final_screenshot_delay_ms=5000,
+                            timeout=get_workflow_timeout(ctx.config.workflow.timeout),
                         )
                         capture_log(f"    Captured {len(frames)} video frames")
                     except (WorkflowError, ScreenshotError) as browser_err:
