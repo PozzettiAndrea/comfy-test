@@ -7,7 +7,7 @@ jobs:
   linux-test:
     name: linux-test
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"

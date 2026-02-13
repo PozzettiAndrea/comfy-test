@@ -242,9 +242,11 @@ class WorkflowScreenshot:
 
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
+        # Use GPU for WebGL when available (needed for heavy scenes like
+        # gaussian splats). Fall back to SwiftShader only if no GPU exists.
         self._browser = self._playwright.chromium.launch(
             headless=True,
-            args=["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"],
+            args=["--use-gl=angle", "--use-angle=default"],
         )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
@@ -406,6 +408,9 @@ class WorkflowScreenshot:
         This replaces rAF with a no-op so no new render calls are queued.
         The currently in-flight render (if any) finishes normally, and the
         canvas retains its last rendered frame for the screenshot.
+
+        Also freezes iframes (3D viewers like gaussian splat run in iframes
+        with their own window and rAF loop).
         """
         try:
             self._page.evaluate("""
@@ -420,6 +425,17 @@ class WorkflowScreenshot:
                     for (let i = 1; i < 10000; i++) {
                         window.cancelAnimationFrame(i);
                     }
+
+                    // Freeze iframes too (3D viewers run in iframes)
+                    document.querySelectorAll('iframe').forEach(iframe => {
+                        try {
+                            const win = iframe.contentWindow;
+                            if (!win) return;
+                            if (!win._origRAF) win._origRAF = win.requestAnimationFrame;
+                            win.requestAnimationFrame = () => 0;
+                            for (let i = 1; i < 10000; i++) win.cancelAnimationFrame(i);
+                        } catch(e) {} // Cross-origin iframes will throw
+                    });
                 })();
             """)
             # Wait for any in-flight SwiftShader render to complete
@@ -436,6 +452,17 @@ class WorkflowScreenshot:
                         window.requestAnimationFrame = window._origRAF;
                         delete window._origRAF;
                     }
+
+                    // Restore iframes too
+                    document.querySelectorAll('iframe').forEach(iframe => {
+                        try {
+                            const win = iframe.contentWindow;
+                            if (win && win._origRAF) {
+                                win.requestAnimationFrame = win._origRAF;
+                                delete win._origRAF;
+                            }
+                        } catch(e) {}
+                    });
                 })();
             """)
         except Exception:

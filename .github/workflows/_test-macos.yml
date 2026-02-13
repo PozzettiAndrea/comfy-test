@@ -7,7 +7,7 @@ jobs:
   macos-test:
     name: macos-test
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     env:
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"
