@@ -604,7 +604,7 @@ class WorkflowScreenshot:
         try:
             self._page.wait_for_function(
                 "typeof window.app !== 'undefined' && window.app.graph !== undefined",
-                timeout=30000,
+                timeout=300000,
             )
         except Exception as e:
             raise ScreenshotError("ComfyUI app did not initialize", str(e))
@@ -675,7 +675,7 @@ class WorkflowScreenshot:
         try:
             self._page.wait_for_function(
                 "typeof window.app !== 'undefined' && window.app.graph !== undefined",
-                timeout=30000,
+                timeout=300000,
             )
         except Exception as e:
             raise ScreenshotError("ComfyUI app did not initialize", str(e))
@@ -774,7 +774,7 @@ class WorkflowScreenshot:
         try:
             self._page.wait_for_function(
                 "typeof window.app !== 'undefined' && window.app.graph !== undefined",
-                timeout=30000,
+                timeout=300000,
             )
         except Exception as e:
             raise ScreenshotError("ComfyUI app did not initialize", str(e))
@@ -965,7 +965,7 @@ class WorkflowScreenshot:
         try:
             self._page.wait_for_function(
                 "typeof window.app !== 'undefined' && window.app.graph !== undefined",
-                timeout=30000,
+                timeout=300000,
             )
         except Exception as e:
             raise ScreenshotError("ComfyUI app did not initialize", str(e))
@@ -1198,7 +1198,7 @@ class WorkflowScreenshot:
         try:
             self._page.wait_for_function(
                 "typeof window.app !== 'undefined' && window.app.graph !== undefined",
-                timeout=30000,
+                timeout=300000,
             )
         except Exception as e:
             raise ScreenshotError("ComfyUI app did not initialize", str(e))
