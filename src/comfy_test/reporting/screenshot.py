@@ -377,7 +377,7 @@ class WorkflowScreenshot:
                     const nodes = window.app.graph._nodes || [];
                     for (const node of nodes) {
                         const t = (node.type || '').toLowerCase();
-                        if (!t.includes('3d') && !t.includes('load3d') && !t.includes('preview3d')) continue;
+                        if (!t.includes('3d') && !t.includes('load3d') && !t.includes('preview3d') && !t.includes('gaussian')) continue;
 
                         if (node.widgets) {
                             for (const widget of node.widgets) {
@@ -427,13 +427,21 @@ class WorkflowScreenshot:
                     }
 
                     // Freeze iframes too (3D viewers run in iframes)
+                    // Unlike the main window, we capture callbacks instead of
+                    // discarding them so the render loop can be restarted on
+                    // unfreeze.  We also skip cancelAnimationFrame — letting
+                    // the one already-queued callback fire ensures it calls
+                    // our replacement rAF, which saves the loop function.
                     document.querySelectorAll('iframe').forEach(iframe => {
                         try {
                             const win = iframe.contentWindow;
                             if (!win) return;
                             if (!win._origRAF) win._origRAF = win.requestAnimationFrame;
-                            win.requestAnimationFrame = () => 0;
-                            for (let i = 1; i < 10000; i++) win.cancelAnimationFrame(i);
+                            win._pendingRAFCallbacks = [];
+                            win.requestAnimationFrame = (cb) => {
+                                win._pendingRAFCallbacks.push(cb);
+                                return 0;
+                            };
                         } catch(e) {} // Cross-origin iframes will throw
                     });
                 })();
@@ -453,13 +461,18 @@ class WorkflowScreenshot:
                         delete window._origRAF;
                     }
 
-                    // Restore iframes too
+                    // Restore iframes and restart any captured render loops
                     document.querySelectorAll('iframe').forEach(iframe => {
                         try {
                             const win = iframe.contentWindow;
                             if (win && win._origRAF) {
                                 win.requestAnimationFrame = win._origRAF;
                                 delete win._origRAF;
+                                const pending = win._pendingRAFCallbacks || [];
+                                win._pendingRAFCallbacks = [];
+                                for (const cb of pending) {
+                                    win.requestAnimationFrame(cb);
+                                }
                             }
                         } catch(e) {}
                     });
@@ -724,7 +737,7 @@ class WorkflowScreenshot:
         self,
         workflow_path: Path,
         output_path: Optional[Path] = None,
-        timeout: int = 300,
+        timeout: int = 3600,
         wait_after_completion_ms: int = 3000,
     ) -> Path:
         """Capture a screenshot after executing a workflow.
@@ -916,7 +929,7 @@ class WorkflowScreenshot:
         self,
         workflow_path: Path,
         output_path: Optional[Path] = None,
-        timeout: int = 300,
+        timeout: int = 3600,
         frame_duration_ms: int = 500,
     ) -> Path:
         """Capture workflow execution as animated GIF.
@@ -1138,7 +1151,7 @@ class WorkflowScreenshot:
         log_lines: Optional[List[str]] = None,
         final_screenshot_path: Optional[Path] = None,
         final_screenshot_delay_ms: int = 5000,
-        timeout: int = 300,
+        timeout: int = 3600,
     ) -> List[Path]:
         """Capture workflow execution as frames triggered by node execution events.
 
@@ -1381,6 +1394,10 @@ class WorkflowScreenshot:
 
             # Capture high-quality final screenshot if requested
             if final_screenshot_path:
+                # Restore rAF so 3D viewers can render during the wait
+                self._unfreeze_animations()
+                self._trigger_3d_previews()
+
                 self._log(f"  Waiting {final_screenshot_delay_ms}ms for previews to render...")
                 self._page.wait_for_timeout(final_screenshot_delay_ms)
 
@@ -1388,9 +1405,7 @@ class WorkflowScreenshot:
                 self._fit_graph_to_view()
                 self._page.wait_for_timeout(500)
 
-                # Restore rAF so 3D viewers can render, then freeze again
-                self._unfreeze_animations()
-                self._trigger_3d_previews()
+                # Freeze right before screenshot to unblock the compositor
                 self._freeze_animations()
 
                 # Take high-quality screenshot at 2x scale
