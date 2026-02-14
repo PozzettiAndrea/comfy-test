@@ -17,7 +17,7 @@ on:
       timeout-minutes:
         description: "Job timeout in minutes"
         type: number
-        default: 60
+        default: 120
       run-gpu:
         description: "DEPRECATED - GPU tests now auto-run when gpu=[...] is defined in config"
         type: boolean
