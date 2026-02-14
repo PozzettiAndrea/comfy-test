@@ -9,7 +9,7 @@ on:
         default: "comfy-test.toml"
       timeout-minutes:
         type: number
-        default: 60
+        default: 120
 
 jobs:
   windows-portable-gpu-test:
