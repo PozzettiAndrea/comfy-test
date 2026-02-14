@@ -106,10 +106,24 @@ jobs:
           comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
 
       # --- Screenshot gallery for README ---
+      - name: Find screenshot platform
+        id: find-platform
+        run: |
+          for dir in windows-portable-cpu windows-portable-gpu windows-cpu windows-gpu linux-gpu linux-cpu; do
+            if [ -f "gh-pages/main/$dir/index.html" ]; then
+              echo "platform=$dir" >> "$GITHUB_OUTPUT"
+              echo "Found screenshot platform: $dir"
+              exit 0
+            fi
+          done
+          echo "platform=" >> "$GITHUB_OUTPUT"
+          echo "No screenshot platform found, skipping"
+
       - name: Screenshot gallery
+        if: steps.find-platform.outputs.platform != ''
         uses: Shresht7/web-screenshot-action@v1
         with:
-          url: file://${{ github.workspace }}/gh-pages/main/windows-portable-cpu/index.html
+          url: file://${{ github.workspace }}/gh-pages/main/${{ steps.find-platform.outputs.platform }}/index.html
           path: gh-pages/gallery-preview.png
           width: 1200
           height: 700
