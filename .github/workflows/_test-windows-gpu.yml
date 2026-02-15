@@ -28,6 +28,7 @@ jobs:
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI
       PYTHON_DIR: ${{ github.workspace }}\python
       PYTHON_EXE: ${{ github.workspace }}\python\python.exe
+      HF_HOME: C:\Users\Administrator\.cache\huggingface
     steps:
       - name: Acquire platform lock
         shell: powershell

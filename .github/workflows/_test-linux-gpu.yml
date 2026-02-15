@@ -30,6 +30,7 @@ jobs:
       PYTHON_EXE: ${{ github.workspace }}/python/bin/python3
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/python/.playwright
       COMFY_ENV_CACHE_DIR: /home/administrator/.comfy-env
+      HF_HOME: /mnt/c/Users/Administrator/.cache/huggingface
     steps:
       - name: Acquire platform lock
         run: |

@@ -29,6 +29,7 @@ jobs:
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI_windows_portable\ComfyUI
       PYTHON_EXE: ${{ github.workspace }}\ComfyUI_windows_portable\python_embeded\python.exe
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
+      HF_HOME: C:\Users\Administrator\.cache\huggingface
     steps:
       - name: Acquire platform lock
         shell: powershell
