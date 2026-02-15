@@ -148,15 +148,15 @@ jobs:
         run: |
           mkdir -p "$COMFY_TEST_LOGS_DIR"
 
-          # Kill any stale process on port 8188 from a previous job
-          if fuser 8188/tcp 2>/dev/null; then
-            echo "Killing stale process on port 8188..."
-            fuser -k 8188/tcp 2>/dev/null || true
+          # Kill any stale process on port 8388 from a previous job
+          if fuser 8388/tcp 2>/dev/null; then
+            echo "Killing stale process on port 8388..."
+            fuser -k 8388/tcp 2>/dev/null || true
             sleep 2
           fi
 
           echo "Starting GPU server..."
-          $PYTHON_EXE -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8188 &
+          $PYTHON_EXE -u "$COMFYUI_DIR/main.py" --listen 127.0.0.1 --port 8388 &
           SERVER_PID=$!
 
           echo "Waiting for server (up to 5 minutes)..."
@@ -166,7 +166,7 @@ jobs:
               echo "Server process died!"
               exit 1
             fi
-            if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
+            if curl -s http://127.0.0.1:8388/system_stats > /dev/null 2>&1; then
               echo "Server is ready after $i seconds!"
               SERVER_READY=1
               break
@@ -180,12 +180,12 @@ jobs:
             exit 1
           fi
 
-          xvfb-run --auto-servernum $PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8188
+          xvfb-run --auto-servernum $PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8388
           TEST_EXIT_CODE=$?
 
           kill $SERVER_PID 2>/dev/null || true
-          # Belt and suspenders: kill anything still on port 8188
-          fuser -k 8188/tcp 2>/dev/null || true
+          # Belt and suspenders: kill anything still on port 8388
+          fuser -k 8388/tcp 2>/dev/null || true
           sleep 2
           exit $TEST_EXIT_CODE
 
