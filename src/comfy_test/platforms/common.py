@@ -36,7 +36,7 @@ def get_ci_env_vars() -> Dict[str, str]:
 
 def is_gpu_mode_enabled() -> bool:
     """Check if GPU mode is enabled via environment variable."""
-    return bool(os.environ.get("COMFY_TEST_GPU"))
+    return os.environ.get("COMFY_TEST_GPU", "0") not in ("0", "", "false", "no")
 
 
 # =============================================================================
