@@ -37,7 +37,7 @@ class MacOSPlatform(TestPlatform):
 
     def is_gpu_mode(self) -> bool:
         """Detect if GPU mode is enabled (MPS on Apple Silicon)."""
-        return bool(os.environ.get("COMFY_TEST_GPU"))
+        return os.environ.get("COMFY_TEST_GPU", "0") not in ("0", "", "false", "no")
 
     def _uv_install(self, python: Path, args: list, cwd: Path, env: Optional[dict] = None) -> None:
         """Install packages using uv pip."""

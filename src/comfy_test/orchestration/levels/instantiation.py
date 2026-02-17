@@ -21,6 +21,16 @@ from pathlib import Path
 is_gpu_runner = {is_gpu_runner}
 if not is_gpu_runner:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # On Windows, CUDA_VISIBLE_DEVICES="" is not enough - torch.cuda C++ calls
+    # can still crash with access violations when no GPU driver is present.
+    # Monkey-patch torch.cuda before any ComfyUI imports to prevent this.
+    try:
+        import torch
+        torch.cuda.is_available = lambda: False
+        torch.cuda.device_count = lambda: 0
+        torch.cuda.current_device = lambda: 0
+    except ImportError:
+        pass
 
 # Mock CUDA packages if needed
 cuda_packages = {cuda_packages_json}
