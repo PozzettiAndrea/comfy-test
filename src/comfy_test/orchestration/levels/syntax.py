@@ -1,10 +1,21 @@
-"""SYNTAX level - Check project structure and CP1252 compatibility."""
+"""SYNTAX level - Check project structure, CP1252 compatibility, and forbidden patterns."""
 
+import re
 import unicodedata
 from pathlib import Path
 
 from ...common.errors import TestError
 from ..context import LevelContext
+
+
+# Patterns that break ComfyUI-native compatibility.
+# Each entry: (compiled regex, human-readable description)
+FORBIDDEN_PATTERNS = [
+    (re.compile(r'\.cuda\s*\('), '.cuda() — use comfy.model_management.get_torch_device()'),
+    (re.compile(r'\.to\s*\(\s*["\']cuda'), '.to("cuda...") — use comfy.model_management.get_torch_device()'),
+    (re.compile(r'\.to\s*\(\s*torch\.device\s*\(\s*["\']cuda'), '.to(torch.device("cuda")) — use comfy.model_management.get_torch_device()'),
+    (re.compile(r'torch\.load\s*\('), 'torch.load() — use comfy.utils.load_torch_file()'),
+]
 
 
 def run(ctx: LevelContext) -> LevelContext:
@@ -13,6 +24,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Checks:
     1. Project has pyproject.toml or requirements.txt
     2. All Python files use CP1252-safe characters (Windows compatibility)
+    3. No forbidden patterns (.cuda(), torch.load, etc.) in model code
 
     Args:
         ctx: Level context
@@ -26,6 +38,7 @@ def run(ctx: LevelContext) -> LevelContext:
     ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     _check_project_structure(ctx)
     _check_unicode_characters(ctx)
+    _check_forbidden_patterns(ctx)
     return ctx
 
 
@@ -107,3 +120,55 @@ def _check_unicode_characters(ctx: LevelContext) -> None:
         )
 
     ctx.log("Unicode check: OK (all characters cp1252-safe)")
+
+
+def _check_forbidden_patterns(ctx: LevelContext) -> None:
+    """Check Python files for patterns that break ComfyUI-native compatibility.
+
+    Catches:
+    - .cuda() calls (should use comfy.model_management.get_torch_device())
+    - .to("cuda") hardcoded device placement
+    - torch.load() (should use comfy.utils.load_torch_file())
+
+    Raises:
+        TestError: If forbidden patterns are found
+    """
+    issues = []
+
+    skip_dirs = {
+        '.git', '__pycache__', '.venv', 'venv', 'node_modules',
+        'site-packages', 'lib', 'Lib', '.pixi', 'scripts',
+    }
+
+    for py_file in ctx.node_dir.rglob("*.py"):
+        rel_path = py_file.relative_to(ctx.node_dir)
+        parts = rel_path.parts
+        if any(p in skip_dirs or p.startswith('_env_') or p.startswith('.') for p in parts):
+            continue
+
+        try:
+            content = py_file.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            continue
+
+        file_issues = []
+        for line_num, line in enumerate(content.splitlines(), 1):
+            stripped = line.lstrip()
+            # Skip comments
+            if stripped.startswith('#'):
+                continue
+
+            for pattern, description in FORBIDDEN_PATTERNS:
+                if pattern.search(line):
+                    file_issues.append(f"  Line {line_num}: {description}")
+
+        if file_issues:
+            issues.append(f"{rel_path}:\n" + "\n".join(file_issues))
+
+    if issues:
+        raise TestError(
+            "Forbidden patterns found (not ComfyUI-native)",
+            "Use ComfyUI APIs instead:\n\n" + "\n\n".join(issues)
+        )
+
+    ctx.log("Forbidden patterns check: OK")
