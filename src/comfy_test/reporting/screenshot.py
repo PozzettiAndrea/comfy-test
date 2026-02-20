@@ -1,6 +1,7 @@
 """Workflow screenshot capture using headless browser."""
 
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -242,11 +243,8 @@ class WorkflowScreenshot:
 
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
-        # Use GPU for WebGL when available (needed for heavy scenes like
-        # gaussian splats). Fall back to SwiftShader only if no GPU exists.
         self._browser = self._playwright.chromium.launch(
             headless=True,
-            args=["--use-gl=angle", "--use-angle=default"],
         )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
@@ -325,17 +323,31 @@ class WorkflowScreenshot:
             self._playwright.stop()
             self._playwright = None
 
+    def _configure_server_settings(self) -> None:
+        """Set server-side settings for screenshot capture."""
+        settings = {
+            # Prevent Templates panel from showing on first run
+            "Comfy.TutorialCompleted": True,
+            # Enable Vue node overlays so preview images render as DOM elements
+            # (defaults to false on fresh installs, which prevents all preview rendering)
+            "Comfy.VueNodes.Enabled": True,
+        }
+        for key, value in settings.items():
+            try:
+                requests.post(
+                    f"{self.server_url}/settings/{key}",
+                    json=value,
+                    timeout=5,
+                )
+            except Exception:
+                pass  # Best effort - server might not be running yet
+
     def _disable_first_run_tutorial(self) -> None:
-        """Set server-side setting to prevent Templates panel from showing."""
-        try:
-            # Call ComfyUI's /settings API to mark tutorial as completed
-            requests.post(
-                f"{self.server_url}/settings/Comfy.TutorialCompleted",
-                json=True,
-                timeout=5,
-            )
-        except Exception:
-            pass  # Best effort - server might not be running yet
+        """Set server-side setting to prevent Templates panel from showing.
+
+        Deprecated: use _configure_server_settings() instead.
+        """
+        self._configure_server_settings()
 
     def _close_panels_and_alerts(self) -> None:
         """Close Templates sidebar panel if open."""
@@ -604,8 +616,8 @@ class WorkflowScreenshot:
         except Exception as e:
             raise ScreenshotError(f"Failed to load workflow: {workflow_path}", str(e))
 
-        # Set server-side setting to prevent Templates panel from showing
-        self._disable_first_run_tutorial()
+        # Configure server-side settings (tutorial, Vue node overlays for previews)
+        self._configure_server_settings()
 
         # Navigate to ComfyUI
         try:
@@ -675,8 +687,8 @@ class WorkflowScreenshot:
 
         self._log(f"Capturing: {workflow_path.name}")
 
-        # Set server-side setting to prevent Templates panel from showing
-        self._disable_first_run_tutorial()
+        # Configure server-side settings (tutorial, Vue node overlays for previews)
+        self._configure_server_settings()
 
         # Navigate to ComfyUI
         try:
@@ -774,8 +786,8 @@ class WorkflowScreenshot:
 
         self._log(f"Executing and capturing: {workflow_path.name}")
 
-        # Set server-side setting to prevent Templates panel from showing
-        self._disable_first_run_tutorial()
+        # Configure server-side settings (tutorial, Vue node overlays for previews)
+        self._configure_server_settings()
 
         # Navigate to ComfyUI
         try:
@@ -965,8 +977,8 @@ class WorkflowScreenshot:
 
         self._log(f"Capturing execution GIF: {workflow_path.name}")
 
-        # Set server-side setting to prevent Templates panel from showing
-        self._disable_first_run_tutorial()
+        # Configure server-side settings (tutorial, Vue node overlays for previews)
+        self._configure_server_settings()
 
         # Navigate to ComfyUI
         try:
@@ -1198,8 +1210,8 @@ class WorkflowScreenshot:
         except Exception:
             pass  # Best effort
 
-        # Set server-side setting to prevent Templates panel from showing
-        self._disable_first_run_tutorial()
+        # Configure server-side settings (tutorial, Vue node overlays for previews)
+        self._configure_server_settings()
 
         # Navigate to ComfyUI
         try:
@@ -1251,6 +1263,8 @@ class WorkflowScreenshot:
             window._executionComplete = false;
             window._executionError = null;
             window._executedNodeCount = 0;
+            window._executingNodeCount = 0;
+            window._executedOutputs = {};
 
             if (window.app && window.app.api && window.app.api.socket) {
                 const origOnMessage = window.app.api.socket.onmessage;
@@ -1261,8 +1275,11 @@ class WorkflowScreenshot:
                     if (event && typeof event.data === 'string') {
                         try {
                             const msg = JSON.parse(event.data);
-                            if (msg && msg.type === 'executed' && msg.data && msg.data.node) {
+                            if (msg && msg.type === 'executing' && msg.data && msg.data.node) {
+                                window._executingNodeCount++;
+                            } else if (msg && msg.type === 'executed' && msg.data && msg.data.node) {
                                 window._executedNodeCount++;
+                                window._executedOutputs[msg.data.node] = msg.data.output;
                             } else if (msg && msg.type === 'execution_success') {
                                 window._executionComplete = true;
                             } else if (msg && msg.type === 'execution_error') {
@@ -1276,21 +1293,94 @@ class WorkflowScreenshot:
                     }
                 };
             }
+
+            // Diagnostic: hook into the frontend's own CustomEvent dispatch chain
+            // to see if 'executed' events reach the app.api EventTarget
+            window._diagApiExecuted = [];
+            window._diagApiExecuting = [];
+            if (window.app && window.app.api) {
+                window.app.api.addEventListener('executed', (e) => {
+                    window._diagApiExecuted.push({
+                        node: e.detail?.node,
+                        display_node: e.detail?.display_node,
+                        imageCount: e.detail?.output?.images?.length || 0
+                    });
+                });
+                window.app.api.addEventListener('executing', (e) => {
+                    window._diagApiExecuting.push(e.detail);
+                });
+            }
         """)
 
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         frame_paths: List[Path] = []
-        temp_frames: List[tuple] = []  # (path, timestamp, log_snapshot)
+        frame_metadata = []
+        last_hash = None
+        frame_num = 0
+
+        def _save_frame_if_new(screenshot_bytes: bytes, timestamp: float, log_snap: str) -> bool:
+            """Hash screenshot, save as JPEG if different from last frame."""
+            nonlocal last_hash, frame_num
+            h = hashlib.md5(screenshot_bytes).hexdigest()
+            if h == last_hash:
+                return False
+            last_hash = h
+            jpg_path = output_dir / f"frame_{frame_num:03d}.jpg"
+            img = Image.open(io.BytesIO(screenshot_bytes))
+            img.save(jpg_path, "JPEG", quality=webp_quality)
+            img.close()
+            frame_paths.append(jpg_path)
+            frame_metadata.append({
+                "file": jpg_path.name,
+                "time": timestamp,
+                "log": log_snap,
+            })
+            frame_num += 1
+            self._log(f"  Frame {frame_num} saved ({jpg_path.name}, t={timestamp:.1f}s)")
+            return True
+
+        # Quick rAF freeze/unfreeze for periodic captures (no sleep).
+        # IMPORTANT: iframe callbacks must be SAVED, not discarded — otherwise
+        # render loops (e.g. gaussian splat viewer) die permanently.
+        _QUICK_FREEZE_JS = """(() => {
+            window._origRAF = window._origRAF || window.requestAnimationFrame;
+            window.requestAnimationFrame = () => 0;
+            document.querySelectorAll('iframe').forEach(f => {
+                try {
+                    const w = f.contentWindow;
+                    if (!w) return;
+                    w._origRAF = w._origRAF || w.requestAnimationFrame;
+                    w._pendingRAFCallbacks = w._pendingRAFCallbacks || [];
+                    w.requestAnimationFrame = (cb) => { w._pendingRAFCallbacks.push(cb); return 0; };
+                } catch(e) {}
+            });
+        })()"""
+        _QUICK_UNFREEZE_JS = """(() => {
+            if (window._origRAF) { window.requestAnimationFrame = window._origRAF; delete window._origRAF; }
+            document.querySelectorAll('iframe').forEach(f => {
+                try {
+                    const w = f.contentWindow;
+                    if (!w || !w._origRAF) return;
+                    w.requestAnimationFrame = w._origRAF;
+                    delete w._origRAF;
+                    const pending = w._pendingRAFCallbacks || [];
+                    w._pendingRAFCallbacks = [];
+                    for (const cb of pending) { w.requestAnimationFrame(cb); }
+                } catch(e) {}
+            });
+        })()"""
 
         try:
-            # Take initial frame (before execution)
-            frame_num = 0
             capture_start = time.time()
-            temp_path = output_dir / f"frame_{frame_num:03d}.png"
-            if self._safe_screenshot(path=str(temp_path), scale="css"):
+
+            # Take initial frame (before execution)
+            try:
+                shot = self._page.screenshot(type="png", animations="disabled", scale="css")
                 log_snapshot = "\n".join(log_lines) if log_lines else ""
-                temp_frames.append((temp_path, 0.0, log_snapshot))
+                _save_frame_if_new(shot, 0.0, log_snapshot)
+            except Exception:
+                pass
 
             # Validate workflow using browser's graphToPrompt() conversion
             self._log("  Validating workflow...")
@@ -1303,15 +1393,12 @@ class WorkflowScreenshot:
             self._log("  Queuing workflow for execution...")
             self._page.evaluate("window.app.queuePrompt(0)")
 
-            # Capture loop - screenshot on each node execution event
-            frame_num = 1
+            # Capture loop — screenshot on node events + periodic every 2s
             last_executed_count = 0
-            timed_out = False
+            last_screenshot_time = time.time()
+            PERIODIC_INTERVAL = 2.0
 
             while time.time() - capture_start < timeout:
-                elapsed = time.time() - capture_start
-
-                # Check execution state and node execution count
                 state = self._page.evaluate("""
                     () => ({
                         complete: window._executionComplete,
@@ -1320,19 +1407,35 @@ class WorkflowScreenshot:
                     })
                 """)
 
-                # Take screenshot when new node(s) have executed
+                elapsed = time.time() - capture_start
+                log_snapshot = "\n".join(log_lines) if log_lines else ""
+
+                # Screenshot on node completion (no freeze — meaningful moment)
                 if state["executedCount"] > last_executed_count:
-                    # Brief pause to let the UI render the node's output
-                    self._page.wait_for_timeout(150)
+                    self._log(f"  Node executed ({state['executedCount']} total), capturing...")
+                    self._page.wait_for_timeout(150)  # let UI render
                     elapsed = time.time() - capture_start
-                    temp_path = output_dir / f"frame_{frame_num:03d}.png"
-                    if self._safe_screenshot(path=str(temp_path), scale="css"):
-                        log_snapshot = "\n".join(log_lines) if log_lines else ""
-                        temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
-                        frame_num += 1
+                    try:
+                        shot = self._page.screenshot(type="png", animations="disabled", scale="css")
+                        _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
+                    except Exception:
+                        pass
                     last_executed_count = state["executedCount"]
+                    last_screenshot_time = time.time()
+
+                # Periodic capture (with freeze to suppress animation noise)
+                elif time.time() - last_screenshot_time >= PERIODIC_INTERVAL:
+                    try:
+                        self._page.evaluate(_QUICK_FREEZE_JS)
+                        shot = self._page.screenshot(type="png", animations="disabled", scale="css")
+                        self._page.evaluate(_QUICK_UNFREEZE_JS)
+                        _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
+                    except Exception:
+                        pass
+                    last_screenshot_time = time.time()
 
                 if state["complete"]:
+                    self._log(f"  Execution complete (t={elapsed:.1f}s)")
                     if state["error"]:
                         error_data = state["error"]
                         if isinstance(error_data, dict):
@@ -1347,76 +1450,151 @@ class WorkflowScreenshot:
 
                 self._page.wait_for_timeout(100)
             else:
-                # Timeout reached
-                timed_out = True
                 self._log(f"  WARNING: Workflow execution timeout after {timeout}s")
 
-            # Final frame after completion — freeze rAF loops first so
-            # WebGL canvases (e.g. gaussian splat viewer) don't block the
-            # browser compositor under SwiftShader
-            self._page.wait_for_timeout(1000)
-            self._freeze_animations()
-            elapsed = time.time() - capture_start
-            temp_path = output_dir / f"frame_{frame_num:03d}.png"
-            if self._safe_screenshot(path=str(temp_path), scale="css"):
-                log_snapshot = "\n".join(log_lines) if log_lines else ""
-                temp_frames.append((temp_path, round(elapsed, 2), log_snapshot))
-
             total_time = round(time.time() - capture_start, 2)
-            self._log(f"  Captured {len(temp_frames)} frames over {total_time}s")
+            self._log(f"  Captured {len(frame_paths)} unique frames over {total_time}s")
 
-            # Dedupe and convert to JPEG, keeping metadata
-            last_hash = None
-            frame_num = 0
-            frame_metadata = []
-            for temp_path, timestamp, log_snap in temp_frames:
-                img = Image.open(temp_path)
-                h = _image_hash(img)
-
-                if h != last_hash:
-                    # Save as JPEG
-                    jpg_path = output_dir / f"frame_{frame_num:03d}.jpg"
-                    img.save(jpg_path, "JPEG", quality=webp_quality)
-                    frame_paths.append(jpg_path)
-                    frame_metadata.append({
-                        "file": jpg_path.name,
-                        "time": timestamp,
-                        "log": log_snap,
-                    })
-                    frame_num += 1
-                    last_hash = h
-
-                img.close()
-                # Remove temp PNG
-                temp_path.unlink()
-
-            self._log(f"  {len(frame_paths)} unique frames saved")
-
-            # Capture high-quality final screenshot if requested
+            # --- Post-execution: final high-quality screenshot ---
             if final_screenshot_path:
-                # Restore rAF so 3D viewers can render during the wait
-                self._unfreeze_animations()
+                # Diagnostic: check where the preview image chain breaks
+                _DIAG_JS = """(() => {
+                    const d = {};
+
+                    // Chain steps 2-3: Were CustomEvents dispatched on app.api?
+                    d.apiExecutedCount = (window._diagApiExecuted || []).length;
+                    d.apiExecutingCount = (window._diagApiExecuting || []).length;
+
+                    // WS tracker vs app stores
+                    d.wsOutputNodes = Object.keys(window._executedOutputs || {});
+                    d.appNodeOutputKeys = Object.keys(window.app?.nodeOutputs || {});
+
+                    // Check nodePreviewImages specifically (separate from nodeOutputs)
+                    const npi = window.app?.nodePreviewImages;
+                    d.nodePreviewImagesType = typeof npi;
+                    if (npi && typeof npi === 'object') {
+                        d.nodePreviewImagesKeys = Object.keys(npi);
+                        // Check if it's a Vue reactive proxy
+                        d.isProxy = npi.toString?.().includes('Proxy') || false;
+                    }
+
+                    // Inspect nodeOutputs structure for one entry
+                    const outputs = window.app?.nodeOutputs || {};
+                    const firstKey = Object.keys(outputs)[0];
+                    if (firstKey) {
+                        const val = outputs[firstKey];
+                        d.sampleOutputKey = firstKey;
+                        d.sampleOutputStructure = JSON.stringify(val).substring(0, 200);
+                    }
+
+                    // DOM: ALL elements, not just <img>
+                    const allImgs = document.querySelectorAll('img');
+                    d.totalImgs = allImgs.length;
+                    d.imgSrcs = Array.from(allImgs).slice(0, 5).map(i => i.src.substring(0, 120));
+
+                    // Search for ANY node overlay elements (Vue renders these on top of canvas)
+                    d.canvasElements = document.querySelectorAll('canvas').length;
+                    // The Vue overlay wraps nodes — check for litegraph node overlay container
+                    const graphCanvas = document.querySelector('.graph-canvas-container, .litegraph, [class*="graph"], #graph-canvas');
+                    d.graphContainerTag = graphCanvas?.tagName;
+                    d.graphContainerClass = graphCanvas?.className?.substring?.(0, 100);
+
+                    // Find the Vue app's root and check for overlay divs
+                    const appEl = document.getElementById('app') || document.getElementById('vue-app');
+                    d.appElChildren = appEl ? appEl.children.length : 0;
+
+                    // Check ALL divs/elements that are positioned absolutely over the canvas
+                    // (Vue preview overlays are typically absolute-positioned)
+                    const absElements = document.querySelectorAll('[style*="position: absolute"], [style*="position:absolute"]');
+                    d.absoluteElements = absElements.length;
+
+                    // Enumerate properties on window.app to find store references
+                    d.appKeys = Object.keys(window.app || {}).filter(k =>
+                        k.toLowerCase().includes('preview') ||
+                        k.toLowerCase().includes('image') ||
+                        k.toLowerCase().includes('output') ||
+                        k.toLowerCase().includes('node')
+                    );
+
+                    // Graph state
+                    const graph = window.app?.graph;
+                    d.graphNodeCount = graph?._nodes?.length || 0;
+                    d.nodesWithImgs = (graph?._nodes || []).filter(
+                        n => n.imgs && n.imgs.length > 0
+                    ).length;
+
+                    // Iframe state (3D viewers)
+                    const iframes = document.querySelectorAll('iframe');
+                    d.iframeCount = iframes.length;
+                    d.iframes = Array.from(iframes).map(f => {
+                        try {
+                            const win = f.contentWindow;
+                            return {
+                                src: (f.src || '').substring(0, 80),
+                                w: f.width || f.clientWidth,
+                                h: f.height || f.clientHeight,
+                                hasRAF: !!(win && win.requestAnimationFrame),
+                                rafFrozen: !!(win && win._origRAF),
+                                canvasW: win?.document?.querySelector('canvas')?.width || 0,
+                                canvasH: win?.document?.querySelector('canvas')?.height || 0,
+                            };
+                        } catch(e) { return { src: f.src, error: e.toString() }; }
+                    });
+
+                    return d;
+                })()"""
+
+                diag = self._page.evaluate(_DIAG_JS)
+                # [diag] output silenced — uncomment to debug preview rendering issues:
+                # self._log(f"  [diag] API executed: {diag.get('apiExecutedCount')}, executing: {diag.get('apiExecutingCount')}")
+                # self._log(f"  [diag] WS outputs: {diag.get('wsOutputNodes')}")
+                # self._log(f"  [diag] app.nodeOutputs: {diag.get('appNodeOutputKeys')}")
+                # self._log(f"  [diag] nodePreviewImages type={diag.get('nodePreviewImagesType')}, keys={diag.get('nodePreviewImagesKeys', 'N/A')}, isProxy={diag.get('isProxy', 'N/A')}")
+                # self._log(f"  [diag] Sample output [{diag.get('sampleOutputKey')}]: {diag.get('sampleOutputStructure', 'N/A')}")
+                # self._log(f"  [diag] DOM imgs: {diag.get('totalImgs')}, canvases: {diag.get('canvasElements')}")
+                # if diag.get('imgSrcs'):
+                #     for src in diag['imgSrcs']:
+                #         self._log(f"  [diag]   {src}")
+                # self._log(f"  [diag] Abs-positioned elements: {diag.get('absoluteElements')}")
+                # self._log(f"  [diag] App #children: {diag.get('appElChildren')}")
+                # self._log(f"  [diag] Graph container: <{diag.get('graphContainerTag')}> class={diag.get('graphContainerClass')}")
+                # self._log(f"  [diag] App keys (preview/image/output/node): {diag.get('appKeys')}")
+                # self._log(f"  [diag] Graph: {diag.get('graphNodeCount')} nodes, {diag.get('nodesWithImgs')} with imgs")
+
+                # Iframe debug info
+                iframe_info = diag.get('iframes', [])
+                self._log(f"  [debug] iframes: {diag.get('iframeCount', 0)}")
+                for i, info in enumerate(iframe_info):
+                    if 'error' in info:
+                        self._log(f"  [debug]   iframe[{i}]: src={info.get('src', '?')}, error={info['error']}")
+                    else:
+                        self._log(f"  [debug]   iframe[{i}]: src={info.get('src', '?')}, canvas={info.get('canvasW')}x{info.get('canvasH')}, rafFrozen={info.get('rafFrozen')}")
+
+                t = time.time()
                 self._trigger_3d_previews()
+                self._log(f"  [timing] trigger_3d_previews: {time.time()-t:.1f}s")
 
-                self._log(f"  Waiting {final_screenshot_delay_ms}ms for previews to render...")
-                self._page.wait_for_timeout(final_screenshot_delay_ms)
-
-                # Fit graph to view again (in case previews changed layout)
+                # Fit graph first, then wait for canvas to redraw with images at final zoom
+                t = time.time()
                 self._fit_graph_to_view()
                 self._page.wait_for_timeout(500)
+                self._log(f"  [timing] fit_graph: {time.time()-t:.1f}s")
 
-                # Freeze right before screenshot to unblock the compositor
+                t = time.time()
+                self._log(f"  Waiting {final_screenshot_delay_ms}ms for previews to render...")
+                self._page.wait_for_timeout(final_screenshot_delay_ms)
+                self._log(f"  [timing] preview_wait: {time.time()-t:.1f}s")
+
+                t = time.time()
                 self._freeze_animations()
+                self._log(f"  [timing] freeze_animations: {time.time()-t:.1f}s")
 
-                # Take high-quality screenshot at 2x scale
+                t = time.time()
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp_path = Path(tmp.name)
 
                 try:
-                    # Full viewport screenshot at HiDPI (2x scale for crisp image)
                     self._screenshot_with_retry(path=str(tmp_path))
-
-                    # Embed workflow metadata into PNG
                     self._embed_workflow(tmp_path, final_screenshot_path, workflow)
                     self._log(f"  Saved high-quality screenshot: {final_screenshot_path.name}")
 
@@ -1431,12 +1609,13 @@ class WorkflowScreenshot:
                         "time": time.time() - capture_start,
                         "log": "Final screenshot",
                     })
-
                 finally:
                     if tmp_path.exists():
                         tmp_path.unlink()
 
-            # Save metadata.json (after final screenshot so it's included)
+                self._log(f"  [timing] final_screenshot: {time.time()-t:.1f}s")
+
+            # Save metadata.json
             metadata = {
                 "frames": frame_metadata,
                 "total_time": total_time,
@@ -1457,11 +1636,7 @@ class WorkflowScreenshot:
 
             return frame_paths
 
-        except Exception as e:
-            # Clean up on error
-            for temp_path, _, _ in temp_frames:
-                if isinstance(temp_path, Path) and temp_path.exists():
-                    temp_path.unlink()
+        except Exception:
             raise
 
 

@@ -10,7 +10,6 @@ from typing import List, Optional
 
 from ...common.errors import TestError, WorkflowError, WorkflowExecutionError, TestTimeoutError
 from ...common.resource_monitor import ResourceMonitor
-from ...comfyui.workflow import WorkflowRunner
 from ..context import LevelContext
 from ..results import get_hardware_info, get_workflow_timeout
 
@@ -128,38 +127,34 @@ def run(ctx: LevelContext) -> LevelContext:
     current_workflow_log: List[str] = []
 
     def capture_log(msg):
+        """Append to per-workflow log (used by server log listener)."""
         current_workflow_log.append(msg)
 
-    # Initialize screenshot/video capture
-    ws = None
-    screenshots_dir = None
-    videos_dir = None
+    def capture_and_print(msg):
+        """Append to per-workflow log AND print to session log (used by WorkflowScreenshot)."""
+        current_workflow_log.append(msg)
+        ctx.log(msg)
 
-    try:
-        from ...reporting.screenshot import (
-            WorkflowScreenshot,
-            ScreenshotError,
-            check_dependencies,
-            ensure_dependencies,
-        )
+    # Initialize screenshot/video capture (Playwright required)
+    from ...reporting.screenshot import (
+        WorkflowScreenshot,
+        ScreenshotError,
+        check_dependencies,
+        ensure_dependencies,
+    )
 
-        python_path = ctx.paths.python if ctx.paths else None
-        if not ensure_dependencies(python_path=python_path, log_callback=ctx.log):
-            raise ImportError("Failed to install screenshot dependencies")
-        check_dependencies()
+    python_path = ctx.paths.python if ctx.paths else None
+    if not ensure_dependencies(python_path=python_path, log_callback=ctx.log):
+        raise TestError("Failed to install screenshot dependencies (playwright required)")
+    check_dependencies()
 
-        ws = WorkflowScreenshot(ctx.server.base_url, log_callback=capture_log)
-        ws.start()
+    ws = WorkflowScreenshot(ctx.server.base_url, log_callback=capture_and_print)
+    ws.start()
 
-        screenshots_dir = ctx.output_base / "screenshots"
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        videos_dir = ctx.output_base / "videos"
-        videos_dir.mkdir(parents=True, exist_ok=True)
-    except ImportError:
-        ctx.log("WARNING: Screenshots disabled (playwright not installed)")
-        ScreenshotError = Exception  # Fallback for error handling
-
-    ctx.log(f"Execution path: {'browser (Playwright)' if ws else 'Python converter'}")
+    screenshots_dir = ctx.output_base / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir = ctx.output_base / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize results tracking
     results = []
@@ -169,7 +164,6 @@ def run(ctx: LevelContext) -> LevelContext:
     hardware = get_hardware_info()
 
     try:
-        runner = WorkflowRunner(ctx.api, capture_log)
         all_errors = []
 
         for idx, workflow_file in enumerate(workflows, 1):
@@ -204,37 +198,18 @@ def run(ctx: LevelContext) -> LevelContext:
             resource_monitor.start()
 
             try:
-                if ws and videos_dir:
-                    workflow_video_dir = videos_dir / workflow_file.stem
-                    final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
-                    try:
-                        frames = ws.capture_execution_frames(
-                            _resolve_workflow_path(ctx, workflow_file),
-                            output_dir=workflow_video_dir,
-                            log_lines=current_workflow_log,
-                            webp_quality=60,
-                            final_screenshot_path=final_screenshot_path,
-                            final_screenshot_delay_ms=10000,
-                            timeout=get_workflow_timeout(ctx.config.workflow.timeout),
-                        )
-                        capture_log(f"    Captured {len(frames)} video frames")
-                    except (WorkflowError, ScreenshotError) as browser_err:
-                        if "class_type" in str(browser_err):
-                            capture_log(f"    Browser execution failed: {browser_err.message}")
-                            capture_log("    Retrying with Python converter...")
-                            result = runner.run_workflow(
-                                _resolve_workflow_path(ctx, workflow_file),
-                                timeout=get_workflow_timeout(ctx.config.workflow.timeout),
-                            )
-                            capture_log(f"    Status: {result.status}")
-                        else:
-                            raise
-                else:
-                    result = runner.run_workflow(
-                        workflow_file,
-                        timeout=get_workflow_timeout(ctx.config.workflow.timeout),
-                    )
-                    capture_log(f"    Status: {result.status}")
+                workflow_video_dir = videos_dir / workflow_file.stem
+                final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
+                frames = ws.capture_execution_frames(
+                    _resolve_workflow_path(ctx, workflow_file),
+                    output_dir=workflow_video_dir,
+                    log_lines=current_workflow_log,
+                    webp_quality=60,
+                    final_screenshot_path=final_screenshot_path,
+                    final_screenshot_delay_ms=5000,
+                    timeout=get_workflow_timeout(ctx.config.workflow.timeout),
+                )
+                capture_log(f"    Captured {len(frames)} video frames")
             except (WorkflowError, TestTimeoutError, ScreenshotError) as e:
                 status = "fail"
                 error_msg = str(e)
@@ -281,9 +256,8 @@ def run(ctx: LevelContext) -> LevelContext:
                 (logs_dir / f"{workflow_file.stem}.log").write_text(
                     "\n".join(current_workflow_log), encoding="utf-8"
                 )
-                if ws:
-                    ws.save_console_logs(logs_dir / f"{workflow_file.stem}_console.log")
-                    ws.clear_console_logs()
+                ws.save_console_logs(logs_dir / f"{workflow_file.stem}_console.log")
+                ws.clear_console_logs()
 
                 # Unload models after each workflow to prevent OOM on limited VRAM GPUs
                 try:
@@ -292,8 +266,7 @@ def run(ctx: LevelContext) -> LevelContext:
                     pass
 
     finally:
-        if ws:
-            ws.stop()
+        ws.stop()
 
     # Save results.json
     passed_count = sum(1 for r in results if r["status"] == "pass")
