@@ -245,6 +245,7 @@ class WorkflowScreenshot:
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(
             headless=True,
+            args=["--disable-gpu"],
         )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
