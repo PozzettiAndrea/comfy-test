@@ -243,10 +243,25 @@ class WorkflowScreenshot:
 
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(
-            headless=True,
-            args=["--disable-gpu"],
-        )
+
+        # Try GPU-accelerated rendering; fall back to software if unavailable
+        gpu_args = [
+            "--enable-gpu",
+            "--use-gl=egl",
+            "--ignore-gpu-blocklist",
+        ]
+        try:
+            self._browser = self._playwright.chromium.launch(
+                headless=True,
+                args=gpu_args,
+            )
+            self._log("  Browser launched with GPU acceleration")
+        except Exception:
+            self._log("  GPU launch failed, falling back to software rendering")
+            self._browser = self._playwright.chromium.launch(
+                headless=True,
+                args=["--disable-gpu"],
+            )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
             device_scale_factor=2,  # HiDPI for crisp screenshots
