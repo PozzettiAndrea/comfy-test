@@ -384,13 +384,13 @@ class WorkflowScreenshot:
 
         ComfyUI's Load3d widget skips rendering unless isActive() is true.
         We find all such nodes and dispatch mouseenter on their DOM widgets
-        to set STATUS_MOUSE_ON_SCENE = true, then wait for a render cycle.
+        to set STATUS_MOUSE_ON_SCENE = true.
 
-        Assumes rAF is frozen on entry; unfreezes to let viewers render,
-        then freezes again before returning.
+        Does NOT unfreeze rAF — 3D viewers already rendered during execution
+        and their canvases retain the last frame.  Unfreezing would restart
+        heavy SwiftShader renders (e.g. 1.18M gaussians) causing 55s+ stalls.
         """
         try:
-            self._unfreeze_animations()
             self._page.evaluate("""
                 (() => {
                     const nodes = window.app.graph._nodes || [];
@@ -413,8 +413,6 @@ class WorkflowScreenshot:
                     }
                 })();
             """)
-            self._page.wait_for_timeout(2000)
-            self._freeze_animations()
         except Exception:
             pass  # Best effort
 
@@ -1458,12 +1456,35 @@ class WorkflowScreenshot:
                             node_error = None
                         self._log(f"  Execution error: {error_msg}")
                         raise WorkflowError(f"Workflow execution failed: {error_msg}", workflow_file=str(workflow_path), node_error=node_error)
-                    # Freeze rAF immediately so post-execution operations
-                    # don't stall behind heavy WebGL renderers (e.g. gaussian splat)
+                    # Wait for 3D viewers to finish their initial render,
+                    # then freeze rAF so post-execution operations don't stall.
                     try:
+                        matching_logs = [log for log in self._console_logs if "Loaded successfully" in log]
+                        viewer_ready = len(matching_logs) > 0
+                        self._log(f"  [3d-wait] viewer_ready={viewer_ready}, matching_logs={matching_logs}, total_console_logs={len(self._console_logs)}")
+                        if not viewer_ready:
+                            self._log(f"  [3d-wait] Waiting for '[GaussianViewer] Loaded successfully' console message (timeout=60s)...")
+                            self._page.wait_for_event(
+                                "console",
+                                predicate=lambda msg: "Loaded successfully" in msg.text,
+                                timeout=60000,
+                            )
+                            self._log(f"  [3d-wait] Got it!")
+                        else:
+                            self._log(f"  [3d-wait] Already loaded, skipping wait")
+                        # Unfreeze so the renderer can paint, wait one frame, re-freeze
+                        self._page.evaluate(_QUICK_UNFREEZE_JS)
+                        self._log(f"  [3d-wait] Unfrozen, waiting for first paint...")
+                        self._page.wait_for_timeout(500)
                         self._page.evaluate(_QUICK_FREEZE_JS)
-                    except Exception:
-                        pass
+                        self._log(f"  [3d-wait] Frozen after viewer render")
+                    except Exception as e:
+                        self._log(f"  [3d-wait] Exception: {e}")
+                        # Timeout or no viewer — freeze anyway
+                        try:
+                            self._page.evaluate(_QUICK_FREEZE_JS)
+                        except Exception:
+                            pass
                     break
 
                 self._page.wait_for_timeout(100)
