@@ -32,9 +32,11 @@ jobs:
         with:
           script: |
             const sha = context.payload.pull_request.head.sha;
+            const branch = context.payload.pull_request.head.ref;
             const workflowName = "${{ inputs.test-workflow-name }}";
             core.info(`Checking "${workflowName}" results for commit ${sha.substring(0, 7)}`);
 
+            // Check HEAD commit first
             const { data } = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -45,29 +47,49 @@ jobs:
               r => r.name === workflowName
             );
 
-            if (testRuns.length === 0) {
-              core.setFailed(
-                `No "${workflowName}" run found for commit ${sha.substring(0, 7)}. ` +
-                `Push to dev and run tests first.`
+            let run = testRuns.length > 0 ? testRuns[0] : null;
+
+            // If no run for HEAD (skipped due to paths-ignore), find the last
+            // run on this branch that actually executed tests.
+            if (!run) {
+              core.info(`No run for HEAD commit — checking recent runs on branch "${branch}"...`);
+              const { data: branchRuns } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: branch,
+                per_page: 10,
+              });
+
+              const branchTestRuns = branchRuns.workflow_runs.filter(
+                r => r.name === workflowName && r.status === "completed"
               );
-              return;
+
+              if (branchTestRuns.length === 0) {
+                core.setFailed(
+                  `No "${workflowName}" run found for commit ${sha.substring(0, 7)} ` +
+                  `or any recent commit on branch "${branch}". Push to dev and run tests first.`
+                );
+                return;
+              }
+
+              run = branchTestRuns[0];
+              core.info(`Using most recent completed run from commit ${run.head_sha.substring(0, 7)}`);
             }
 
-            const latest = testRuns[0];
-            core.info(`Run: ${latest.html_url}`);
-            core.info(`Status: ${latest.status}, Conclusion: ${latest.conclusion}`);
+            core.info(`Run: ${run.html_url}`);
+            core.info(`Status: ${run.status}, Conclusion: ${run.conclusion}`);
 
-            if (latest.status !== "completed") {
+            if (run.status !== "completed") {
               core.setFailed(
-                `Tests still running (${latest.status}). ` +
+                `Tests still running (${run.status}). ` +
                 `Wait for completion then re-run this check.`
               );
               return;
             }
 
-            if (latest.conclusion !== "success") {
+            if (run.conclusion !== "success") {
               core.setFailed(
-                `Tests did not pass (${latest.conclusion}). ` +
+                `Tests did not pass (${run.conclusion}). ` +
                 `Fix failures on dev first.`
               );
               return;

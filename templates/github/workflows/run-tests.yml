@@ -2,6 +2,11 @@ name: Test Installation
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - '**.md'
+      - 'pyproject.toml'
+      - 'LICENSE'
+      - '.github/workflows/publish.yml'
 
 jobs:
   approve:
