@@ -235,7 +235,7 @@ class WorkflowScreenshot:
         self._browser: Optional["Browser"] = None
         self._page: Optional["Page"] = None
         self._console_logs: List[str] = []
-        self._gpu_accelerated: bool = False
+
 
     def start(self) -> None:
         """Start the headless browser."""
@@ -245,25 +245,10 @@ class WorkflowScreenshot:
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
 
-        # Try GPU-accelerated rendering; fall back to software if unavailable
-        gpu_args = [
-            "--enable-gpu",
-            "--use-gl=egl",
-            "--ignore-gpu-blocklist",
-        ]
-        try:
-            self._browser = self._playwright.chromium.launch(
-                headless=True,
-                args=gpu_args,
-            )
-            self._gpu_accelerated = True
-            self._log("  Browser launched with GPU acceleration")
-        except Exception:
-            self._log("  GPU launch failed, falling back to software rendering")
-            self._browser = self._playwright.chromium.launch(
-                headless=True,
-                args=["--disable-gpu"],
-            )
+        self._browser = self._playwright.chromium.launch(
+            headless=True,
+            args=["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"],
+        )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
             device_scale_factor=2,  # HiDPI for crisp screenshots
@@ -400,8 +385,12 @@ class WorkflowScreenshot:
         ComfyUI's Load3d widget skips rendering unless isActive() is true.
         We find all such nodes and dispatch mouseenter on their DOM widgets
         to set STATUS_MOUSE_ON_SCENE = true, then wait for a render cycle.
+
+        Assumes rAF is frozen on entry; unfreezes to let viewers render,
+        then freezes again before returning.
         """
         try:
+            self._unfreeze_animations()
             self._page.evaluate("""
                 (() => {
                     const nodes = window.app.graph._nodes || [];
@@ -425,6 +414,7 @@ class WorkflowScreenshot:
                 })();
             """)
             self._page.wait_for_timeout(2000)
+            self._freeze_animations()
         except Exception:
             pass  # Best effort
 
@@ -442,12 +432,7 @@ class WorkflowScreenshot:
         Also freezes iframes (3D viewers like gaussian splat run in iframes
         with their own window and rAF loop).
 
-        Skipped when GPU acceleration is active — real GPU rendering is fast
-        enough that screenshots work without freezing, and the freeze itself
-        can hang due to GPU contention with active WebGL render loops.
         """
-        if self._gpu_accelerated:
-            return
         try:
             self._page.evaluate("""
                 (() => {
@@ -1434,13 +1419,16 @@ class WorkflowScreenshot:
                 elapsed = time.time() - capture_start
                 log_snapshot = "\n".join(log_lines) if log_lines else ""
 
-                # Screenshot on node completion (no freeze — meaningful moment)
+                # Screenshot on node completion (with freeze to avoid GPU stalls)
                 if state["executedCount"] > last_executed_count:
                     self._log(f"  Node executed ({state['executedCount']} total), capturing...")
                     self._page.wait_for_timeout(150)  # let UI render
                     elapsed = time.time() - capture_start
                     try:
+                        self._page.evaluate(_QUICK_FREEZE_JS)
                         shot = self._page.screenshot(type="png", animations="disabled", scale="css")
+                        if not state["complete"]:
+                            self._page.evaluate(_QUICK_UNFREEZE_JS)
                         _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
                     except Exception:
                         pass
@@ -1470,6 +1458,12 @@ class WorkflowScreenshot:
                             node_error = None
                         self._log(f"  Execution error: {error_msg}")
                         raise WorkflowError(f"Workflow execution failed: {error_msg}", workflow_file=str(workflow_path), node_error=node_error)
+                    # Freeze rAF immediately so post-execution operations
+                    # don't stall behind heavy WebGL renderers (e.g. gaussian splat)
+                    try:
+                        self._page.evaluate(_QUICK_FREEZE_JS)
+                    except Exception:
+                        pass
                     break
 
                 self._page.wait_for_timeout(100)
@@ -1597,21 +1591,6 @@ class WorkflowScreenshot:
                 t = time.time()
                 self._trigger_3d_previews()
                 self._log(f"  [timing] trigger_3d_previews: {time.time()-t:.1f}s")
-
-                # Fit graph first, then wait for canvas to redraw with images at final zoom
-                t = time.time()
-                self._fit_graph_to_view()
-                self._page.wait_for_timeout(500)
-                self._log(f"  [timing] fit_graph: {time.time()-t:.1f}s")
-
-                t = time.time()
-                self._log(f"  Waiting {final_screenshot_delay_ms}ms for previews to render...")
-                self._page.wait_for_timeout(final_screenshot_delay_ms)
-                self._log(f"  [timing] preview_wait: {time.time()-t:.1f}s")
-
-                t = time.time()
-                self._freeze_animations()
-                self._log(f"  [timing] freeze_animations: {time.time()-t:.1f}s")
 
                 t = time.time()
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
