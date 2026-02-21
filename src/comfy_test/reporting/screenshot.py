@@ -235,6 +235,7 @@ class WorkflowScreenshot:
         self._browser: Optional["Browser"] = None
         self._page: Optional["Page"] = None
         self._console_logs: List[str] = []
+        self._gpu_accelerated: bool = False
 
     def start(self) -> None:
         """Start the headless browser."""
@@ -255,6 +256,7 @@ class WorkflowScreenshot:
                 headless=True,
                 args=gpu_args,
             )
+            self._gpu_accelerated = True
             self._log("  Browser launched with GPU acceleration")
         except Exception:
             self._log("  GPU launch failed, falling back to software rendering")
@@ -439,7 +441,13 @@ class WorkflowScreenshot:
 
         Also freezes iframes (3D viewers like gaussian splat run in iframes
         with their own window and rAF loop).
+
+        Skipped when GPU acceleration is active — real GPU rendering is fast
+        enough that screenshots work without freezing, and the freeze itself
+        can hang due to GPU contention with active WebGL render loops.
         """
+        if self._gpu_accelerated:
+            return
         try:
             self._page.evaluate("""
                 (() => {
