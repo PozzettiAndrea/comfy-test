@@ -84,7 +84,7 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & "$env:VENV\Scripts\uv" pip install --upgrade comfy-test
+          & "$env:VENV\Scripts\uv" pip install comfy-test==0.2.6
 
       # --- Checkout ---
       - uses: actions/checkout@v4

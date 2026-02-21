@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install comfy-test
+      - run: pip install comfy-test==0.2.6
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4

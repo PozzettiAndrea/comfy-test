@@ -32,11 +32,21 @@ jobs:
           version=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
           echo "version=$version" >> $GITHUB_OUTPUT
 
-      - name: Create tag
+      - name: Create tags
         if: github.event_name == 'push'
         run: |
           version="${{ steps.version.outputs.version }}"
-          git rev-parse "v$version" >/dev/null 2>&1 || { git tag "v$version" && git push origin "v$version"; }
+          major="${version%%.*}"
+
+          # Create the precise semver tag (idempotent)
+          git rev-parse "v$version" >/dev/null 2>&1 || {
+            git tag "v$version"
+            git push origin "v$version"
+          }
+
+          # Move the floating major version tag forward
+          git tag -f "v$major"
+          git push origin "v$major" --force
 
       - name: Build package
         if: github.event_name == 'push'
