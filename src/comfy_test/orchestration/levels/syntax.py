@@ -11,10 +11,23 @@ from ..context import LevelContext
 # Patterns that break ComfyUI-native compatibility.
 # Each entry: (compiled regex, human-readable description)
 FORBIDDEN_PATTERNS = [
+    # Device hardcoding — use comfy.model_management.get_torch_device()
     (re.compile(r'\.cuda\s*\('), '.cuda() — use comfy.model_management.get_torch_device()'),
     (re.compile(r'\.to\s*\(\s*["\']cuda'), '.to("cuda...") — use comfy.model_management.get_torch_device()'),
     (re.compile(r'\.to\s*\(\s*torch\.device\s*\(\s*["\']cuda'), '.to(torch.device("cuda")) — use comfy.model_management.get_torch_device()'),
+    # Checkpoint loading — use comfy.utils.load_torch_file()
     (re.compile(r'torch\.load\s*\('), 'torch.load() — use comfy.utils.load_torch_file()'),
+    # Autocast — use operations= (comfy.ops) for dtype management instead
+    (re.compile(r'torch\.autocast\s*\('), 'torch.autocast() — use comfy.ops operations= for dtype management'),
+    (re.compile(r'torch\.cuda\.amp\.autocast'), 'torch.cuda.amp.autocast — use comfy.ops operations= for dtype management'),
+    (re.compile(r'torch\.amp\.autocast'), 'torch.amp.autocast — use comfy.ops operations= for dtype management'),
+    # Raw nn layers — use operations.Linear, operations.Conv2d, etc.
+    (re.compile(r'nn\.Linear\s*\('), 'nn.Linear() — use operations.Linear() for VRAM management and dtype casting'),
+    (re.compile(r'nn\.Conv[123]d\s*\('), 'nn.Conv*d() — use operations.Conv*d() for VRAM management and dtype casting'),
+    (re.compile(r'nn\.ConvTranspose[12]d\s*\('), 'nn.ConvTranspose*d() — use operations.ConvTranspose*d()'),
+    (re.compile(r'nn\.LayerNorm\s*\('), 'nn.LayerNorm() — use operations.LayerNorm()'),
+    (re.compile(r'nn\.GroupNorm\s*\('), 'nn.GroupNorm() — use operations.GroupNorm()'),
+    (re.compile(r'nn\.Embedding\s*\('), 'nn.Embedding() — use operations.Embedding()'),
 ]
 
 

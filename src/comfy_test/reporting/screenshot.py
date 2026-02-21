@@ -1456,35 +1456,57 @@ class WorkflowScreenshot:
                             node_error = None
                         self._log(f"  Execution error: {error_msg}")
                         raise WorkflowError(f"Workflow execution failed: {error_msg}", workflow_file=str(workflow_path), node_error=node_error)
-                    # Wait for 3D viewers to finish their initial render,
-                    # then freeze rAF so post-execution operations don't stall.
-                    try:
-                        matching_logs = [log for log in self._console_logs if "Loaded successfully" in log]
-                        viewer_ready = len(matching_logs) > 0
-                        self._log(f"  [3d-wait] viewer_ready={viewer_ready}, matching_logs={matching_logs}, total_console_logs={len(self._console_logs)}")
-                        if not viewer_ready:
-                            self._log(f"  [3d-wait] Waiting for '[GaussianViewer] Loaded successfully' console message (timeout=60s)...")
-                            self._page.wait_for_event(
-                                "console",
-                                predicate=lambda msg: "Loaded successfully" in msg.text,
-                                timeout=60000,
-                            )
-                            self._log(f"  [3d-wait] Got it!")
-                        else:
-                            self._log(f"  [3d-wait] Already loaded, skipping wait")
-                        # Unfreeze so the renderer can paint, wait one frame, re-freeze
-                        self._page.evaluate(_QUICK_UNFREEZE_JS)
-                        self._log(f"  [3d-wait] Unfrozen, waiting for first paint...")
-                        self._page.wait_for_timeout(500)
-                        self._page.evaluate(_QUICK_FREEZE_JS)
-                        self._log(f"  [3d-wait] Frozen after viewer render")
-                    except Exception as e:
-                        self._log(f"  [3d-wait] Exception: {e}")
-                        # Timeout or no viewer — freeze anyway
+                    # Wait for 3D viewers to finish loading before final screenshot
+                    has_3d_viewer = self._page.evaluate("""
+                        (() => {
+                            const nodes = window.app.graph._nodes || [];
+                            return nodes.some(n => {
+                                const t = (n.type || '').toLowerCase();
+                                return t.includes('3d') || t.includes('load3d') || t.includes('preview3d') || t.includes('gaussian');
+                            });
+                        })()
+                    """)
+                    if has_3d_viewer:
+                        # Phase 1: Wait for built-in Load3D widget to finish loading
+                        # (Preview3D/Load3D show "Loading 3D Model..." text that disappears when done)
                         try:
-                            self._page.evaluate(_QUICK_FREEZE_JS)
-                        except Exception:
-                            pass
+                            self._log(f"  [3d-wait] Waiting for 'Loading 3D Model' text to disappear...")
+                            self._page.wait_for_function("""
+                                () => {
+                                    const body = document.body.innerText || '';
+                                    return !body.includes('Loading 3D Model');
+                                }
+                            """, timeout=60000)
+                            self._log(f"  [3d-wait] No more loading indicators")
+                        except Exception as e:
+                            self._log(f"  [3d-wait] Loading wait exception: {e}")
+
+                        # Phase 2: Handle iframe-based viewers (Gaussian splat)
+                        has_iframes = self._page.evaluate("document.querySelectorAll('iframe').length > 0")
+                        if has_iframes:
+                            try:
+                                matching_logs = [log for log in self._console_logs if "Loaded successfully" in log]
+                                viewer_ready = len(matching_logs) > 0
+                                self._log(f"  [3d-wait] iframe viewer_ready={viewer_ready}")
+                                if not viewer_ready:
+                                    self._log(f"  [3d-wait] Waiting for 'Loaded successfully' console message (timeout=60s)...")
+                                    self._page.wait_for_event(
+                                        "console",
+                                        predicate=lambda msg: "Loaded successfully" in msg.text,
+                                        timeout=60000,
+                                    )
+                                    self._log(f"  [3d-wait] Got it!")
+                                self._page.evaluate(_QUICK_UNFREEZE_JS)
+                                self._log(f"  [3d-wait] Unfrozen, waiting for first paint...")
+                                self._page.wait_for_timeout(500)
+                                self._page.evaluate(_QUICK_FREEZE_JS)
+                                self._log(f"  [3d-wait] Frozen after viewer render")
+                            except Exception as e:
+                                self._log(f"  [3d-wait] iframe wait exception: {e}")
+                                try:
+                                    self._page.evaluate(_QUICK_FREEZE_JS)
+                                except Exception:
+                                    pass
                     break
 
                 self._page.wait_for_timeout(100)
