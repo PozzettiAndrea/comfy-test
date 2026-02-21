@@ -142,7 +142,7 @@ jobs:
         shell: powershell
         run: |
           & $env:PYTHON_EXE -m ensurepip --upgrade
-          & $env:PYTHON_EXE -m pip install --upgrade comfy-test pillow
+          & $env:PYTHON_EXE -m pip install comfy-test==0.2.6 pillow
 
       # --- Checkout and run ---
       - name: Checkout repo

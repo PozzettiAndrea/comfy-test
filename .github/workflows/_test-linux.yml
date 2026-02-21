@@ -75,7 +75,7 @@ jobs:
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
-        run: $VENV/bin/uv pip install --upgrade comfy-test
+        run: $VENV/bin/uv pip install comfy-test==0.2.6
 
       # --- Checkout ---
       - uses: actions/checkout@v4

@@ -119,7 +119,7 @@ jobs:
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
-        run: uv pip install --upgrade --python "$PYTHON_EXE" comfy-test
+        run: uv pip install --python "$PYTHON_EXE" comfy-test==0.2.6
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
