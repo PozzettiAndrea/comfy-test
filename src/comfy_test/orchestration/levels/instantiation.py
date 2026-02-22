@@ -136,7 +136,7 @@ def run(ctx: LevelContext) -> LevelContext:
         cwd=str(ctx.paths.comfyui_dir),
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=240,
     )
 
     if result.returncode != 0:
