@@ -76,7 +76,12 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & $env:PYTHON_EXE -m pip install comfy-test==0.2.6 pillow
+          $version = if ($env:GITHUB_WORKFLOW_REF -match '@refs/tags/v(.+)$') { $Matches[1] } else { $null }
+          if ($version) {
+            & $env:PYTHON_EXE -m pip install "comfy-test==$version" pillow
+          } else {
+            & $env:PYTHON_EXE -m pip install comfy-test pillow
+          }
 
       # --- Checkout ---
       - uses: actions/checkout@v4

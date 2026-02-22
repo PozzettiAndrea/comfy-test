@@ -167,7 +167,12 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & "$env:PYTHON_DIR\uv.exe" pip install --python $env:PYTHON_EXE pip comfy-test==0.2.6
+          $version = if ($env:GITHUB_WORKFLOW_REF -match '@refs/tags/v(.+)$') { $Matches[1] } else { $null }
+          if ($version) {
+            & "$env:PYTHON_DIR\uv.exe" pip install --python $env:PYTHON_EXE pip "comfy-test==$version"
+          } else {
+            & "$env:PYTHON_DIR\uv.exe" pip install --python $env:PYTHON_EXE pip comfy-test
+          }
           # Add ComfyUI to Python path (embeddable Python ignores PYTHONPATH)
           $pthFile = Get-ChildItem "$env:PYTHON_DIR\*._pth" | Select-Object -First 1
           if (-not (Select-String -Path $pthFile -Pattern ([regex]::Escape($env:COMFYUI_DIR)) -Quiet)) {

@@ -75,7 +75,13 @@ jobs:
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
-        run: $VENV/bin/uv pip install comfy-test==0.2.6
+        run: |
+          VERSION=$(echo "$GITHUB_WORKFLOW_REF" | grep -oP '(?<=@refs/tags/v)[^/]+' || echo "")
+          if [ -n "$VERSION" ]; then
+            $VENV/bin/uv pip install "comfy-test==$VERSION"
+          else
+            $VENV/bin/uv pip install comfy-test
+          fi
 
       # --- Checkout ---
       - uses: actions/checkout@v4
