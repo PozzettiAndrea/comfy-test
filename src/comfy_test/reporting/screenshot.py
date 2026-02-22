@@ -270,7 +270,7 @@ class WorkflowScreenshot:
     def save_console_logs(self, output_path: Path) -> None:
         """Save captured console logs to file."""
         if self._console_logs:
-            output_path.write_text("\n".join(self._console_logs))
+            output_path.write_text("\n".join(self._console_logs), encoding="utf-8")
 
     def clear_console_logs(self) -> None:
         """Clear captured console logs."""

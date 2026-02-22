@@ -235,7 +235,7 @@ def run(ctx: LevelContext) -> LevelContext:
                 if resource_metrics.get("timeline"):
                     csv_path = logs_dir / f"{workflow_file.stem}_resources.csv"
                     total_ram = resource_metrics.get("total_ram_gb", 16)
-                    with open(csv_path, 'w') as f:
+                    with open(csv_path, 'w', encoding='utf-8') as f:
                         f.write(f"# total_ram_gb={total_ram}\n")
                         f.write("t,ram_gb,vram_gb\n")
                         for sample in resource_metrics["timeline"]:
