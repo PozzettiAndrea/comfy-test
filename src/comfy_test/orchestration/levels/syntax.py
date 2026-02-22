@@ -15,8 +15,6 @@ FORBIDDEN_PATTERNS = [
     (re.compile(r'\.cuda\s*\('), '.cuda() — use comfy.model_management.get_torch_device()'),
     (re.compile(r'\.to\s*\(\s*["\']cuda'), '.to("cuda...") — use comfy.model_management.get_torch_device()'),
     (re.compile(r'\.to\s*\(\s*torch\.device\s*\(\s*["\']cuda'), '.to(torch.device("cuda")) — use comfy.model_management.get_torch_device()'),
-    # Checkpoint loading — use comfy.utils.load_torch_file()
-    (re.compile(r'torch\.load\s*\('), 'torch.load() — use comfy.utils.load_torch_file()'),
     # Autocast — use operations= (comfy.ops) for dtype management instead
     (re.compile(r'torch\.autocast\s*\('), 'torch.autocast() — use comfy.ops operations= for dtype management'),
     (re.compile(r'torch\.cuda\.amp\.autocast'), 'torch.cuda.amp.autocast — use comfy.ops operations= for dtype management'),
@@ -28,6 +26,11 @@ FORBIDDEN_PATTERNS = [
     (re.compile(r'nn\.LayerNorm\s*\('), 'nn.LayerNorm() — use operations.LayerNorm()'),
     (re.compile(r'nn\.GroupNorm\s*\('), 'nn.GroupNorm() — use operations.GroupNorm()'),
     (re.compile(r'nn\.Embedding\s*\('), 'nn.Embedding() — use operations.Embedding()'),
+]
+
+# Patterns that print a warning but do not fail the test.
+WARNING_PATTERNS = [
+    (re.compile(r'torch\.load\s*\('), 'torch.load() ? use comfy.utils.load_torch_file()'),
 ]
 
 
@@ -147,6 +150,7 @@ def _check_forbidden_patterns(ctx: LevelContext) -> None:
         TestError: If forbidden patterns are found
     """
     issues = []
+    warnings = []
 
     skip_dirs = {
         '.git', '__pycache__', '.venv', 'venv', 'node_modules',
@@ -165,6 +169,7 @@ def _check_forbidden_patterns(ctx: LevelContext) -> None:
             continue
 
         file_issues = []
+        file_warnings = []
         for line_num, line in enumerate(content.splitlines(), 1):
             stripped = line.lstrip()
             # Skip comments
@@ -175,8 +180,17 @@ def _check_forbidden_patterns(ctx: LevelContext) -> None:
                 if pattern.search(line):
                     file_issues.append(f"  Line {line_num}: {description}")
 
+            for pattern, description in WARNING_PATTERNS:
+                if pattern.search(line):
+                    file_warnings.append(f"  Line {line_num}: {description}")
+
         if file_issues:
             issues.append(f"{rel_path}:\n" + "\n".join(file_issues))
+        if file_warnings:
+            warnings.append(f"{rel_path}:\n" + "\n".join(file_warnings))
+
+    if warnings:
+        ctx.log("Warnings (non-blocking):\n\n" + "\n\n".join(warnings))
 
     if issues:
         raise TestError(

@@ -69,6 +69,30 @@ def _detect_vulkan() -> bool:
     return False
 
 
+def _ensure_vulkan_linux(log: Callable[[str], None]) -> bool:
+    """Install vulkan-tools on Linux if not present, then re-detect."""
+    if _detect_vulkan():
+        return True
+    import platform
+    if platform.system() != "Linux":
+        return False
+    log("  Installing vulkan-tools (apt)...")
+    try:
+        subprocess.run(["sudo", "apt-get", "update", "-qq"], capture_output=True, timeout=60)
+        result = subprocess.run(
+            ["sudo", "apt-get", "install", "-y", "-qq", "vulkan-tools"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            log("  vulkan-tools installed")
+            return _detect_vulkan()
+        else:
+            log(f"  vulkan-tools install failed: {result.stderr[:200]}")
+    except Exception as e:
+        log(f"  vulkan-tools install error: {e}")
+    return False
+
+
 def _detect_mesa_llvmpipe() -> bool:
     """Check if Mesa llvmpipe (software OpenGL) is available."""
     import platform
@@ -368,7 +392,7 @@ class WorkflowScreenshot:
         # Detect rendering backend: GPU > Mesa llvmpipe > SwiftShader
         import platform
         has_gpu = _detect_gpu()
-        has_vulkan = _detect_vulkan() if has_gpu else False
+        has_vulkan = _ensure_vulkan_linux(self._log) if has_gpu else False
 
         if has_gpu and has_vulkan:
             self._log("  GPU + Vulkan detected — using ANGLE/Vulkan rendering")
