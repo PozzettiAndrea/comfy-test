@@ -1537,6 +1537,35 @@ class WorkflowScreenshot:
             });
         })()"""
 
+        # Self-limiting unfreeze for post-execution 3D render.
+        # In headless without vsync, rAF spins as fast as possible and starves
+        # the main thread, making it impossible to re-freeze via page.evaluate().
+        # This version allows N frames then auto-stops.
+        _CONTROLLED_UNFREEZE_JS = """(() => {
+            if (window._origRAF) {
+                window.requestAnimationFrame = window._origRAF;
+                delete window._origRAF;
+            }
+            document.querySelectorAll('iframe').forEach(f => {
+                try {
+                    const w = f.contentWindow;
+                    if (!w || !w._origRAF) return;
+                    const origRAF = w._origRAF;
+                    let framesLeft = 120;
+                    const limited = (cb) => {
+                        if (framesLeft-- > 0) return origRAF.call(w, cb);
+                        w.requestAnimationFrame = () => 0;
+                        return 0;
+                    };
+                    w.requestAnimationFrame = limited;
+                    delete w._origRAF;
+                    const pending = w._pendingRAFCallbacks || [];
+                    w._pendingRAFCallbacks = [];
+                    for (const cb of pending) limited(cb);
+                } catch(e) {}
+            });
+        })()"""
+
         try:
             capture_start = time.time()
 
@@ -1685,21 +1714,14 @@ class WorkflowScreenshot:
                                         timeout=60000,
                                     )
                                     self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
-                                # Unfreeze rAF so the viewer can render, then re-freeze.
-                                # Use a short timeout to avoid blocking forever in headless
-                                # (no vsync means rAF spins the main thread).
+                                # Controlled unfreeze: allow 120 frames then auto-stop.
+                                # Full unfreeze causes rAF to spin without vsync in headless,
+                                # starving the main thread and making re-freeze impossible.
                                 t1 = time.time()
-                                self._page.evaluate(_QUICK_UNFREEZE_JS)
-                                self._log(f"  [3d-wait] Unfrozen in {time.time()-t1:.3f}s, waiting for render...")
-                                self._page.wait_for_timeout(2000)
-                                t1 = time.time()
-                                try:
-                                    self._page.evaluate(_QUICK_FREEZE_JS, timeout=5000)
-                                except Exception:
-                                    # If freeze hangs (main thread busy rendering), force-inject via CDP
-                                    self._log(f"  [3d-wait] Freeze timed out after {time.time()-t1:.1f}s, force-stopping rAF")
-                                    self._page.evaluate("window.requestAnimationFrame = () => 0")
-                                self._log(f"  [3d-wait] Frozen after render in {time.time()-t1:.3f}s")
+                                self._page.evaluate(_CONTROLLED_UNFREEZE_JS)
+                                self._log(f"  [3d-wait] Controlled unfreeze in {time.time()-t1:.3f}s (120 frames max)")
+                                self._page.wait_for_timeout(3000)
+                                self._log(f"  [3d-wait] Render complete in {time.time()-t1:.1f}s")
                             except Exception as e:
                                 self._log(f"  [3d-wait] iframe wait exception: {e}")
                                 try:
