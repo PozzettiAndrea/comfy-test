@@ -1685,44 +1685,22 @@ class WorkflowScreenshot:
                                         timeout=60000,
                                     )
                                     self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
-                                # Unfreeze both main window and iframes with frame limits.
-                                # The main window needs rAF active to keep the compositor
-                                # cycling, otherwise iframe paint requests don't get
-                                # composited in headless Chromium (shared renderer process).
-                                # Main window limit is low (60) since litegraph is lightweight.
+                                # Unfreeze rAF and let the viewer render freely for 5s.
+                                # Use CDP to halt JS execution afterwards — this operates
+                                # at the V8 engine level (not through the JS main thread),
+                                # so it works even when rAF is starving the main thread.
                                 t1 = time.time()
-                                self._page.evaluate("""(() => {
-                                    const origRAF = window._origRAF || window.requestAnimationFrame;
-                                    let framesLeft = 60;
-                                    window.requestAnimationFrame = function(cb) {
-                                        if (framesLeft-- > 0) return origRAF.call(window, cb);
-                                        window.requestAnimationFrame = () => 0;
-                                        return 0;
-                                    };
-                                    delete window._origRAF;
-                                })()""")
-                                for frame in self._page.frames:
-                                    if frame == self._page.main_frame:
-                                        continue
-                                    try:
-                                        frame.evaluate("""(() => {
-                                            const origRAF = window._origRAF || window.requestAnimationFrame;
-                                            let framesLeft = 600;
-                                            window.requestAnimationFrame = function(cb) {
-                                                if (framesLeft-- > 0) return origRAF.call(window, cb);
-                                                window.requestAnimationFrame = () => 0;
-                                                return 0;
-                                            };
-                                            delete window._origRAF;
-                                            const pending = window._pendingRAFCallbacks || [];
-                                            window._pendingRAFCallbacks = [];
-                                            for (const cb of pending) window.requestAnimationFrame(cb);
-                                        })()""", timeout=5000)
-                                    except Exception:
-                                        pass
-                                self._log(f"  [3d-wait] Unfreeze in {time.time()-t1:.3f}s (main=60, iframe=600 frames)")
-                                self._page.wait_for_timeout(5000)
-                                self._log(f"  [3d-wait] Render complete in {time.time()-t1:.1f}s")
+                                self._page.evaluate(_QUICK_UNFREEZE_JS)
+                                self._log(f"  [3d-wait] Unfrozen in {time.time()-t1:.3f}s, rendering for 5s...")
+                                time.sleep(5)
+                                cdp = self._page.context.new_cdp_session(self._page)
+                                cdp.send("Emulation.setScriptExecutionDisabled", {"value": True})
+                                self._log(f"  [3d-wait] JS halted via CDP after {time.time()-t1:.1f}s")
+                                time.sleep(1)  # let renderer flush tiles
+                                cdp.send("Emulation.setScriptExecutionDisabled", {"value": False})
+                                self._page.evaluate(_QUICK_FREEZE_JS)
+                                cdp.detach()
+                                self._log(f"  [3d-wait] Re-frozen in {time.time()-t1:.1f}s")
                             except Exception as e:
                                 self._log(f"  [3d-wait] iframe wait exception: {e}")
                                 try:
