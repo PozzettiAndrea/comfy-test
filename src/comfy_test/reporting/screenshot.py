@@ -37,6 +37,22 @@ class ScreenshotError(TestError):
     pass
 
 
+def _detect_gpu() -> bool:
+    """Check if a GPU is available on this machine (independent of test mode)."""
+    import shutil
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def check_dependencies() -> None:
     """Check that required dependencies are installed.
 
@@ -245,9 +261,23 @@ class WorkflowScreenshot:
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
 
+        # Detect if a GPU is available for hardware-accelerated browser rendering
+        has_gpu = _detect_gpu()
+        if has_gpu:
+            self._log("  GPU detected — using hardware-accelerated rendering")
+            chrome_args = [
+                "--use-gl=angle",
+                "--ignore-gpu-blocklist",
+                "--enable-features=Vulkan",
+                "--enable-unsafe-swiftshader",  # fallback if HW accel fails
+            ]
+        else:
+            self._log("  No GPU detected — using SwiftShader software rendering")
+            chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
+
         self._browser = self._playwright.chromium.launch(
             headless=True,
-            args=["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"],
+            args=chrome_args,
         )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
