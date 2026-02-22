@@ -1283,6 +1283,8 @@ class WorkflowScreenshot:
             frame_num = 1
             screenshot_interval_ms = 50  # Capture every 50ms to catch fast nodes
 
+            gif_ws_disconnected_since: Optional[float] = None
+            GIF_WS_DEAD_TIMEOUT = 30
             while time.time() - start_time < timeout:
                 current_time = time.time()
 
@@ -1290,9 +1292,26 @@ class WorkflowScreenshot:
                 state = self._page.evaluate("""
                     () => ({
                         complete: window._executionComplete,
-                        error: window._executionError
+                        error: window._executionError,
+                        wsState: (window.app && window.app.api && window.app.api.socket)
+                            ? window.app.api.socket.readyState : -1
                     })
                 """)
+
+                # Detect server crash via WebSocket disconnect
+                gif_ws_state = state.get("wsState", -1)
+                if gif_ws_state != 1:
+                    if gif_ws_disconnected_since is None:
+                        gif_ws_disconnected_since = time.time()
+                        self._log(f"  [gif-loop] WebSocket disconnected (readyState={gif_ws_state})")
+                    elif time.time() - gif_ws_disconnected_since > GIF_WS_DEAD_TIMEOUT:
+                        self._log(f"  [gif-loop] Server appears dead — WebSocket disconnected for {GIF_WS_DEAD_TIMEOUT}s")
+                        raise WorkflowError(
+                            f"ComfyUI server crashed during execution (WebSocket closed for {GIF_WS_DEAD_TIMEOUT}s)",
+                            workflow_file=str(workflow_path),
+                        )
+                else:
+                    gif_ws_disconnected_since = None
 
                 # Take periodic screenshot to catch execution state (green boxes)
                 if (current_time - last_screenshot_time) * 1000 >= screenshot_interval_ms:
@@ -1589,6 +1608,8 @@ class WorkflowScreenshot:
             PERIODIC_INTERVAL = 2.0
 
             loop_iter = 0
+            ws_disconnected_since: Optional[float] = None  # timestamp of first WS disconnect
+            WS_DEAD_TIMEOUT = 30  # seconds of sustained WS disconnect before aborting
             while time.time() - capture_start < timeout:
                 loop_iter += 1
                 t0 = time.time()
@@ -1596,13 +1617,33 @@ class WorkflowScreenshot:
                     () => ({
                         complete: window._executionComplete,
                         error: window._executionError,
-                        executedCount: window._executedNodeCount
+                        executedCount: window._executedNodeCount,
+                        wsState: (window.app && window.app.api && window.app.api.socket)
+                            ? window.app.api.socket.readyState : -1
                     })
                 """)
                 t_eval = time.time() - t0
 
                 elapsed = time.time() - capture_start
                 log_snapshot = "\n".join(log_lines) if log_lines else ""
+
+                # Detect server crash via WebSocket disconnect.
+                # readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED, -1=missing
+                ws_state = state.get("wsState", -1)
+                if ws_state != 1:  # not OPEN
+                    if ws_disconnected_since is None:
+                        ws_disconnected_since = time.time()
+                        self._log(f"  [capture-loop] WebSocket disconnected (readyState={ws_state})")
+                    elif time.time() - ws_disconnected_since > WS_DEAD_TIMEOUT:
+                        self._log(f"  [capture-loop] Server appears dead — WebSocket disconnected for {WS_DEAD_TIMEOUT}s")
+                        raise WorkflowError(
+                            f"ComfyUI server crashed during execution (WebSocket closed for {WS_DEAD_TIMEOUT}s)",
+                            workflow_file=str(workflow_path),
+                        )
+                else:
+                    if ws_disconnected_since is not None:
+                        self._log(f"  [capture-loop] WebSocket reconnected after {time.time()-ws_disconnected_since:.1f}s")
+                    ws_disconnected_since = None
 
                 # Debug: log every 10th iteration or when something interesting happens
                 if loop_iter % 50 == 0:
