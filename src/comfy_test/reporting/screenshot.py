@@ -53,6 +53,110 @@ def _detect_gpu() -> bool:
     return False
 
 
+def _detect_vulkan() -> bool:
+    """Check if Vulkan is available on this machine."""
+    import shutil
+    if shutil.which("vulkaninfo"):
+        try:
+            result = subprocess.run(
+                ["vulkaninfo", "--summary"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and "deviceName" in result.stdout:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _detect_mesa_llvmpipe() -> bool:
+    """Check if Mesa llvmpipe (software OpenGL) is available."""
+    import platform
+    if platform.system() == "Linux":
+        # Check if EGL is available via Mesa
+        for lib in ["/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0",
+                    "/usr/lib/x86_64-linux-gnu/libEGL_mesa.so",
+                    "/usr/lib64/libEGL_mesa.so.0"]:
+            if os.path.exists(lib):
+                return True
+    elif platform.system() == "Windows":
+        # Check if Mesa opengl32.dll has been placed next to Chromium
+        # (handled by _ensure_mesa_windows)
+        pass
+    return False
+
+
+def _ensure_mesa_linux(log: Callable[[str], None]) -> bool:
+    """Install Mesa EGL/llvmpipe on Linux if not present."""
+    if _detect_mesa_llvmpipe():
+        return True
+    log("  Installing Mesa llvmpipe (apt)...")
+    try:
+        subprocess.run(["sudo", "apt-get", "update", "-qq"], capture_output=True, timeout=60)
+        result = subprocess.run(
+            ["sudo", "apt-get", "install", "-y", "-qq", "libegl1-mesa", "libegl-mesa0", "libgl1-mesa-dri"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            log("  Mesa llvmpipe installed")
+            return True
+        else:
+            log(f"  Mesa install failed: {result.stderr[:200]}")
+    except Exception as e:
+        log(f"  Mesa install error: {e}")
+    return False
+
+
+# Mesa DLL URL for Windows (x64, release MSVC build from mesa-dist-win)
+_MESA_WIN_URL = "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.6/mesa3d-25.3.6-release-msvc.7z"
+
+
+def _ensure_mesa_windows(chromium_dir: Path, log: Callable[[str], None]) -> bool:
+    """Download and place Mesa opengl32.dll next to Chromium on Windows."""
+    opengl_dll = chromium_dir / "opengl32.dll"
+    gallium_dll = chromium_dir / "libgallium_wgl.dll"
+    if opengl_dll.exists() and gallium_dll.exists():
+        log("  Mesa llvmpipe DLLs already present")
+        return True
+
+    log("  Downloading Mesa llvmpipe for Windows...")
+    try:
+        import urllib.request
+        import shutil
+
+        archive_path = chromium_dir / "mesa3d.7z"
+        urllib.request.urlretrieve(_MESA_WIN_URL, str(archive_path))
+
+        # Extract with 7z (available on Windows runners)
+        extract_dir = chromium_dir / "_mesa_extract"
+        result = subprocess.run(
+            ["7z", "x", str(archive_path), f"-o{extract_dir}", "-y"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            log(f"  7z extract failed: {result.stderr[:200]}")
+            return False
+
+        # Find and copy the x64 DLLs
+        for root, dirs, files in os.walk(str(extract_dir)):
+            root_path = Path(root)
+            if "x64" in root_path.parts or root_path.name == "x64":
+                for fname in ["opengl32.dll", "libgallium_wgl.dll"]:
+                    src = root_path / fname
+                    if src.exists():
+                        shutil.copy2(str(src), str(chromium_dir / fname))
+                        log(f"  Copied {fname} to Chromium dir")
+
+        # Cleanup
+        archive_path.unlink(missing_ok=True)
+        shutil.rmtree(str(extract_dir), ignore_errors=True)
+
+        return opengl_dll.exists() and gallium_dll.exists()
+    except Exception as e:
+        log(f"  Mesa download error: {e}")
+    return False
+
+
 def check_dependencies() -> None:
     """Check that required dependencies are installed.
 
@@ -261,18 +365,43 @@ class WorkflowScreenshot:
         self._log("Starting headless browser...")
         self._playwright = sync_playwright().start()
 
-        # Detect if a GPU is available for hardware-accelerated browser rendering
+        # Detect rendering backend: GPU > Mesa llvmpipe > SwiftShader
+        import platform
         has_gpu = _detect_gpu()
-        if has_gpu:
-            self._log("  GPU detected — using hardware-accelerated rendering")
+        has_vulkan = _detect_vulkan() if has_gpu else False
+
+        if has_gpu and has_vulkan:
+            self._log("  GPU + Vulkan detected — using ANGLE/Vulkan rendering")
+            chrome_args = [
+                "--use-gl=angle",
+                "--use-angle=vulkan",
+                "--enable-features=Vulkan",
+                "--disable-vulkan-surface",     # use bit blit for headless (no swapchain)
+                "--ignore-gpu-blocklist",
+                "--enable-unsafe-swiftshader",  # fallback if Vulkan fails
+            ]
+        elif has_gpu:
+            self._log("  GPU detected (no Vulkan) — using ANGLE/OpenGL rendering")
             chrome_args = [
                 "--use-gl=angle",
                 "--ignore-gpu-blocklist",
-                "--enable-features=Vulkan",
                 "--enable-unsafe-swiftshader",  # fallback if HW accel fails
             ]
+        elif platform.system() == "Linux" and _ensure_mesa_linux(self._log):
+            self._log("  Using Mesa llvmpipe (EGL) — multithreaded CPU rendering")
+            chrome_args = ["--use-gl=egl", "--ignore-gpu-blocklist"]
+        elif platform.system() == "Windows":
+            # Get Chromium dir from Playwright to drop Mesa DLLs next to it
+            chromium_path = Path(self._playwright.chromium.executable_path)
+            chromium_dir = chromium_path.parent
+            if _ensure_mesa_windows(chromium_dir, self._log):
+                self._log("  Using Mesa llvmpipe (desktop GL) — multithreaded CPU rendering")
+                chrome_args = ["--use-gl=desktop"]
+            else:
+                self._log("  Mesa unavailable — falling back to SwiftShader")
+                chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
         else:
-            self._log("  No GPU detected — using SwiftShader software rendering")
+            self._log("  No GPU, no Mesa — using SwiftShader software rendering")
             chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
 
         self._browser = self._playwright.chromium.launch(
@@ -1556,11 +1685,21 @@ class WorkflowScreenshot:
                                         timeout=60000,
                                     )
                                     self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
-                                # The viewer already rendered its first frame by the time
-                                # "Loaded successfully" fires. Skip the unfreeze/freeze dance
-                                # — in headless mode, unfreezing rAF causes the main thread to
-                                # spin on the render loop (no vsync) and block for 25+ seconds.
-                                self._log(f"  [3d-wait] Viewer loaded, skipping unfreeze (headless has no vsync)")
+                                # Unfreeze rAF so the viewer can render, then re-freeze.
+                                # Use a short timeout to avoid blocking forever in headless
+                                # (no vsync means rAF spins the main thread).
+                                t1 = time.time()
+                                self._page.evaluate(_QUICK_UNFREEZE_JS)
+                                self._log(f"  [3d-wait] Unfrozen in {time.time()-t1:.3f}s, waiting for render...")
+                                self._page.wait_for_timeout(2000)
+                                t1 = time.time()
+                                try:
+                                    self._page.evaluate(_QUICK_FREEZE_JS, timeout=5000)
+                                except Exception:
+                                    # If freeze hangs (main thread busy rendering), force-inject via CDP
+                                    self._log(f"  [3d-wait] Freeze timed out after {time.time()-t1:.1f}s, force-stopping rAF")
+                                    self._page.evaluate("window.requestAnimationFrame = () => 0")
+                                self._log(f"  [3d-wait] Frozen after render in {time.time()-t1:.3f}s")
                             except Exception as e:
                                 self._log(f"  [3d-wait] iframe wait exception: {e}")
                                 try:
