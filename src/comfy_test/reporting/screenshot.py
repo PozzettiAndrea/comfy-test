@@ -1435,7 +1435,10 @@ class WorkflowScreenshot:
             last_screenshot_time = time.time()
             PERIODIC_INTERVAL = 2.0
 
+            loop_iter = 0
             while time.time() - capture_start < timeout:
+                loop_iter += 1
+                t0 = time.time()
                 state = self._page.evaluate("""
                     () => ({
                         complete: window._executionComplete,
@@ -1443,9 +1446,14 @@ class WorkflowScreenshot:
                         executedCount: window._executedNodeCount
                     })
                 """)
+                t_eval = time.time() - t0
 
                 elapsed = time.time() - capture_start
                 log_snapshot = "\n".join(log_lines) if log_lines else ""
+
+                # Debug: log every 10th iteration or when something interesting happens
+                if loop_iter % 50 == 0:
+                    self._log(f"  [capture-loop] iter={loop_iter} t={elapsed:.1f}s state={state} eval_ms={t_eval*1000:.0f}")
 
                 # Screenshot on node completion (with freeze to avoid GPU stalls)
                 if state["executedCount"] > last_executed_count:
@@ -1453,25 +1461,42 @@ class WorkflowScreenshot:
                     self._page.wait_for_timeout(150)  # let UI render
                     elapsed = time.time() - capture_start
                     try:
+                        t1 = time.time()
                         self._page.evaluate(_QUICK_FREEZE_JS)
+                        t_freeze = time.time() - t1
+                        t1 = time.time()
                         shot = self._page.screenshot(type="png", animations="disabled", scale="css")
+                        t_shot = time.time() - t1
                         if not state["complete"]:
+                            t1 = time.time()
                             self._page.evaluate(_QUICK_UNFREEZE_JS)
-                        _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
-                    except Exception:
-                        pass
+                            t_unfreeze = time.time() - t1
+                        else:
+                            t_unfreeze = 0
+                        saved = _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
+                        self._log(f"  [capture-node] freeze={t_freeze*1000:.0f}ms shot={t_shot*1000:.0f}ms unfreeze={t_unfreeze*1000:.0f}ms saved={saved}")
+                    except Exception as e:
+                        self._log(f"  [capture-node] exception: {e}")
                     last_executed_count = state["executedCount"]
                     last_screenshot_time = time.time()
 
                 # Periodic capture (with freeze to suppress animation noise)
                 elif time.time() - last_screenshot_time >= PERIODIC_INTERVAL:
                     try:
+                        t1 = time.time()
                         self._page.evaluate(_QUICK_FREEZE_JS)
+                        t_freeze = time.time() - t1
+                        t1 = time.time()
                         shot = self._page.screenshot(type="png", animations="disabled", scale="css")
+                        t_shot = time.time() - t1
+                        t1 = time.time()
                         self._page.evaluate(_QUICK_UNFREEZE_JS)
-                        _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
-                    except Exception:
-                        pass
+                        t_unfreeze = time.time() - t1
+                        saved = _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
+                        if saved:
+                            self._log(f"  [capture-periodic] freeze={t_freeze*1000:.0f}ms shot={t_shot*1000:.0f}ms unfreeze={t_unfreeze*1000:.0f}ms saved=True")
+                    except Exception as e:
+                        self._log(f"  [capture-periodic] exception: {e}")
                     last_screenshot_time = time.time()
 
                 if state["complete"]:
@@ -1497,46 +1522,52 @@ class WorkflowScreenshot:
                         })()
                     """)
                     if has_3d_viewer:
+                        t_3d_start = time.time()
                         # Phase 1: Wait for built-in Load3D widget to finish loading
                         # (Preview3D/Load3D show "Loading 3D Model..." text that disappears when done)
                         try:
-                            self._log(f"  [3d-wait] Waiting for 'Loading 3D Model' text to disappear...")
+                            self._log(f"  [3d-wait] Phase 1: Waiting for 'Loading 3D Model' text to disappear...")
+                            t1 = time.time()
                             self._page.wait_for_function("""
                                 () => {
                                     const body = document.body.innerText || '';
                                     return !body.includes('Loading 3D Model');
                                 }
                             """, timeout=60000)
-                            self._log(f"  [3d-wait] No more loading indicators")
+                            self._log(f"  [3d-wait] Phase 1 done in {time.time()-t1:.1f}s")
                         except Exception as e:
-                            self._log(f"  [3d-wait] Loading wait exception: {e}")
+                            self._log(f"  [3d-wait] Phase 1 exception after {time.time()-t1:.1f}s: {e}")
 
                         # Phase 2: Handle iframe-based viewers (Gaussian splat)
                         has_iframes = self._page.evaluate("document.querySelectorAll('iframe').length > 0")
+                        iframe_count = self._page.evaluate("document.querySelectorAll('iframe').length")
+                        self._log(f"  [3d-wait] Phase 2: iframes={iframe_count}")
                         if has_iframes:
                             try:
                                 matching_logs = [log for log in self._console_logs if "Loaded successfully" in log]
                                 viewer_ready = len(matching_logs) > 0
-                                self._log(f"  [3d-wait] iframe viewer_ready={viewer_ready}")
+                                self._log(f"  [3d-wait] iframe viewer_ready={viewer_ready} (matched {len(matching_logs)} console logs)")
                                 if not viewer_ready:
                                     self._log(f"  [3d-wait] Waiting for 'Loaded successfully' console message (timeout=60s)...")
+                                    t1 = time.time()
                                     self._page.wait_for_event(
                                         "console",
                                         predicate=lambda msg: "Loaded successfully" in msg.text,
                                         timeout=60000,
                                     )
-                                    self._log(f"  [3d-wait] Got it!")
-                                self._page.evaluate(_QUICK_UNFREEZE_JS)
-                                self._log(f"  [3d-wait] Unfrozen, waiting for first paint...")
-                                self._page.wait_for_timeout(500)
-                                self._page.evaluate(_QUICK_FREEZE_JS)
-                                self._log(f"  [3d-wait] Frozen after viewer render")
+                                    self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
+                                # The viewer already rendered its first frame by the time
+                                # "Loaded successfully" fires. Skip the unfreeze/freeze dance
+                                # — in headless mode, unfreezing rAF causes the main thread to
+                                # spin on the render loop (no vsync) and block for 25+ seconds.
+                                self._log(f"  [3d-wait] Viewer loaded, skipping unfreeze (headless has no vsync)")
                             except Exception as e:
                                 self._log(f"  [3d-wait] iframe wait exception: {e}")
                                 try:
                                     self._page.evaluate(_QUICK_FREEZE_JS)
                                 except Exception:
                                     pass
+                        self._log(f"  [3d-wait] Total 3D wait: {time.time()-t_3d_start:.1f}s")
                     break
 
                 self._page.wait_for_timeout(100)
