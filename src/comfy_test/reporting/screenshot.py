@@ -70,26 +70,39 @@ def _detect_vulkan() -> bool:
 
 
 def _ensure_vulkan_linux(log: Callable[[str], None]) -> bool:
-    """Install vulkan-tools on Linux if not present, then re-detect."""
+    """Install Vulkan stack on Linux if not present, then re-detect."""
     if _detect_vulkan():
         return True
     import platform
     if platform.system() != "Linux":
         return False
-    log("  Installing vulkan-tools (apt)...")
+    log("  Installing Vulkan stack (apt)...")
     try:
         subprocess.run(["sudo", "apt-get", "update", "-qq"], capture_output=True, timeout=60)
         result = subprocess.run(
-            ["sudo", "apt-get", "install", "-y", "-qq", "vulkan-tools"],
+            ["sudo", "apt-get", "install", "-y", "-qq",
+             "vulkan-tools", "libvulkan1", "mesa-vulkan-drivers"],
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0:
-            log("  vulkan-tools installed")
-            return _detect_vulkan()
+            log("  Vulkan packages installed")
+            if _detect_vulkan():
+                return True
+            # Log vulkaninfo output for debugging
+            try:
+                diag = subprocess.run(
+                    ["vulkaninfo", "--summary"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                log(f"  vulkaninfo exit={diag.returncode} stdout={diag.stdout[:300]}")
+                if diag.stderr.strip():
+                    log(f"  vulkaninfo stderr={diag.stderr[:300]}")
+            except Exception:
+                log("  vulkaninfo not available after install")
         else:
-            log(f"  vulkan-tools install failed: {result.stderr[:200]}")
+            log(f"  Vulkan install failed: {result.stderr[:200]}")
     except Exception as e:
-        log(f"  vulkan-tools install error: {e}")
+        log(f"  Vulkan install error: {e}")
     return False
 
 
