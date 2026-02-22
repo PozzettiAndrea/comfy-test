@@ -1685,18 +1685,29 @@ class WorkflowScreenshot:
                                         timeout=60000,
                                     )
                                     self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
-                                # Unfreeze only iframes (not main window) with frame-limited rAF.
-                                # Uses frame.evaluate() to inject directly into iframe context,
-                                # avoiding cross-context closure issues. Main window rAF stays
-                                # frozen to prevent litegraph canvas from starving the main thread.
+                                # Unfreeze both main window and iframes with frame limits.
+                                # The main window needs rAF active to keep the compositor
+                                # cycling, otherwise iframe paint requests don't get
+                                # composited in headless Chromium (shared renderer process).
+                                # Main window limit is low (60) since litegraph is lightweight.
                                 t1 = time.time()
+                                self._page.evaluate("""(() => {
+                                    const origRAF = window._origRAF || window.requestAnimationFrame;
+                                    let framesLeft = 60;
+                                    window.requestAnimationFrame = function(cb) {
+                                        if (framesLeft-- > 0) return origRAF.call(window, cb);
+                                        window.requestAnimationFrame = () => 0;
+                                        return 0;
+                                    };
+                                    delete window._origRAF;
+                                })()""")
                                 for frame in self._page.frames:
                                     if frame == self._page.main_frame:
                                         continue
                                     try:
                                         frame.evaluate("""(() => {
                                             const origRAF = window._origRAF || window.requestAnimationFrame;
-                                            let framesLeft = 120;
+                                            let framesLeft = 600;
                                             window.requestAnimationFrame = function(cb) {
                                                 if (framesLeft-- > 0) return origRAF.call(window, cb);
                                                 window.requestAnimationFrame = () => 0;
@@ -1709,8 +1720,8 @@ class WorkflowScreenshot:
                                         })()""", timeout=5000)
                                     except Exception:
                                         pass
-                                self._log(f"  [3d-wait] Iframe unfreeze in {time.time()-t1:.3f}s (120 frames max)")
-                                self._page.wait_for_timeout(3000)
+                                self._log(f"  [3d-wait] Unfreeze in {time.time()-t1:.3f}s (main=60, iframe=600 frames)")
+                                self._page.wait_for_timeout(5000)
                                 self._log(f"  [3d-wait] Render complete in {time.time()-t1:.1f}s")
                             except Exception as e:
                                 self._log(f"  [3d-wait] iframe wait exception: {e}")
