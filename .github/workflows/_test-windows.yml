@@ -84,7 +84,12 @@ jobs:
       - name: Install comfy-test
         shell: powershell
         run: |
-          & "$env:VENV\Scripts\uv" pip install comfy-test==0.2.6
+          $version = if ($env:GITHUB_WORKFLOW_REF -match '@refs/tags/v(.+)$') { $Matches[1] } else { $null }
+          if ($version) {
+            & "$env:VENV\Scripts\uv" pip install "comfy-test==$version"
+          } else {
+            & "$env:VENV\Scripts\uv" pip install comfy-test
+          }
 
       # --- Checkout ---
       - uses: actions/checkout@v4
