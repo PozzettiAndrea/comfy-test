@@ -38,6 +38,7 @@ jobs:
             Start-Sleep -Seconds 10
           }
           Write-Host "Platform lock acquired"
+          New-Item -ItemType File -Path "$env:RUNNER_TEMP\platform-lock-acquired" -Force | Out-Null
 
       - name: Cleanup stale VHDs
         shell: powershell
@@ -205,6 +206,7 @@ jobs:
             Start-Sleep -Seconds 10
           }
           Write-Host "GPU lock acquired"
+          New-Item -ItemType File -Path "$env:RUNNER_TEMP\gpu-lock-acquired" -Force | Out-Null
 
       - name: Run tests
         shell: powershell
@@ -262,7 +264,10 @@ jobs:
       - name: Release GPU lock
         if: always()
         shell: powershell
-        run: Remove-Item -Path "C:\gpu-lock" -Force -ErrorAction SilentlyContinue
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\gpu-lock-acquired") {
+            Remove-Item -Path "C:\gpu-lock" -Force -ErrorAction SilentlyContinue
+          }
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -288,4 +293,7 @@ jobs:
       - name: Release platform lock
         if: always()
         shell: powershell
-        run: Remove-Item -Path "C:\windows-gpu-lock" -Force -ErrorAction SilentlyContinue
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\platform-lock-acquired") {
+            Remove-Item -Path "C:\windows-gpu-lock" -Force -ErrorAction SilentlyContinue
+          }
