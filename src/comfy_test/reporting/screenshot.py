@@ -1537,35 +1537,6 @@ class WorkflowScreenshot:
             });
         })()"""
 
-        # Self-limiting unfreeze for post-execution 3D render.
-        # In headless without vsync, rAF spins as fast as possible and starves
-        # the main thread, making it impossible to re-freeze via page.evaluate().
-        # This version allows N frames then auto-stops.
-        _CONTROLLED_UNFREEZE_JS = """(() => {
-            if (window._origRAF) {
-                window.requestAnimationFrame = window._origRAF;
-                delete window._origRAF;
-            }
-            document.querySelectorAll('iframe').forEach(f => {
-                try {
-                    const w = f.contentWindow;
-                    if (!w || !w._origRAF) return;
-                    const origRAF = w._origRAF;
-                    let framesLeft = 120;
-                    const limited = (cb) => {
-                        if (framesLeft-- > 0) return origRAF.call(w, cb);
-                        w.requestAnimationFrame = () => 0;
-                        return 0;
-                    };
-                    w.requestAnimationFrame = limited;
-                    delete w._origRAF;
-                    const pending = w._pendingRAFCallbacks || [];
-                    w._pendingRAFCallbacks = [];
-                    for (const cb of pending) limited(cb);
-                } catch(e) {}
-            });
-        })()"""
-
         try:
             capture_start = time.time()
 
@@ -1714,12 +1685,31 @@ class WorkflowScreenshot:
                                         timeout=60000,
                                     )
                                     self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
-                                # Controlled unfreeze: allow 120 frames then auto-stop.
-                                # Full unfreeze causes rAF to spin without vsync in headless,
-                                # starving the main thread and making re-freeze impossible.
+                                # Unfreeze only iframes (not main window) with frame-limited rAF.
+                                # Uses frame.evaluate() to inject directly into iframe context,
+                                # avoiding cross-context closure issues. Main window rAF stays
+                                # frozen to prevent litegraph canvas from starving the main thread.
                                 t1 = time.time()
-                                self._page.evaluate(_CONTROLLED_UNFREEZE_JS)
-                                self._log(f"  [3d-wait] Controlled unfreeze in {time.time()-t1:.3f}s (120 frames max)")
+                                for frame in self._page.frames:
+                                    if frame == self._page.main_frame:
+                                        continue
+                                    try:
+                                        frame.evaluate("""(() => {
+                                            const origRAF = window._origRAF || window.requestAnimationFrame;
+                                            let framesLeft = 120;
+                                            window.requestAnimationFrame = function(cb) {
+                                                if (framesLeft-- > 0) return origRAF.call(window, cb);
+                                                window.requestAnimationFrame = () => 0;
+                                                return 0;
+                                            };
+                                            delete window._origRAF;
+                                            const pending = window._pendingRAFCallbacks || [];
+                                            window._pendingRAFCallbacks = [];
+                                            for (const cb of pending) window.requestAnimationFrame(cb);
+                                        })()""", timeout=5000)
+                                    except Exception:
+                                        pass
+                                self._log(f"  [3d-wait] Iframe unfreeze in {time.time()-t1:.3f}s (120 frames max)")
                                 self._page.wait_for_timeout(3000)
                                 self._log(f"  [3d-wait] Render complete in {time.time()-t1:.1f}s")
                             except Exception as e:
@@ -1856,6 +1846,9 @@ class WorkflowScreenshot:
                 t = time.time()
                 self._trigger_3d_previews()
                 self._log(f"  [timing] trigger_3d_previews: {time.time()-t:.1f}s")
+
+                # Freeze all rAF loops before screenshot to prevent compositor stalls
+                self._freeze_animations()
 
                 t = time.time()
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:

@@ -39,6 +39,7 @@ jobs:
             sleep 10
           done
           echo "Platform lock acquired"
+          touch "$RUNNER_TEMP/platform-lock-acquired"
 
       - name: Cleanup stale mounts
         run: |
@@ -149,6 +150,7 @@ jobs:
             sleep 10
           done
           echo "GPU lock acquired"
+          touch "$RUNNER_TEMP/gpu-lock-acquired"
 
       - name: Run tests
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
@@ -198,7 +200,10 @@ jobs:
 
       - name: Release GPU lock
         if: always()
-        run: rmdir /mnt/c/gpu-lock 2>/dev/null || true
+        run: |
+          if [ -f "$RUNNER_TEMP/gpu-lock-acquired" ]; then
+            rmdir /mnt/c/gpu-lock 2>/dev/null || true
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -221,4 +226,7 @@ jobs:
 
       - name: Release platform lock
         if: always()
-        run: rmdir /mnt/c/linux-gpu-lock 2>/dev/null || true
+        run: |
+          if [ -f "$RUNNER_TEMP/platform-lock-acquired" ]; then
+            rmdir /mnt/c/linux-gpu-lock 2>/dev/null || true
+          fi
