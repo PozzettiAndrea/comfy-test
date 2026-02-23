@@ -43,6 +43,14 @@ jobs:
       # Workflow lists
       has-cpu: ${{ steps.platforms.outputs.has-cpu }}
       has-gpu: ${{ steps.platforms.outputs.has-gpu }}
+      # Skip flags (existing passing results on gh-pages)
+      skip-linux-gpu: ${{ steps.skip-check.outputs.linux-gpu }}
+      skip-windows-gpu: ${{ steps.skip-check.outputs.windows-gpu }}
+      skip-windows-portable-gpu: ${{ steps.skip-check.outputs.windows-portable-gpu }}
+      skip-linux: ${{ steps.skip-check.outputs.linux }}
+      skip-windows: ${{ steps.skip-check.outputs.windows }}
+      skip-macos: ${{ steps.skip-check.outputs.macos }}
+      skip-windows-portable: ${{ steps.skip-check.outputs.windows-portable }}
       # Publish
       run-publish: ${{ steps.platforms.outputs.publish }}
     steps:
@@ -75,27 +83,60 @@ jobs:
           # Publish toggle (defaults to true)
           echo "publish=$(get_platform publish)" >> $GITHUB_OUTPUT
 
+      - name: Skip platforms with existing passing results
+        id: skip-check
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
+          BASE_URL="https://raw.githubusercontent.com/${REPO}/gh-pages/${BRANCH}"
+
+          check_platform() {
+            local platform="$1"
+            local url="${BASE_URL}/${platform}/results.json"
+            local http_code
+            http_code=$(curl -s -o /tmp/results_${platform}.json -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+
+            if [ "$http_code" = "200" ]; then
+              local existing_hash existing_success
+              existing_hash=$(python3 -c "import json; d=json.load(open('/tmp/results_${platform}.json')); print(d.get('commit_hash', ''))" 2>/dev/null || echo "")
+              existing_success=$(python3 -c "import json; d=json.load(open('/tmp/results_${platform}.json')); print(str(d.get('success', False)).lower())" 2>/dev/null || echo "false")
+
+              if [ "$existing_hash" = "$GITHUB_SHA" ] && [ "$existing_success" = "true" ]; then
+                echo "SKIP ${platform}: passing results already exist for ${GITHUB_SHA:0:7}"
+                echo "${platform}=true" >> $GITHUB_OUTPUT
+                return
+              fi
+            fi
+            echo "RUN ${platform}: no passing results for ${GITHUB_SHA:0:7} (HTTP ${http_code})"
+            echo "${platform}=false" >> $GITHUB_OUTPUT
+          }
+
+          PLATFORMS="linux-gpu windows-gpu windows-portable-gpu linux windows macos windows-portable"
+          for p in $PLATFORMS; do
+            check_platform "$p"
+          done
+
   # ---------------------------------------------------------------------------
   # CPU tests (GitHub-hosted runners) - only if cpu workflows defined
   # ---------------------------------------------------------------------------
   linux-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true' && needs.setup.outputs.skip-linux != 'true'
     uses: ./.github/workflows/_test-linux.yml
 
   macos-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true' && needs.setup.outputs.skip-macos != 'true'
     uses: ./.github/workflows/_test-macos.yml
 
   windows-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true' && needs.setup.outputs.skip-windows != 'true'
     uses: ./.github/workflows/_test-windows.yml
 
   windows-portable-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true' && needs.setup.outputs.skip-windows-portable != 'true'
     uses: ./.github/workflows/_test-windows-portable.yml
 
   # ---------------------------------------------------------------------------
@@ -103,7 +144,7 @@ jobs:
   # ---------------------------------------------------------------------------
   linux-gpu:
     needs: [setup]
-    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-linux-gpu == 'true'
+    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-linux-gpu == 'true' && needs.setup.outputs.skip-linux-gpu != 'true'
     uses: ./.github/workflows/_test-linux-gpu.yml
     with:
       config-file: ${{ inputs.config-file }}
@@ -111,7 +152,7 @@ jobs:
 
   windows-gpu:
     needs: [setup]
-    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-gpu == 'true'
+    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-gpu == 'true' && needs.setup.outputs.skip-windows-gpu != 'true'
     uses: ./.github/workflows/_test-windows-gpu.yml
     with:
       config-file: ${{ inputs.config-file }}
@@ -119,7 +160,7 @@ jobs:
 
   windows-portable-gpu:
     needs: [setup]
-    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-portable-gpu == 'true'
+    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-portable-gpu == 'true' && needs.setup.outputs.skip-windows-portable-gpu != 'true'
     uses: ./.github/workflows/_test-windows-portable-gpu.yml
     with:
       config-file: ${{ inputs.config-file }}
