@@ -41,17 +41,22 @@ jobs:
             BRANCH="${{ github.ref_name }}"
             TARGET="gh-pages/$BRANCH"
           else
+            BRANCH="_pr"
             TARGET="gh-pages/_pr"
           fi
-          rm -rf "$TARGET"
           mkdir -p "$TARGET"
+          # Only replace platform dirs that have new CI artifacts.
+          # This preserves locally-published results (e.g., linux-gpu)
+          # for platforms that didn't produce new artifacts in this run.
           for dir in artifacts/results-*; do
             if [ -d "$dir" ]; then
-              name=$(basename "$dir" | sed 's/results-//')
-              mkdir -p "$TARGET/$name"
+              PLATFORM_ID=$(basename "$dir" | sed 's/results-//')
+              DEST="$TARGET/$PLATFORM_ID"
+              echo "Updating platform: $PLATFORM_ID"
+              rm -rf "$DEST"
+              mkdir -p "$DEST"
               # Results are 2 levels deep: run_id/platform_dir/
-              # Use glob to copy contents directly to flatten structure
-              cp -r "$dir"/*/*/* "$TARGET/$name/" 2>/dev/null || true
+              cp -r "$dir"/*/*/* "$DEST/" 2>/dev/null || true
             fi
           done
           touch gh-pages/.nojekyll

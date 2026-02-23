@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -271,10 +272,25 @@ def run(ctx: LevelContext) -> LevelContext:
     # Save results.json
     passed_count = sum(1 for r in results if r["status"] == "pass")
     failed_count = sum(1 for r in results if r["status"] == "fail")
+
+    # Resolve commit hash of the node being tested
+    commit_hash = None
+    try:
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ctx.node_dir, capture_output=True, text=True, timeout=5,
+        )
+        if hash_result.returncode == 0:
+            commit_hash = hash_result.stdout.strip()
+    except Exception:
+        pass
+
     results_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "platform": ctx.platform_name,
         "hardware": hardware,
+        "commit_hash": commit_hash,
+        "success": all(r["status"] == "pass" for r in results if r["status"] != "skipped"),
         "summary": {
             "total": len(results),
             "passed": passed_count,
