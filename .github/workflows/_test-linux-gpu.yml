@@ -32,43 +32,7 @@ jobs:
       COMFY_ENV_CACHE_DIR: /home/administrator/.comfy-env
       HF_HOME: /mnt/c/Users/Administrator/.cache/huggingface
     steps:
-      # --- Check if passing results already exist for this commit ---
-      - name: Check for existing results
-        id: check-existing
-        run: |
-          BRANCH="${GITHUB_REF_NAME}"
-          REPO="${GITHUB_REPOSITORY}"
-          URL="https://raw.githubusercontent.com/${REPO}/gh-pages/${BRANCH}/linux-gpu/results.json"
-
-          echo "Checking: $URL"
-          HTTP_CODE=$(curl -s -o /tmp/results.json -w "%{http_code}" "$URL" 2>/dev/null || echo "000")
-
-          if [ "$HTTP_CODE" = "200" ]; then
-            EXISTING_HASH=$(python3 -c "import json; d=json.load(open('/tmp/results.json')); print(d.get('commit_hash', ''))" 2>/dev/null || echo "")
-            EXISTING_SUCCESS=$(python3 -c "import json; d=json.load(open('/tmp/results.json')); print(str(d.get('success', False)).lower())" 2>/dev/null || echo "false")
-
-            echo "Existing commit_hash: $EXISTING_HASH"
-            echo "Existing success: $EXISTING_SUCCESS"
-            echo "Current SHA: $GITHUB_SHA"
-
-            if [ "$EXISTING_HASH" = "$GITHUB_SHA" ] && [ "$EXISTING_SUCCESS" = "true" ]; then
-              echo "skip=true" >> $GITHUB_OUTPUT
-              echo "SKIPPING: linux-gpu results already passing for this commit"
-            else
-              echo "skip=false" >> $GITHUB_OUTPUT
-              echo "Results exist but commit hash or success differs, re-running"
-            fi
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "No existing results found (HTTP $HTTP_CODE), running tests"
-          fi
-
-      - name: Tests skipped (results already published)
-        if: steps.check-existing.outputs.skip == 'true'
-        run: echo "Skipped linux-gpu tests - passing results already exist for commit $GITHUB_SHA"
-
       - name: Acquire platform lock
-        if: steps.check-existing.outputs.skip != 'true'
         run: |
           echo "Waiting for linux-gpu lock..."
           while ! mkdir /mnt/c/linux-gpu-lock 2>/dev/null; do
@@ -78,21 +42,21 @@ jobs:
           touch "$RUNNER_TEMP/platform-lock-acquired"
 
       - name: Cleanup stale mounts
-        if: steps.check-existing.outputs.skip != 'true'
+
         run: |
           sudo umount "${{ github.workspace }}/python" 2>/dev/null || true
           sudo umount "${{ github.workspace }}/ComfyUI" 2>/dev/null || true
 
       - name: Set cache directory
-        if: steps.check-existing.outputs.skip != 'true'
+
         run: echo "LOCAL_CACHE_DIR=$RUNNER_TOOL_CACHE/comfy-test-cache/linux-gpu-v3" >> $GITHUB_ENV
 
       - uses: astral-sh/setup-uv@v4
-        if: steps.check-existing.outputs.skip != 'true'
+
 
       # --- Restore local cache (overlayfs: instant, cache stays read-only) ---
       - name: Restore local cache
-        if: steps.check-existing.outputs.skip != 'true'
+
         id: local-cache
         run: |
           if [ -d "$LOCAL_CACHE_DIR" ]; then
@@ -116,7 +80,7 @@ jobs:
 
       # --- Setup (skip if cache hit) ---
       - name: Setup environment
-        if: steps.check-existing.outputs.skip != 'true' && steps.local-cache.outputs.cache-hit != 'true'
+        if: steps.local-cache.outputs.cache-hit != 'true'
         run: |
           # Download standalone Python (python-build-standalone)
           echo "Downloading Python..."
@@ -143,7 +107,7 @@ jobs:
 
       # --- Save local cache immediately after setup ---
       - name: Save local cache
-        if: steps.check-existing.outputs.skip != 'true' && steps.local-cache.outputs.cache-hit != 'true'
+        if: steps.local-cache.outputs.cache-hit != 'true'
         run: |
           echo "Saving to local cache..."
           mkdir -p "$LOCAL_CACHE_DIR"
@@ -154,14 +118,14 @@ jobs:
 
       # --- Verify CUDA torch ---
       - name: Verify CUDA torch
-        if: steps.check-existing.outputs.skip != 'true'
+
         run: |
           echo "Verifying CUDA torch installation..."
           $PYTHON_EXE -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
 
       # --- Install comfy-test (fresh) ---
       - name: Install comfy-test
-        if: steps.check-existing.outputs.skip != 'true'
+
         run: |
           VERSION=$(echo "$GITHUB_WORKFLOW_REF" | grep -oP '(?<=@refs/tags/v)[^/]+' || echo "")
           if [ -n "$VERSION" ]; then
@@ -172,24 +136,24 @@ jobs:
 
       # --- Checkout and run ---
       - uses: actions/checkout@v4
-        if: steps.check-existing.outputs.skip != 'true'
+
         with:
           path: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ github.event.repository.name }}
 
       - name: Install node dependencies
-        if: steps.check-existing.outputs.skip != 'true'
+
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
           [ -f requirements.txt ] && uv pip install --python "$PYTHON_EXE" -r requirements.txt || true
           [ -f install.py ] && $PYTHON_EXE install.py || true
 
       - name: Install validate endpoint
-        if: steps.check-existing.outputs.skip != 'true'
+
         run: |
           git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
 
       - name: Acquire GPU lock
-        if: steps.check-existing.outputs.skip != 'true'
+
         run: |
           echo "Waiting for GPU lock..."
           while ! mkdir /mnt/c/gpu-lock 2>/dev/null; do
@@ -199,7 +163,7 @@ jobs:
           touch "$RUNNER_TEMP/gpu-lock-acquired"
 
       - name: Run tests
-        if: steps.check-existing.outputs.skip != 'true'
+
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
           mkdir -p "$COMFY_TEST_LOGS_DIR"
@@ -246,14 +210,14 @@ jobs:
           exit $TEST_EXIT_CODE
 
       - name: Release GPU lock
-        if: always() && steps.check-existing.outputs.skip != 'true'
+        if: always()
         run: |
           if [ -f "$RUNNER_TEMP/gpu-lock-acquired" ]; then
             rmdir /mnt/c/gpu-lock 2>/dev/null || true
           fi
 
       - uses: actions/upload-artifact@v4
-        if: always() && steps.check-existing.outputs.skip != 'true'
+        if: always()
         with:
           name: results-linux-gpu
           path: |
@@ -263,7 +227,7 @@ jobs:
 
       # --- Cleanup (unmount overlays, then wipe workspace) ---
       - name: Cleanup workspace
-        if: always() && steps.check-existing.outputs.skip != 'true'
+        if: always()
         run: |
           sudo umount "$PYTHON_DIR" 2>/dev/null || true
           sudo umount "$COMFYUI_DIR" 2>/dev/null || true
@@ -272,7 +236,7 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE"/.* 2>/dev/null || true
 
       - name: Release platform lock
-        if: always() && steps.check-existing.outputs.skip != 'true'
+        if: always()
         run: |
           if [ -f "$RUNNER_TEMP/platform-lock-acquired" ]; then
             rmdir /mnt/c/linux-gpu-lock 2>/dev/null || true
