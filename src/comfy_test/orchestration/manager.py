@@ -141,6 +141,7 @@ class TestManager:
         comfyui_dir: Optional[Path] = None,
         server_url: Optional[str] = None,
         deps_installed: bool = False,
+        novram: bool = False,
     ) -> List[TestResult]:
         """Run tests on all enabled platforms.
 
@@ -174,6 +175,7 @@ class TestManager:
                 comfyui_dir=comfyui_dir,
                 server_url=server_url,
                 deps_installed=deps_installed,
+                novram=novram,
             )
             results.append(result)
 
@@ -189,6 +191,7 @@ class TestManager:
         server_url: Optional[str] = None,
         work_dir: Optional[Path] = None,
         deps_installed: bool = False,
+        novram: bool = False,
     ) -> TestResult:
         """Run tests on a specific platform.
 
@@ -291,6 +294,7 @@ class TestManager:
             workflow_filter=workflow_filter,
             paths=inferred_paths,
             deps_installed=deps_installed,
+            novram=novram,
         )
 
         try:

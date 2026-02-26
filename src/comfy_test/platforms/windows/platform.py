@@ -307,6 +307,7 @@ class WindowsPlatform(TestPlatform):
         config: "TestConfig",
         port: int = 8188,
         extra_env: Optional[dict] = None,
+        extra_args: Optional[list[str]] = None,
     ) -> subprocess.Popen:
         """Start ComfyUI server on Windows."""
         self._log(f"Starting ComfyUI server on port {port}...")
@@ -325,6 +326,9 @@ class WindowsPlatform(TestPlatform):
         # Use CPU mode unless GPU mode is explicitly enabled
         if not self.is_gpu_mode():
             cmd.append("--cpu")
+
+        if extra_args:
+            cmd.extend(extra_args)
 
         # Set environment
         env = os.environ.copy()

@@ -79,6 +79,7 @@ def run(ctx: LevelContext) -> LevelContext:
                 cuda_mock_packages=list(ctx.cuda_packages) if ctx.cuda_packages else [],
                 log_callback=ctx.log,
                 env_vars=ctx.env_vars if ctx.env_vars else {},
+                novram=ctx.novram,
             )
         server.start()
         ctx = ctx.with_updates(server=server, api=server.get_api())

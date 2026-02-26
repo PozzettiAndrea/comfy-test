@@ -96,6 +96,7 @@ class TestPlatform(ABC):
         config: "TestConfig",
         port: int = 8188,
         extra_env: Optional[dict] = None,
+        extra_args: Optional[list[str]] = None,
     ) -> subprocess.Popen:
         """
         Start ComfyUI server.

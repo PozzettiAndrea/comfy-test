@@ -303,6 +303,7 @@ class WindowsPortablePlatform(TestPlatform):
         config: "TestConfig",
         port: int = 8188,
         extra_env: Optional[dict] = None,
+        extra_args: Optional[list[str]] = None,
     ) -> subprocess.Popen:
         """Start ComfyUI server using portable Python."""
         self._log(f"Starting ComfyUI server on port {port}...")
@@ -318,6 +319,9 @@ class WindowsPortablePlatform(TestPlatform):
 
         if not self.is_gpu_mode():
             cmd.append("--cpu")
+
+        if extra_args:
+            cmd.extend(extra_args)
 
         env = os.environ.copy()
         if extra_env:

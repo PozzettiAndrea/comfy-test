@@ -114,6 +114,7 @@ def cmd_run(args) -> int:
         server_url = getattr(args, 'server_url', None)
         comfyui_dir = Path(args.comfyui_dir) if getattr(args, 'comfyui_dir', None) else None
         deps_installed = getattr(args, 'deps_installed', False)
+        novram = getattr(args, 'novram', False)
 
         results = [manager.run_platform(
             platform,
@@ -124,6 +125,7 @@ def cmd_run(args) -> int:
             server_url=server_url,
             comfyui_dir=comfyui_dir,
             deps_installed=deps_installed,
+            novram=novram,
         )]
 
         # Report results
@@ -213,5 +215,10 @@ def add_run_parser(subparsers):
         "--force",
         action="store_true",
         help="Overwrite existing workspace directory",
+    )
+    run_parser.add_argument(
+        "--novram",
+        action="store_true",
+        help="Pass --novram to ComfyUI (no VRAM reservation)",
     )
     run_parser.set_defaults(func=cmd_run)
