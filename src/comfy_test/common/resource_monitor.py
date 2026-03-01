@@ -35,6 +35,7 @@ class ResourceMonitor:
         self.monitor_gpu = monitor_gpu
         self.pid = pid
         self.samples: list[ResourceSample] = []
+        self._pids: set[int] = set()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._start_time: float = 0
@@ -43,6 +44,7 @@ class ResourceMonitor:
         """Start monitoring in background thread."""
         self._stop_event.clear()
         self.samples = []
+        self._pids: set[int] = set()
         self._start_time = time.time()
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._thread.start()
@@ -70,8 +72,10 @@ class ResourceMonitor:
             ram_bytes = 0
             if proc:
                 try:
+                    children = proc.children(recursive=True)
+                    self._pids = {proc.pid} | {c.pid for c in children}
                     ram_bytes = proc.memory_info().rss
-                    for child in proc.children(recursive=True):
+                    for child in children:
                         try:
                             ram_bytes += child.memory_info().rss
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -90,10 +94,21 @@ class ResourceMonitor:
             self._stop_event.wait(self.interval)
 
     def _get_gpu_vram_gb(self) -> float | None:
-        """Get GPU VRAM usage in GB via nvidia-smi (Linux/Windows only)."""
+        """Get GPU VRAM usage in GB via nvidia-smi.
+
+        When a PID is set, queries per-process GPU memory for that process
+        and its children. Falls back to system-wide GPU memory if per-process
+        query fails or no PID is set.
+        """
         if platform.system() == "Darwin":
             return None
 
+        if self.pid and self._pids:
+            vram = self._get_per_process_vram_gb()
+            if vram is not None:
+                return vram
+
+        # Fallback: system-wide GPU memory
         try:
             result = subprocess.run(
                 ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -108,6 +123,40 @@ class ResourceMonitor:
             pass
 
         return None
+
+    def _get_per_process_vram_gb(self) -> float | None:
+        """Get GPU VRAM for tracked PIDs via nvidia-smi per-process query.
+
+        Returns 0.0 when the query succeeds but no tracked PIDs have GPU
+        allocations (valid: process isn't using VRAM right now).
+        Returns None only on query failure (caller should fall back).
+        """
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid,used_memory",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode != 0:
+                return None
+
+            total_mib = 0.0
+            for line in result.stdout.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    pid = int(parts[0].strip())
+                    mib = float(parts[1].strip())
+                    if pid in self._pids:
+                        total_mib += mib
+
+            return round(total_mib / 1024, 2)
+        except Exception:
+            return None
 
     def get_summary(self) -> dict:
         """Return summary stats and timeline."""

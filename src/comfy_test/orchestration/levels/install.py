@@ -89,6 +89,10 @@ def run(ctx: LevelContext) -> LevelContext:
     if env_vars:
         ctx.log(f"Applying env_vars from comfy-env.toml: {', '.join(f'{k}={v}' for k, v in env_vars.items())}")
 
+    # Install VRAM debug hooks if requested
+    if ctx.vram_debug:
+        _install_vram_debug(ctx, paths)
+
     return ctx.with_updates(
         platform=platform,
         paths=paths,
@@ -150,6 +154,37 @@ def _find_python(platform_name: str, comfyui_path: Path) -> Path:
         return python_embeded / "python.exe"
     else:
         return Path(sys.executable)
+
+
+def _install_vram_debug(ctx: LevelContext, paths: TestPaths) -> None:
+    """Drop a .pth file into the test venv for VRAM debug hooks.
+
+    .pth files ARE processed from venv site-packages (unlike sitecustomize.py
+    which is only loaded from the system site-packages).
+    """
+    from ...debug.vram import get_pth_content
+
+    # Find site-packages: <venv>/lib/pythonX.Y/site-packages/
+    venv_dir = paths.python.parent.parent
+    lib_dir = venv_dir / "lib"
+    if not lib_dir.exists():
+        ctx.log("[VRAM] Warning: could not find venv lib dir, skipping .pth install")
+        return
+
+    # Find the pythonX.Y directory
+    python_dirs = [d for d in lib_dir.iterdir() if d.name.startswith("python") and d.is_dir()]
+    if not python_dirs:
+        ctx.log("[VRAM] Warning: could not find python dir in venv, skipping .pth install")
+        return
+
+    site_packages = python_dirs[0] / "site-packages"
+    if not site_packages.exists():
+        ctx.log("[VRAM] Warning: site-packages not found, skipping .pth install")
+        return
+
+    target = site_packages / "_comfy_test_vram_debug.pth"
+    target.write_text(get_pth_content())
+    ctx.log(f"[VRAM] Installed .pth file -> {target}")
 
 
 def _install_node_dependencies(

@@ -38,14 +38,20 @@ class ProgressSpinner:
         while not self._stop:
             time.sleep(0.1)
 
-    def stop(self, status: str) -> None:
+    def stop(self, status: str, peak_vram_gb: float | None = None, peak_ram_gb: float | None = None) -> None:
         """Stop and print final status."""
         self._stop = True
         if self._thread:
             self._thread.join(timeout=0.3)
         elapsed = int(time.time() - self.start_time)
         mins, secs = divmod(elapsed, 60)
-        print(f"[{mins:02d}:{secs:02d}] {self.workflow_name} [{self.current}/{self.total}] - {status}")
+        metrics = []
+        if peak_vram_gb is not None:
+            metrics.append(f"Peak VRAM: {peak_vram_gb:.2f} GB")
+        if peak_ram_gb is not None:
+            metrics.append(f"Peak RAM: {peak_ram_gb:.2f} GB")
+        metrics_str = f"  ({' | '.join(metrics)})" if metrics else ""
+        print(f"[{mins:02d}:{secs:02d}] {self.workflow_name} [{self.current}/{self.total}] - {status}{metrics_str}")
 
 
 def run(ctx: LevelContext) -> LevelContext:
@@ -80,6 +86,7 @@ def run(ctx: LevelContext) -> LevelContext:
                 log_callback=ctx.log,
                 env_vars=ctx.env_vars if ctx.env_vars else {},
                 novram=ctx.novram,
+                vram_debug=ctx.vram_debug,
             )
         server.start()
         ctx = ctx.with_updates(server=server, api=server.get_api())
@@ -227,11 +234,12 @@ def run(ctx: LevelContext) -> LevelContext:
                 capture_log(f"    Error: {e}")
                 all_errors.append((workflow_file.name, str(e)))
             finally:
-                spinner.stop("PASS" if status == "pass" else "FAIL")
-                ctx.server.remove_log_listener(capture_log)
-
                 duration = time.time() - start_time
                 resource_metrics = resource_monitor.stop()
+                peak_vram = resource_metrics.get("vram", {}).get("peak")
+                peak_ram = resource_metrics.get("ram", {}).get("peak")
+                spinner.stop("PASS" if status == "pass" else "FAIL", peak_vram_gb=peak_vram, peak_ram_gb=peak_ram)
+                ctx.server.remove_log_listener(capture_log)
 
                 # Save resource timeline to CSV
                 if resource_metrics.get("timeline"):

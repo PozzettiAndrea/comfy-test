@@ -142,6 +142,7 @@ class TestManager:
         server_url: Optional[str] = None,
         deps_installed: bool = False,
         novram: bool = False,
+        vram_debug: bool = False,
     ) -> List[TestResult]:
         """Run tests on all enabled platforms.
 
@@ -176,6 +177,7 @@ class TestManager:
                 server_url=server_url,
                 deps_installed=deps_installed,
                 novram=novram,
+                vram_debug=vram_debug,
             )
             results.append(result)
 
@@ -192,6 +194,7 @@ class TestManager:
         work_dir: Optional[Path] = None,
         deps_installed: bool = False,
         novram: bool = False,
+        vram_debug: bool = False,
     ) -> TestResult:
         """Run tests on a specific platform.
 
@@ -295,6 +298,7 @@ class TestManager:
             paths=inferred_paths,
             deps_installed=deps_installed,
             novram=novram,
+            vram_debug=vram_debug,
         )
 
         try:
