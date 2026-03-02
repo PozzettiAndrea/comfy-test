@@ -270,7 +270,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
 def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConfig:
     """Parse workflow configuration section.
 
-    All workflows in workflows/ folder are auto-discovered and tested.
+    All workflows in workflows/ and tests/ folders are auto-discovered and tested.
     Screenshots are always taken. Workflows run in alphabetical order.
 
     Supports:
@@ -278,20 +278,37 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
       - gpu = "all" or gpu = [...] - workflows to run on GPU runners
     """
     workflows_dir = base_dir / "workflows"
+    tests_dir = base_dir / "tests"
+
+    def _discover_all() -> list:
+        """Discover all workflow JSONs from workflows/ and tests/."""
+        found = []
+        for d in (workflows_dir, tests_dir):
+            if d.exists():
+                found.extend(d.glob("*.json"))
+        return sorted(found)
+
+    def _resolve_in_dirs(filename: str) -> Path:
+        """Resolve a filename against workflows/ then tests/."""
+        name = filename if filename.endswith(".json") else filename + ".json"
+        for d in (workflows_dir, tests_dir):
+            candidate = d / name
+            if candidate.exists():
+                return candidate
+        # Fall back to workflows_dir (preserves old behaviour for missing files)
+        return workflows_dir / name
 
     # Helper to resolve "all" or list of paths
     def resolve_workflows(value):
         if value == "all":
-            if workflows_dir.exists():
-                return sorted(workflows_dir.glob("*.json"))
-            return []
+            return _discover_all()
         # Exclusion mode: items starting with ! mean "all except these"
         excludes = [f.lstrip("!") for f in value if f.startswith("!")]
         if excludes:
-            all_wf = resolve_workflows("all")
-            exclude_paths = {workflows_dir / (f if f.endswith(".json") else f + ".json") for f in excludes}
-            return [w for w in all_wf if w not in exclude_paths]
-        return [workflows_dir / (f if f.endswith(".json") else f + ".json") for f in value]
+            all_wf = _discover_all()
+            exclude_names = {(f if f.endswith(".json") else f + ".json") for f in excludes}
+            return [w for w in all_wf if w.name not in exclude_names]
+        return [_resolve_in_dirs(f) for f in value]
 
     # Auto-discover all workflows (alphabetical order)
     workflows = resolve_workflows("all")
@@ -321,11 +338,11 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     if "screenshot" in data:
         screenshot = resolve_workflows(data["screenshot"])
     if "files" in data:
-        files = [workflows_dir / f for f in data["files"]]
+        files = [_resolve_in_dirs(f) for f in data["files"]]
         if files and not workflows:
             workflows = files
     if "file" in data:
-        file_path = workflows_dir / data["file"]
+        file_path = _resolve_in_dirs(data["file"])
         if file_path and not workflows:
             workflows = [file_path]
 

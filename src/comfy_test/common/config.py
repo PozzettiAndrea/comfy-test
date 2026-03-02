@@ -81,7 +81,7 @@ class TestLevel(str, Enum):
 class WorkflowConfig:
     """Configuration for workflow testing.
 
-    All workflows in workflows/ folder are auto-discovered. Screenshots are always taken.
+    All workflows in workflows/ and tests/ folders are auto-discovered. Screenshots are always taken.
 
     Args:
         workflows: All discovered workflow files (auto-populated)
