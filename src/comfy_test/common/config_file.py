@@ -278,20 +278,32 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
       - gpu = "all" or gpu = [...] - workflows to run on GPU runners
     """
     workflows_dir = base_dir / "workflows"
-    tests_dir = base_dir / "tests"
+    dev_tests_dir = workflows_dir / "tests"
 
     def _discover_all() -> list:
-        """Discover all workflow JSONs from workflows/ and tests/."""
+        """Discover all workflow JSONs from workflows/ and workflows/tests/."""
         found = []
-        for d in (workflows_dir, tests_dir):
+        for d in (workflows_dir, dev_tests_dir):
             if d.exists():
                 found.extend(d.glob("*.json"))
         return sorted(found)
 
+    def _discover_filtered() -> list:
+        """Discover workflows filtered by COMFY_TEST_RUN_CONSUMER / COMFY_TEST_RUN_DEV settings."""
+        from ..settings import _is_on, GENERAL_DEFAULTS
+        run_consumer = _is_on("COMFY_TEST_RUN_CONSUMER", GENERAL_DEFAULTS["COMFY_TEST_RUN_CONSUMER"])
+        run_dev = _is_on("COMFY_TEST_RUN_DEV", GENERAL_DEFAULTS["COMFY_TEST_RUN_DEV"])
+        found = []
+        if run_consumer and workflows_dir.exists():
+            found.extend(workflows_dir.glob("*.json"))
+        if run_dev and dev_tests_dir.exists():
+            found.extend(dev_tests_dir.glob("*.json"))
+        return sorted(found)
+
     def _resolve_in_dirs(filename: str) -> Path:
-        """Resolve a filename against workflows/ then tests/."""
+        """Resolve a filename against workflows/ then workflows/tests/."""
         name = filename if filename.endswith(".json") else filename + ".json"
-        for d in (workflows_dir, tests_dir):
+        for d in (workflows_dir, dev_tests_dir):
             candidate = d / name
             if candidate.exists():
                 return candidate
@@ -299,27 +311,27 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
         return workflows_dir / name
 
     # Helper to resolve "all" or list of paths
-    def resolve_workflows(value):
+    def resolve_workflows(value, filtered=False):
         if value == "all":
-            return _discover_all()
+            return _discover_filtered() if filtered else _discover_all()
         # Exclusion mode: items starting with ! mean "all except these"
         excludes = [f.lstrip("!") for f in value if f.startswith("!")]
         if excludes:
-            all_wf = _discover_all()
+            all_wf = _discover_filtered() if filtered else _discover_all()
             exclude_names = {(f if f.endswith(".json") else f + ".json") for f in excludes}
             return [w for w in all_wf if w.name not in exclude_names]
         return [_resolve_in_dirs(f) for f in value]
 
-    # Auto-discover all workflows (alphabetical order)
-    workflows = resolve_workflows("all")
+    # Auto-discover workflows (filtered by consumer/dev settings)
+    workflows = resolve_workflows("all", filtered=True)
 
     # Parse cpu/gpu options - supports "all" or list
     cpu = []
     gpu = []
     if "cpu" in data:
-        cpu = resolve_workflows(data["cpu"])
+        cpu = resolve_workflows(data["cpu"], filtered=True)
     if "gpu" in data:
-        gpu = resolve_workflows(data["gpu"])
+        gpu = resolve_workflows(data["gpu"], filtered=True)
 
     # Legacy format support (backwards compatibility)
     run = []

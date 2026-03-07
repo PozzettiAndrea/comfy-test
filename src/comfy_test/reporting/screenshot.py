@@ -459,8 +459,19 @@ class WorkflowScreenshot:
         """Capture browser console messages."""
         log_entry = f"[Console-{msg.type}] {msg.text}"
         self._console_logs.append(log_entry)
-        # Only log errors and warnings to avoid noise
+        # Only log to stdout if the corresponding show setting is on
         if msg.type in ("error", "warning"):
+            from ..settings import _is_on, GENERAL_DEFAULTS
+            if msg.type == "error" and not _is_on(
+                "COMFY_TEST_SHOW_CONSOLE_ERRORS",
+                GENERAL_DEFAULTS["COMFY_TEST_SHOW_CONSOLE_ERRORS"],
+            ):
+                return
+            if msg.type == "warning" and not _is_on(
+                "COMFY_TEST_SHOW_CONSOLE_WARNINGS",
+                GENERAL_DEFAULTS["COMFY_TEST_SHOW_CONSOLE_WARNINGS"],
+            ):
+                return
             self._log(f"  {log_entry}")
 
     def save_console_logs(self, output_path: Path) -> None:
