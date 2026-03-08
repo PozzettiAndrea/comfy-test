@@ -586,6 +586,17 @@ class WorkflowScreenshot:
         except Exception:
             pass  # Best effort
 
+    def _hide_unsaved_dot(self) -> None:
+        """Hide the unsaved-dot indicator on workflow tabs."""
+        try:
+            self._page.evaluate("""
+                document.querySelectorAll('span').forEach(el => {
+                    if (el.textContent.trim() === '•') el.style.display = 'none';
+                });
+            """)
+        except Exception:
+            pass  # Best effort
+
     def _trigger_3d_previews(self) -> None:
         """Activate Load3d/Preview3D nodes so their Three.js loop renders.
 
@@ -850,11 +861,12 @@ class WorkflowScreenshot:
 
         # Load the workflow via JavaScript
         workflow_json = json.dumps(workflow)
+        workflow_name_json = json.dumps(workflow_path.stem)
         try:
             self._page.evaluate(f"""
                 (async () => {{
                     const workflow = {workflow_json};
-                    await window.app.loadGraphData(workflow);
+                    await window.app.loadGraphData(workflow, true, true, {workflow_name_json});
                 }})();
             """)
         except Exception as e:
@@ -862,6 +874,7 @@ class WorkflowScreenshot:
 
         # Wait for graph to render
         self._page.wait_for_timeout(1000)
+        self._hide_unsaved_dot()
 
         # Validate using browser's graphToPrompt() conversion
         self._validate_workflow_in_browser()
@@ -921,11 +934,12 @@ class WorkflowScreenshot:
 
         # Load the workflow via JavaScript
         workflow_json = json.dumps(workflow)
+        workflow_name_json = json.dumps(workflow_path.stem)
         try:
             self._page.evaluate(f"""
                 (async () => {{
                     const workflow = {workflow_json};
-                    await window.app.loadGraphData(workflow);
+                    await window.app.loadGraphData(workflow, true, true, {workflow_name_json});
                 }})();
             """)
         except Exception as e:
@@ -933,6 +947,7 @@ class WorkflowScreenshot:
 
         # Wait for graph to render
         self._page.wait_for_timeout(wait_ms)
+        self._hide_unsaved_dot()
 
         # Fit the entire graph in view
         self._fit_graph_to_view()
@@ -1020,11 +1035,12 @@ class WorkflowScreenshot:
 
         # Load the workflow via JavaScript
         workflow_json = json.dumps(workflow)
+        workflow_name_json = json.dumps(workflow_path.stem)
         try:
             self._page.evaluate(f"""
                 (async () => {{
                     const workflow = {workflow_json};
-                    await window.app.loadGraphData(workflow);
+                    await window.app.loadGraphData(workflow, true, true, {workflow_name_json});
                 }})();
             """)
         except Exception as e:
@@ -1032,6 +1048,7 @@ class WorkflowScreenshot:
 
         # Wait for graph to render before execution
         self._page.wait_for_timeout(2000)
+        self._hide_unsaved_dot()
 
         # Inject WebSocket listener to track execution completion
         self._page.evaluate("""
@@ -1211,11 +1228,12 @@ class WorkflowScreenshot:
 
         # Load the workflow via JavaScript
         workflow_json = json.dumps(workflow)
+        workflow_name_json = json.dumps(workflow_path.stem)
         try:
             self._page.evaluate(f"""
                 (async () => {{
                     const workflow = {workflow_json};
-                    await window.app.loadGraphData(workflow);
+                    await window.app.loadGraphData(workflow, true, true, {workflow_name_json});
                 }})();
             """)
         except Exception as e:
@@ -1223,6 +1241,7 @@ class WorkflowScreenshot:
 
         # Wait for graph to render before execution
         self._page.wait_for_timeout(2000)
+        self._hide_unsaved_dot()
 
         # Close any open panels before capturing
         self._close_panels_and_alerts()
@@ -1463,11 +1482,12 @@ class WorkflowScreenshot:
 
         # Load the workflow via JavaScript
         workflow_json = json.dumps(workflow)
+        workflow_name_json = json.dumps(workflow_path.stem)
         try:
             self._page.evaluate(f"""
                 (async () => {{
                     const workflow = {workflow_json};
-                    await window.app.loadGraphData(workflow);
+                    await window.app.loadGraphData(workflow, true, true, {workflow_name_json});
                 }})();
             """)
         except Exception as e:
@@ -1475,6 +1495,7 @@ class WorkflowScreenshot:
 
         # Wait for graph to render before execution
         self._page.wait_for_timeout(2000)
+        self._hide_unsaved_dot()
 
         # Close any open panels before capturing
         self._close_panels_and_alerts()
