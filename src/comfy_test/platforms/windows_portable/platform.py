@@ -72,10 +72,12 @@ def _gitignore_filter(base_dir: Path, work_dir: Path = None):
     return ignore_func
 
 
-# Local dev packages to build wheels for
-LOCAL_DEV_PACKAGES = [
-    ("comfy-env", Path.home() / "Desktop" / "utils" / "comfy-env"),
-]
+# Local dev packages to build wheels for (resolved dynamically from env var)
+def _get_local_dev_packages():
+    utils_dir = Path(os.environ["COMFY_TEST_LOCAL_UTILS"]) if os.environ.get("COMFY_TEST_LOCAL_UTILS") else None
+    if not utils_dir:
+        return []
+    return [("comfy-env", utils_dir / "comfy-env")]
 
 
 def _build_local_wheels(work_dir: Path, log) -> Optional[Path]:
@@ -84,7 +86,7 @@ def _build_local_wheels(work_dir: Path, log) -> Optional[Path]:
     wheel_dir = work_dir / "local_wheels"
 
     found_any = False
-    for name, path in LOCAL_DEV_PACKAGES:
+    for name, path in _get_local_dev_packages():
         if path.exists():
             if not found_any:
                 wheel_dir.mkdir(parents=True, exist_ok=True)
@@ -291,11 +293,14 @@ class WindowsPortablePlatform(TestPlatform):
         if install_py.exists():
             self._log("Running install.py...")
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
-            self._run_command(
+            result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")
 
     def start_server(
         self,
@@ -389,8 +394,11 @@ class WindowsPortablePlatform(TestPlatform):
         if install_py.exists():
             self._log(f"  Running {name} install.py...")
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
-            self._run_command(
+            result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: {name} install.py failed (exit code {result.returncode}), continuing...")

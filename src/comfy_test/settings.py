@@ -57,6 +57,17 @@ DEBUG_DEFAULTS = {
 }
 
 
+# Path settings: (env_var, label, default_value)
+PATH_SETTINGS = [
+    ("COMFY_TEST_LOCAL_UTILS", "Local utils directory (dev packages)", ""),
+]
+
+
+def get_path(var: str, default: str = "") -> str:
+    val = os.environ.get(var, "")
+    return val if val else default
+
+
 def _is_on(var: str, default: bool = False) -> bool:
     val = os.environ.get(var, "")
     if val == "":

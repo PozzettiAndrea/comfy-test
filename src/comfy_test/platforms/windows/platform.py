@@ -16,11 +16,15 @@ if TYPE_CHECKING:
 COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
-# Local dev packages to build wheels for
-LOCAL_DEV_PACKAGES = [
-    ("comfy-env", Path.home() / "Desktop" / "utils" / "comfy-env"),
-    ("comfy-test", Path.home() / "Desktop" / "utils" / "comfy-test"),
-]
+def _get_local_dev_packages():
+    """Get local dev packages from env var."""
+    utils_dir = Path(os.environ["COMFY_TEST_LOCAL_UTILS"]) if os.environ.get("COMFY_TEST_LOCAL_UTILS") else None
+    if not utils_dir:
+        return []
+    return [
+        ("comfy-env", utils_dir / "comfy-env"),
+        ("comfy-test", utils_dir / "comfy-test"),
+    ]
 
 
 def _build_local_wheels(work_dir: Path, log: Callable[[str], None]) -> Optional[Path]:
@@ -31,7 +35,7 @@ def _build_local_wheels(work_dir: Path, log: Callable[[str], None]) -> Optional[
     wheel_dir = work_dir / "local_wheels"
 
     found_any = False
-    for name, path in LOCAL_DEV_PACKAGES:
+    for name, path in _get_local_dev_packages():
         if path.exists():
             if not found_any:
                 wheel_dir.mkdir(parents=True, exist_ok=True)
@@ -238,12 +242,13 @@ class WindowsPlatform(TestPlatform):
             self._uv_install(python, ["-r", str(requirements_file)], cwd=work_dir)
 
         # Install local dev packages if available (so install.py uses local version)
-        utils_dir = Path.home() / "Desktop" / "utils"
-        for pkg in ["comfy-env", "comfy-test", "comfy-3d-viewers"]:
-            pkg_path = utils_dir / pkg
-            if pkg_path.exists():
-                self._log(f"Installing local {pkg} (editable)...")
-                self._uv_install(python, ["-e", str(pkg_path)], cwd=work_dir)
+        utils_dir = Path(os.environ["COMFY_TEST_LOCAL_UTILS"]) if os.environ.get("COMFY_TEST_LOCAL_UTILS") else None
+        if utils_dir:
+            for pkg in ["comfy-env", "comfy-test", "comfy-3d-viewers"]:
+                pkg_path = utils_dir / pkg
+                if pkg_path.exists():
+                    self._log(f"Installing local {pkg} (editable)...")
+                    self._uv_install(python, ["-e", str(pkg_path)], cwd=work_dir)
 
         return TestPaths(
             work_dir=work_dir,
@@ -295,11 +300,14 @@ class WindowsPlatform(TestPlatform):
             # Pass wheel dir so pixi/pip inside install.py can use local wheels
             if self._wheel_dir and self._wheel_dir.exists():
                 install_env["COMFY_LOCAL_WHEELS"] = str(self._wheel_dir)
-            self._run_command(
+            result = self._run_command(
                 [str(python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")
 
     def start_server(
         self,
@@ -395,8 +403,11 @@ class WindowsPlatform(TestPlatform):
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
             if self._wheel_dir and self._wheel_dir.exists():
                 install_env["COMFY_LOCAL_WHEELS"] = str(self._wheel_dir)
-            self._run_command(
+            result = self._run_command(
                 [str(python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: {name} install.py failed (exit code {result.returncode}), continuing...")

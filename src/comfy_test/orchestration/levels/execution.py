@@ -157,7 +157,9 @@ def run(ctx: LevelContext) -> LevelContext:
         raise TestError("Failed to install screenshot dependencies (playwright required)")
     check_dependencies()
 
-    ws = WorkflowScreenshot(ctx.server.base_url, log_callback=capture_and_print)
+    height = ctx.config.res
+    width = int(height * 16 / 9)
+    ws = WorkflowScreenshot(ctx.server.base_url, width=width, height=height, log_callback=capture_and_print)
     ws.start()
 
     screenshots_dir = ctx.output_base / "screenshots"

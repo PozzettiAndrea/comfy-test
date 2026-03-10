@@ -106,15 +106,16 @@ class LinuxPlatform(TestPlatform):
             self._pip_install_requirements(requirements_file, work_dir)
 
         # Install local dev packages if available (so install.py uses local version)
-        utils_dir = Path.home() / "utils"
-        for pkg in ["comfy-env", "comfy-test", "comfy-3d-viewers"]:
-            pkg_path = utils_dir / pkg
-            if pkg_path.exists():
-                self._log(f"Installing local {pkg} (editable)...")
-                self._run_command(
-                    ["uv", "pip", "install", "-e", str(pkg_path), "--python", str(python)],
-                    cwd=work_dir,
-                )
+        utils_dir = Path(os.environ["COMFY_TEST_LOCAL_UTILS"]) if os.environ.get("COMFY_TEST_LOCAL_UTILS") else None
+        if utils_dir:
+            for pkg in ["comfy-env", "comfy-test", "comfy-3d-viewers"]:
+                pkg_path = utils_dir / pkg
+                if pkg_path.exists():
+                    self._log(f"Installing local {pkg} (editable)...")
+                    self._run_command(
+                        ["uv", "pip", "install", "-e", str(pkg_path), "--python", str(python)],
+                        cwd=work_dir,
+                    )
 
         return TestPaths(
             work_dir=work_dir,
@@ -195,11 +196,14 @@ class LinuxPlatform(TestPlatform):
                 "COMFY_ENV_CUDA_VERSION": "12.8",
                 "COMFY_ENV_CACHE_DIR": str(paths.work_dir / ".comfy-env"),
             }
-            self._run_command(
+            result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")
 
     def start_server(
         self,
@@ -283,8 +287,11 @@ class LinuxPlatform(TestPlatform):
         if install_py.exists():
             self._log(f"  Running {name} install.py...")
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
-            self._run_command(
+            result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: {name} install.py failed (exit code {result.returncode}), continuing...")

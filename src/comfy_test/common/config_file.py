@@ -261,6 +261,8 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         }
         if python_version is not None:
             kwargs["python_version"] = python_version
+        if "res" in test_section:
+            kwargs["res"] = test_section["res"]
 
         return TestConfig(**kwargs)
     except ValueError as e:

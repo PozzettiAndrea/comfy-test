@@ -45,7 +45,9 @@ def run(ctx: LevelContext) -> LevelContext:
         screenshots_dir = ctx.output_base / "screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-        ws = WorkflowScreenshot(ctx.server.base_url, log_callback=ctx.log)
+        height = ctx.config.res
+        width = int(height * 16 / 9)
+        ws = WorkflowScreenshot(ctx.server.base_url, width=width, height=height, log_callback=ctx.log)
         ws.start()
         try:
             for idx, workflow_file in enumerate(workflows, 1):

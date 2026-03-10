@@ -180,6 +180,7 @@ class TestConfig:
     comfyui_version: str = "latest"
     python_version: str = field(default_factory=_random_python_version)
     timeout: int = 600
+    res: int = 1080  # Viewport height (width = height * 16/9)
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)

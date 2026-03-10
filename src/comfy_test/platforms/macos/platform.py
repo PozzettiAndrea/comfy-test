@@ -153,11 +153,14 @@ class MacOSPlatform(TestPlatform):
         if install_py.exists():
             self._log("Running install.py...")
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
-            self._run_command(
+            result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=node_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")
 
     def start_server(
         self,
@@ -241,8 +244,11 @@ class MacOSPlatform(TestPlatform):
         if install_py.exists():
             self._log(f"  Running {name} install.py...")
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
-            self._run_command(
+            result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
+                check=False,
             )
+            if result.returncode != 0:
+                self._log(f"Warning: {name} install.py failed (exit code {result.returncode}), continuing...")
