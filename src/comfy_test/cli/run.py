@@ -131,8 +131,26 @@ def cmd_run(args) -> int:
         )]
 
         # Report results
+        flags = []
+        if args.gpu:
+            flags.append("--gpu")
+        if getattr(args, 'novram', False):
+            flags.append("--novram")
+        if getattr(args, 'vram_debug', False):
+            flags.append("--vram-debug")
+        if getattr(args, 'portable', False):
+            flags.append("--portable")
+        if getattr(args, 'server_url', None):
+            flags.append("--server-url")
+        if getattr(args, 'comfyui_dir', None):
+            flags.append("--comfyui-dir")
+        if level:
+            flags.append(f"--level={level}")
+        if workflow_filter:
+            flags.append(f"--workflow={workflow_filter}")
+        flag_suffix = f" ({', '.join(flags)})" if flags else ""
         print(f"\n{'='*60}")
-        print("RESULTS")
+        print(f"RESULTS{flag_suffix}")
         print(f"{'='*60}")
 
         all_passed = True
@@ -152,21 +170,27 @@ def cmd_run(args) -> int:
             workflows = [w for w in results_data.get("workflows", []) if w.get("resources")]
             if workflows:
                 has_vram = any(w.get("resources", {}).get("vram") for w in workflows)
-                header = f"\n  {'Workflow':<30s} {'Status':<9s}"
+                header = f"\n  {'Workflow':<30s} {'Status':<9s} {'Time':<10s}"
                 header += " Peak VRAM  " if has_vram else ""
                 header += " Peak RAM"
                 print(header)
+                total_duration = 0.0
                 for w in workflows:
                     name = w["name"] + ".json"
                     st = w["status"].upper()
                     res = w.get("resources", {})
-                    line = f"  {name:<30s} {st:<9s}"
+                    dur = w.get("duration_seconds", 0)
+                    total_duration += dur
+                    mins, secs = divmod(int(dur), 60)
+                    line = f"  {name:<30s} {st:<9s} {mins:02d}:{secs:02d}     "
                     if has_vram:
                         vram = res.get("vram", {}).get("peak")
                         line += f" {vram:>5.2f} GB   " if vram is not None else "     -      "
                     ram = res.get("ram", {}).get("peak")
                     line += f" {ram:>5.2f} GB" if ram is not None else "    -"
                     print(line)
+                total_mins, total_secs = divmod(int(total_duration), 60)
+                print(f"\n  Total execution time: {total_mins:02d}:{total_secs:02d}")
 
         print(f"\nOutput: {output_dir}")
         return 0 if all_passed else 1
