@@ -179,24 +179,48 @@ class TestPlatform(ABC):
         if env:
             run_env.update(env)
 
-        result = subprocess.run(
+        # Stream stdout line-by-line so users see progress live
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        proc = subprocess.Popen(
             cmd,
             cwd=cwd,
             env=run_env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
 
-        if result.stdout:
-            for line in result.stdout.strip().split("\n"):
-                self._log(f"  {line}")
+        import threading
 
-        if result.returncode != 0 and check:
-            self._log(f"Command failed with code {result.returncode}")
-            if result.stderr:
-                self._log(f"stderr: {result.stderr}")
+        def _read_stderr():
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+        stderr_thread.start()
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line_text = line.rstrip("\n")
+            stdout_lines.append(line_text)
+            self._log(f"  {line_text}")
+
+        proc.wait()
+        stderr_thread.join(timeout=5)
+
+        stdout_text = "\n".join(stdout_lines)
+        stderr_text = "".join(stderr_lines)
+
+        if proc.returncode != 0 and check:
+            self._log(f"Command failed with code {proc.returncode}")
+            if stderr_text:
+                self._log(f"stderr: {stderr_text}")
             raise subprocess.CalledProcessError(
-                result.returncode, cmd, result.stdout, result.stderr
+                proc.returncode, cmd, stdout_text, stderr_text
             )
 
-        return result
+        return subprocess.CompletedProcess(
+            cmd, proc.returncode, stdout_text, stderr_text
+        )

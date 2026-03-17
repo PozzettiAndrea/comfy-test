@@ -92,7 +92,7 @@ class ComfyUIServer:
         for listener in self._extra_log_listeners:
             listener(msg)
 
-    def start(self, wait_timeout: int = 300) -> None:
+    def start(self, wait_timeout: int = 600) -> None:
         """Start the ComfyUI server and wait for it to be ready.
 
         Args:

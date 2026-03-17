@@ -73,7 +73,8 @@ class TestManager:
         self._original_log = log_callback or (
             lambda msg: print(
                 msg.encode('ascii', errors='replace').decode('ascii')
-                if isinstance(msg, str) else msg
+                if isinstance(msg, str) else msg,
+                flush=True,
             )
         )
         self._session_log: List[str] = []
