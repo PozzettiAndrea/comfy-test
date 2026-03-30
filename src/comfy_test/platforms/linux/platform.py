@@ -56,8 +56,11 @@ class LinuxPlatform(TestPlatform):
 
         if self.is_gpu_mode():
             # GPU mode: prioritize CUDA index, fallback to PyPI
+            # unsafe-best-match ensures torch+cu128 from primary index wins
+            # over CPU-only torch from PyPI at the same version
             cmd.extend(["--index-url", PYTORCH_CUDA_INDEX])
             cmd.extend(["--extra-index-url", PYPI_INDEX])
+            cmd.extend(["--index-strategy", "unsafe-best-match"])
         cmd.extend(["-r", str(requirements_file)])
 
         self._run_command(cmd, cwd=cwd)
