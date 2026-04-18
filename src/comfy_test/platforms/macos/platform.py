@@ -119,7 +119,7 @@ class MacOSPlatform(TestPlatform):
         """
         Install custom node into ComfyUI.
 
-        1. Symlink to custom_nodes/
+        1. Copy to custom_nodes/
         2. Install requirements.txt if present - unless deps_installed
         3. Run install.py if present - unless deps_installed
         """
@@ -129,33 +129,65 @@ class MacOSPlatform(TestPlatform):
         target_dir = paths.custom_nodes_dir / node_name
 
         if deps_installed:
-            self._log("Skipping symlink, requirements.txt, and install.py (--deps-installed)")
+            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
             return
 
-        # Create symlink (macOS supports symlinks natively)
-        self._log(f"Linking {node_name} to custom_nodes/...")
+        # Copy node (not symlink) for proper isolation and correct path resolution
+        self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
             if target_dir.is_symlink():
                 target_dir.unlink()
             else:
                 shutil.rmtree(target_dir)
 
-        target_dir.symlink_to(node_dir)
+        # Parse .gitignore patterns
+        gitignore_patterns = set()
+        gitignore_path = node_dir / ".gitignore"
+        if gitignore_path.exists():
+            for line in gitignore_path.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    pattern = line.rstrip("/")
+                    gitignore_patterns.add(pattern)
 
-        # Install requirements.txt first
-        requirements_file = node_dir / "requirements.txt"
+        # Always ignore .git
+        gitignore_patterns.add(".git")
+
+        def ignore_patterns(directory, files):
+            """Ignore files matching .gitignore patterns."""
+            ignored = []
+            for f in files:
+                if f in gitignore_patterns:
+                    ignored.append(f)
+                    continue
+                for pattern in gitignore_patterns:
+                    if pattern.startswith("*") and f.endswith(pattern[1:]):
+                        ignored.append(f)
+                        break
+                    elif pattern.startswith("_") and f.startswith(pattern.rstrip("*")):
+                        ignored.append(f)
+                        break
+            return ignored
+
+        shutil.copytree(node_dir, target_dir, ignore=ignore_patterns)
+
+        # Install requirements.txt first (install.py may depend on these)
+        requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], node_dir)
+            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
 
-        # Run install.py if present
-        install_py = node_dir / "install.py"
+        # Run install.py if present (in the copy, so _env_* gets created there)
+        install_py = target_dir / "install.py"
         if install_py.exists():
             self._log("Running install.py...")
-            install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
+            install_env = {
+                "COMFY_ENV_CUDA_VERSION": "12.8",
+                "COMFY_ENV_CACHE_DIR": str(paths.work_dir / ".comfy-env"),
+            }
             result = self._run_command(
                 [str(paths.python), str(install_py)],
-                cwd=node_dir,
+                cwd=target_dir,
                 env=install_env,
                 check=False,
             )
