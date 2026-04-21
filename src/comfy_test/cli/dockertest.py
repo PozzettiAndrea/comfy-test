@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -162,8 +163,13 @@ def cmd_dockertest(args) -> int:
         return 1
     node_path = work_root / node_name
 
-    # Logs dir — user-provided or temp
-    logs_dir = Path(args.logs_dir).resolve() if args.logs_dir else work_root / "logs"
+    # Logs dir — user-provided or a persistent per-run dir under ~\comfy-test-logs\.
+    # NOT work_root/logs: work_root is rmtree'd at the end, which would delete the logs.
+    if args.logs_dir:
+        logs_dir = Path(args.logs_dir).resolve()
+    else:
+        timestamp = datetime.now().strftime("%H%M")
+        logs_dir = Path.home() / "comfy-test-logs" / f"{node_name}-{timestamp}"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage on C:\ if either source is a Dev Drive without both wcifs+bindflt
@@ -224,10 +230,10 @@ def cmd_dockertest(args) -> int:
             capture_output=True,
         )
 
-    print(f"[dockertest] Logs: {logs_dir}")
-    # Clean temp clone dir (keep logs)
+    # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
     if not args.keep_clone:
         shutil.rmtree(work_root, ignore_errors=True)
+    print(f"[dockertest] Logs: {logs_dir}")
 
     return result.returncode
 
