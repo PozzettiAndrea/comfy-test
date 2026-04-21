@@ -17,6 +17,7 @@ from .generate_index import (
     add_generate_root_index_parser,
 )
 from .settings import add_settings_parser
+from .dockertest import cmd_dockertest, add_dockertest_parser
 
 
 def main(args=None) -> int:
@@ -35,6 +36,7 @@ def main(args=None) -> int:
     add_generate_index_parser(subparsers)
     add_generate_root_index_parser(subparsers)
     add_settings_parser(subparsers)
+    add_dockertest_parser(subparsers)
 
     # Parse and execute
     parsed_args = parser.parse_args(args)

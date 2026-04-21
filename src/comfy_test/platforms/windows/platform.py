@@ -41,6 +41,15 @@ class WindowsPlatform(TestPlatform):
         """Detect if GPU mode is enabled."""
         return os.environ.get("COMFY_TEST_GPU", "0") not in ("0", "", "false", "no")
 
+    def _log_requirements_file(self, requirements_file: Path) -> None:
+        """Print the contents of a requirements.txt indented, so pinned versions are visible."""
+        try:
+            text = requirements_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return
+        for line in text.splitlines():
+            self._log(f"    {line}")
+
     def _pip_install_requirements(self, requirements_file: Path, cwd: Path) -> None:
         """Install requirements with proper PyTorch index for GPU/CPU mode."""
         # Use venv python if available, otherwise fallback to system
@@ -81,13 +90,13 @@ class WindowsPlatform(TestPlatform):
         venv_dir = work_dir / ".venv"
 
         # Create venv (isolated from system Python)
-        self._log("Creating virtual environment...")
+        self._log(f"Creating virtual environment at {venv_dir}...")
         self._run_command(["uv", "venv", str(venv_dir), "--python", "3.10"], cwd=work_dir)
         python = venv_dir / "Scripts" / "python.exe"
         self._venv_python = python
 
         # Clone ComfyUI
-        self._log(f"Cloning ComfyUI ({config.comfyui_version})...")
+        self._log(f"Cloning ComfyUI ({config.comfyui_version}) to {comfyui_dir}...")
         if comfyui_dir.exists():
             shutil.rmtree(comfyui_dir)
 
@@ -103,9 +112,10 @@ class WindowsPlatform(TestPlatform):
         custom_nodes_dir.mkdir(exist_ok=True)
 
         # Install ComfyUI requirements (uses CUDA index in GPU mode)
-        self._log("Installing ComfyUI requirements...")
+        self._log(f"Installing ComfyUI requirements into {venv_dir}...")
         requirements_file = comfyui_dir / "requirements.txt"
         if requirements_file.exists():
+            self._log_requirements_file(requirements_file)
             self._pip_install_requirements(requirements_file, work_dir)
 
         # Install local dev packages if available (so install.py uses local version)
@@ -148,7 +158,7 @@ class WindowsPlatform(TestPlatform):
             return
 
         # Copy node (not symlink) for full isolation
-        self._log(f"Copying {node_name} to custom_nodes/...")
+        self._log(f"Copying {node_name} to {target_dir}...")
         if target_dir.exists():
             shutil.rmtree(target_dir)
 
@@ -191,6 +201,7 @@ class WindowsPlatform(TestPlatform):
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
             self._log("Installing node requirements...")
+            self._log_requirements_file(requirements_file)
             self._pip_install_requirements(requirements_file, target_dir)
 
         # Run install.py if present
