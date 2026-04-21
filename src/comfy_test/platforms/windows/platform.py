@@ -135,8 +135,11 @@ class WindowsPlatform(TestPlatform):
         2. Install requirements.txt if present - unless deps_installed
         3. Run install.py if present - unless deps_installed
         """
-        node_dir = Path(node_dir).resolve()
+        # Take .name BEFORE .resolve(): inside a Windows container, bind mount filters
+        # (bindflt/wcifs) return the resolved path with case folded to lowercase, which breaks
+        # later case-sensitive imports (ModuleNotFoundError: No module named 'ComfyUI-SAM3').
         node_name = node_dir.name
+        node_dir = Path(node_dir).resolve()
 
         target_dir = paths.custom_nodes_dir / node_name
 

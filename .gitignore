@@ -74,3 +74,6 @@ Thumbs.db
 
 # comfy-test output
 .comfy-test-logs/
+
+# Docker build / host-setup logs — transient per-machine state
+docker/windows-gpu/*.log
