@@ -25,16 +25,15 @@ def get_cache_dir() -> Path:
 
 
 def get_latest_release_tag(log: Callable[[str], None]) -> str:
-    """Get the latest release tag from GitHub API."""
+    """Get the latest release tag from GitHub API.
+
+    Always unauthenticated — the comfyanonymous/ComfyUI releases endpoint is public,
+    and a stale GITHUB_TOKEN in the caller's env would cause 401s for no reason.
+    """
     log("Fetching latest release version...")
 
-    headers = {}
-    github_token = os.environ.get("GITHUB_TOKEN")
-    if github_token:
-        headers["Authorization"] = f"token {github_token}"
-
     try:
-        response = requests.get(PORTABLE_LATEST_API, headers=headers, timeout=30)
+        response = requests.get(PORTABLE_LATEST_API, timeout=30)
         response.raise_for_status()
         data = response.json()
         tag = data.get("tag_name", "")
@@ -44,23 +43,18 @@ def get_latest_release_tag(log: Callable[[str], None]) -> str:
         return tag
     except requests.RequestException as e:
         raise DownloadError(
-            "Failed to fetch latest release info",
+            f"Failed to fetch latest release info ({type(e).__name__}: {e})",
             PORTABLE_LATEST_API
         ) from e
 
 
 def download_portable(version: str, dest: Path, log: Callable[[str], None]) -> None:
-    """Download ComfyUI portable archive."""
+    """Download ComfyUI portable archive. Always unauthenticated (public release asset)."""
     url = PORTABLE_RELEASE_URL.format(version=version)
     log(f"Downloading portable ComfyUI from {url}...")
 
-    headers = {}
-    github_token = os.environ.get("GITHUB_TOKEN")
-    if github_token:
-        headers["Authorization"] = f"token {github_token}"
-
     try:
-        response = requests.get(url, headers=headers, stream=True, timeout=300)
+        response = requests.get(url, stream=True, timeout=300)
         response.raise_for_status()
 
         total_size = int(response.headers.get("content-length", 0))
@@ -81,7 +75,7 @@ def download_portable(version: str, dest: Path, log: Callable[[str], None]) -> N
 
     except requests.RequestException as e:
         raise DownloadError(
-            f"Failed to download portable ComfyUI {version}",
+            f"Failed to download portable ComfyUI {version} ({type(e).__name__}: {e})",
             url
         ) from e
 
