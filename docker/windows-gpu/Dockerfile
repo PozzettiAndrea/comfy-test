@@ -22,6 +22,18 @@ RUN [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tl
     Remove-Item 'C:\install\uv-install.ps1'; \
     setx /M PATH ($env:PATH + ';C:\Users\ContainerAdministrator\.local\bin') | Out-Null
 
+# 7-Zip — ComfyUI portable archives use BCJ2 compression that py7zr can't handle.
+# Silent install places 7z.exe at C:\Program Files\7-Zip\7z.exe, where
+# comfy-test's find_7z_executable() picks it up automatically.
+ADD https://www.7-zip.org/a/7z2501-x64.exe C:\\install\\7z.exe
+RUN Start-Process -Wait -FilePath C:\install\7z.exe -ArgumentList '/S'; \
+    Remove-Item C:\install\7z.exe
+
+# Enable Windows long path support (>260 chars). ComfyUI portable's torch headers + transformers
+# __pycache__ trees easily exceed MAX_PATH; 7z extracts them fine via long-path API, but Python's
+# shutil.copytree fails without this registry flag when moving the extracted tree into the workspace.
+RUN New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
+
 # Install comfy-test as a uv tool (matches how cds test does it on the host)
 COPY comfy-test-src C:\\tools\\comfy-test-src
 RUN $env:PATH += ';C:\Users\ContainerAdministrator\.local\bin;C:\Program Files\Git\cmd'; \

@@ -176,13 +176,16 @@ class WindowsPortablePlatform(TestPlatform):
         else:
             self._log(f"Using cached extraction: {cached_extract_dir}")
 
-        # Copy from cache to work directory
+        # Copy from cache into the per-run workspace — alongside where the non-portable
+        # platform would put ComfyUI. Avoids the old Desktop dumping ground, which broke
+        # Docker (no Desktop inside containers) and polluted the host filesystem outside
+        # the workspace. rmtree if a previous attempt left remnants in the workspace.
         import uuid
-        portable_work_dir = Path.home() / "Desktop" / "portabletest"
+        portable_work_dir = work_dir / "portable-comfyui"
         if portable_work_dir.exists():
-            old_name = f"portabletest_old_{uuid.uuid4().hex[:8]}"
-            old_path = Path.home() / "Desktop" / old_name
-            self._log(f"Moving old folder to {old_name} (deleting in background)...")
+            old_name = f"portable-comfyui_old_{uuid.uuid4().hex[:8]}"
+            old_path = work_dir / old_name
+            self._log(f"Moving old folder to {old_path} (deleting in background)...")
             portable_work_dir.rename(old_path)
             subprocess.Popen(
                 ["cmd", "/c", "rd", "/s", "/q", str(old_path)],
@@ -251,8 +254,11 @@ class WindowsPortablePlatform(TestPlatform):
 
     def install_node(self, paths: TestPaths, node_dir: Path, deps_installed: bool = False) -> None:
         """Install custom node into ComfyUI Portable."""
-        node_dir = Path(node_dir).resolve()
+        # Take .name BEFORE .resolve(): inside a Windows container, bind mount filters
+        # (bindflt/wcifs) return the resolved path with case folded to lowercase, which breaks
+        # later case-sensitive imports (ModuleNotFoundError: No module named 'ComfyUI-SAM3').
         node_name = node_dir.name
+        node_dir = Path(node_dir).resolve()
         target_dir = paths.custom_nodes_dir / node_name
 
         if deps_installed:

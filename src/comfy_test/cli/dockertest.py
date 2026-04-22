@@ -128,9 +128,17 @@ def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
 
 def cmd_dockertest(args) -> int:
     """Clone a node from a URL (or local path) and run comfy-test in Docker."""
+    # --portable is a shorthand for --platform windows-portable; reject mixing both.
+    if args.portable and args.platform and args.platform != "windows-portable":
+        print(f"[dockertest] --portable conflicts with --platform={args.platform}", file=sys.stderr)
+        return 1
+
     # Platform handling
     host_platform = _detect_host_platform()
-    target_platform = args.platform or host_platform
+    if args.portable:
+        target_platform = "windows-portable"
+    else:
+        target_platform = args.platform or host_platform
     if host_platform != "windows":
         print(f"[dockertest] Host is {host_platform}; Docker path currently only supports "
               f"Windows hosts.", file=sys.stderr)
@@ -165,21 +173,47 @@ def cmd_dockertest(args) -> int:
 
     # Logs dir — user-provided or a persistent per-run dir under ~\comfy-test-logs\.
     # NOT work_root/logs: work_root is rmtree'd at the end, which would delete the logs.
+    timestamp = datetime.now().strftime("%H%M")
     if args.logs_dir:
         logs_dir = Path(args.logs_dir).resolve()
     else:
-        timestamp = datetime.now().strftime("%H%M")
         logs_dir = Path.home() / "comfy-test-logs" / f"{node_name}-{timestamp}"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Stage on C:\ if either source is a Dev Drive without both wcifs+bindflt
+    # --persist: bind-mount the full workspace AND the comfy-env cache (C:\ce, where pixi
+    # isolation envs live) to the host. Without the C:\ce mount, the broken pixi env dies
+    # with --rm and we can't dumpbin /dependents on its DLLs from outside the container.
+    # --persist implies --keep-clone so the installed custom_nodes/<node> entry (which may still
+    # reference the cloned source for case-sensitive imports) stays valid after the run.
+    workspace_dir = None
+    env_cache_dir = None
+    if args.persist:
+        workspace_dir = Path.home() / "comfy-test-workspaces" / f"{node_name}-{timestamp}"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        env_cache_dir = Path.home() / "comfy-test-env-cache" / f"{node_name}-{timestamp}"
+        env_cache_dir.mkdir(parents=True, exist_ok=True)
+        args.keep_clone = True
+
+    # Stage on C:\ if any source is a Dev Drive without both wcifs+bindflt
     stage = _needs_stage(str(node_path)) or _needs_stage(str(logs_dir))
+    if workspace_dir is not None:
+        stage = stage or _needs_stage(str(workspace_dir))
+    if env_cache_dir is not None:
+        stage = stage or _needs_stage(str(env_cache_dir))
+    workspace_mount_src = None
+    env_cache_mount_src = None
     if stage:
         DOCKER_STAGE_ROOT.mkdir(parents=True, exist_ok=True)
         node_mount_src = DOCKER_STAGE_ROOT / "node" / node_name
         logs_mount_src = DOCKER_STAGE_ROOT / "logs"
         logs_mount_src.mkdir(parents=True, exist_ok=True)
         node_mount_src.parent.mkdir(parents=True, exist_ok=True)
+        if workspace_dir is not None:
+            workspace_mount_src = DOCKER_STAGE_ROOT / "workspace"
+            workspace_mount_src.mkdir(parents=True, exist_ok=True)
+        if env_cache_dir is not None:
+            env_cache_mount_src = DOCKER_STAGE_ROOT / "env_cache"
+            env_cache_mount_src.mkdir(parents=True, exist_ok=True)
         print(f"[dockertest] Dev Drive filters not attached; staging to {DOCKER_STAGE_ROOT}")
         rc = subprocess.run(
             ["robocopy", str(node_path), str(node_mount_src),
@@ -196,6 +230,10 @@ def cmd_dockertest(args) -> int:
     else:
         node_mount_src = node_path
         logs_mount_src = logs_dir
+        if workspace_dir is not None:
+            workspace_mount_src = workspace_dir
+        if env_cache_dir is not None:
+            env_cache_mount_src = env_cache_dir
 
     # Build comfy-test args inside the container
     ct_args = ["run", "--platform", target_platform]
@@ -213,6 +251,12 @@ def cmd_dockertest(args) -> int:
         "--device", DOCKER_GPU_DEVICE,
         "-v", f"{node_mount_src}:{container_node_path}",
         "-v", f"{logs_mount_src}:C:\\logs",
+    ]
+    if workspace_mount_src is not None:
+        docker_cmd += ["-v", f"{workspace_mount_src}:C:\\workspaces"]
+    if env_cache_mount_src is not None:
+        docker_cmd += ["-v", f"{env_cache_mount_src}:C:\\ce"]
+    docker_cmd += [
         "-w", container_node_path,
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
         DOCKER_IMAGE,
@@ -230,10 +274,32 @@ def cmd_dockertest(args) -> int:
             capture_output=True,
         )
 
+    # Copy staged workspace back to workspace_dir
+    if stage and workspace_mount_src is not None and workspace_dir is not None and any(workspace_mount_src.iterdir()):
+        subprocess.run(
+            ["robocopy", str(workspace_mount_src), str(workspace_dir),
+             "/E", "/XJ", "/R:1", "/W:1",
+             "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
+            capture_output=True,
+        )
+
+    # Copy staged env cache back to env_cache_dir
+    if stage and env_cache_mount_src is not None and env_cache_dir is not None and any(env_cache_mount_src.iterdir()):
+        subprocess.run(
+            ["robocopy", str(env_cache_mount_src), str(env_cache_dir),
+             "/E", "/XJ", "/R:1", "/W:1",
+             "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
+            capture_output=True,
+        )
+
     # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
     if not args.keep_clone:
         shutil.rmtree(work_root, ignore_errors=True)
     print(f"[dockertest] Logs: {logs_dir}")
+    if workspace_dir is not None:
+        print(f"[dockertest] Workspace: {workspace_dir}")
+    if env_cache_dir is not None:
+        print(f"[dockertest] Env cache: {env_cache_dir}")
 
     return result.returncode
 
@@ -250,9 +316,15 @@ def add_dockertest_parser(subparsers):
                    help="Enable GPU mode (CUDA passthrough). Default: CPU only.")
     p.add_argument("--platform", default=None,
                    help="comfy-test target platform (default: match host)")
+    p.add_argument("--portable", action="store_true",
+                   help="Test against portable ComfyUI (shorthand for --platform windows-portable)")
     p.add_argument("--workflow", default=None, help="Run only this specific workflow")
     p.add_argument("--logs-dir", default=None,
                    help="Host directory for logs (default: a temp dir alongside the clone)")
     p.add_argument("--keep-clone", action="store_true",
                    help="Don't delete the cloned node after the run")
+    p.add_argument("--persist", action="store_true",
+                   help="Bind-mount the workspace to the host so ComfyUI install, "
+                        ".venv, and pixi envs survive after the container exits. "
+                        "Saved to ~/comfy-test-workspaces/<node>-<HHMM>/. Implies --keep-clone.")
     p.set_defaults(func=cmd_dockertest)
