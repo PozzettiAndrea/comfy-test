@@ -1,5 +1,8 @@
 """Dockertest command — clone a node from a git URL and run comfy-test against it
-inside an isolated Windows container with GPU passthrough.
+inside an isolated Docker container with GPU passthrough.
+
+Supports both Windows hosts (process-isolated Windows containers) and Linux hosts
+(NVIDIA Container Toolkit).
 
 Standalone: no cds, no CDS_ROOT, no YAML config. Everything is driven by the
 nodelink URL + optional flags.
@@ -15,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-DOCKER_IMAGE = "comfy-test-windows-gpu:full"
+DOCKER_IMAGE_WINDOWS = "comfy-test-windows-gpu:full"
+DOCKER_IMAGE_LINUX = "comfy-test-linux-gpu:full"
 DOCKER_GPU_DEVICE = "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599"  # GUID_DEVINTERFACE_DISPLAY_ADAPTER
 DOCKER_STAGE_ROOT = Path(r"C:\cds-docker-stage")
 
@@ -31,12 +35,14 @@ def _detect_host_platform() -> str:
 
 
 def _find_docker() -> Optional[str]:
-    """Locate docker.exe — PATH first, then the default install dir."""
+    """Locate docker — PATH first, then the Windows default install dir."""
     exe = shutil.which("docker")
     if exe:
         return exe
-    fallback = Path(r"C:\Program Files\Docker\docker.exe")
-    return str(fallback) if fallback.exists() else None
+    if sys.platform == "win32":
+        fallback = Path(r"C:\Program Files\Docker\docker.exe")
+        return str(fallback) if fallback.exists() else None
+    return None
 
 
 def _needs_stage(vol_path: str) -> bool:
@@ -61,7 +67,7 @@ def _needs_stage(vol_path: str) -> bool:
     return not ("wcifs" in attached and "bindflt" in attached)
 
 
-def _docker_preflight(docker_exe: str) -> Optional[str]:
+def _docker_preflight_windows(docker_exe: str) -> Optional[str]:
     """Check docker is in Windows-container mode and the image exists. Returns error string or None."""
     r = subprocess.run([docker_exe, "info", "--format", "{{.OSType}}"],
                        capture_output=True, text=True)
@@ -71,13 +77,30 @@ def _docker_preflight(docker_exe: str) -> Optional[str]:
             "Run utils/comfy-test/docker/windows-gpu/install-host.ps1 as admin, or switch "
             "Docker Desktop to Windows containers."
         )
-    r = subprocess.run([docker_exe, "image", "inspect", DOCKER_IMAGE],
+    r = subprocess.run([docker_exe, "image", "inspect", DOCKER_IMAGE_WINDOWS],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return (
-            f"Image {DOCKER_IMAGE} not found. Build it:\n"
+            f"Image {DOCKER_IMAGE_WINDOWS} not found. Build it:\n"
             f"  powershell -ExecutionPolicy Bypass -File "
             r"D:\utils\comfy-test\docker\windows-gpu\build.ps1 -Target full"
+        )
+    return None
+
+
+def _docker_preflight_linux(docker_exe: str) -> Optional[str]:
+    """Check docker is in Linux mode, NVIDIA runtime is available, and image exists."""
+    r = subprocess.run([docker_exe, "info", "--format", "{{.OSType}}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or "linux" not in r.stdout.lower():
+        return f"Docker is not in Linux mode (OSType={r.stdout.strip()!r})."
+
+    r = subprocess.run([docker_exe, "image", "inspect", DOCKER_IMAGE_LINUX],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return (
+            f"Image {DOCKER_IMAGE_LINUX} not found. Build it:\n"
+            f"  bash utils/comfy-test/docker/linux-gpu/build.sh"
         )
     return None
 
@@ -126,60 +149,9 @@ def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
     return node_name
 
 
-def cmd_dockertest(args) -> int:
-    """Clone a node from a URL (or local path) and run comfy-test in Docker."""
-    # --portable is a shorthand for --platform windows-portable; reject mixing both.
-    if args.portable and args.platform and args.platform != "windows-portable":
-        print(f"[dockertest] --portable conflicts with --platform={args.platform}", file=sys.stderr)
-        return 1
-
-    # Platform handling
-    host_platform = _detect_host_platform()
-    if args.portable:
-        target_platform = "windows-portable"
-    else:
-        target_platform = args.platform or host_platform
-    if host_platform != "windows":
-        print(f"[dockertest] Host is {host_platform}; Docker path currently only supports "
-              f"Windows hosts.", file=sys.stderr)
-        return 1
-    if target_platform not in ("windows", "windows-portable"):
-        print(f"[dockertest] --platform={target_platform} not supported by the Windows-GPU image.",
-              file=sys.stderr)
-        return 1
-
-    gpu = bool(args.gpu)
-
-    # Docker preflight
-    docker_exe = _find_docker()
-    if not docker_exe:
-        print("[dockertest] docker not found. Run install-host.ps1 first.", file=sys.stderr)
-        return 1
-    err = _docker_preflight(docker_exe)
-    if err:
-        print(f"[dockertest] {err}", file=sys.stderr)
-        return 1
-
-    # Clone or copy node
-    work_root = Path(tempfile.mkdtemp(prefix="comfy-test-dockertest-"))
-    print(f"[dockertest] Working dir: {work_root}")
-    try:
-        node_name = _clone_node(args.nodelink, args.branch, work_root)
-    except Exception as e:
-        print(f"[dockertest] {e}", file=sys.stderr)
-        shutil.rmtree(work_root, ignore_errors=True)
-        return 1
-    node_path = work_root / node_name
-
-    # Logs dir — user-provided or a persistent per-run dir under ~\comfy-test-logs\.
-    # NOT work_root/logs: work_root is rmtree'd at the end, which would delete the logs.
-    timestamp = datetime.now().strftime("%H%M")
-    if args.logs_dir:
-        logs_dir = Path(args.logs_dir).resolve()
-    else:
-        logs_dir = Path.home() / "comfy-test-logs" / f"{node_name}-{timestamp}"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
+def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
+                 node_path: Path, node_name: str, logs_dir: Path, timestamp: str) -> int:
+    """Run dockertest on a Windows host with process-isolated Windows containers."""
     # --persist: bind-mount the full workspace AND the comfy-env cache (C:\ce, where pixi
     # isolation envs live) to the host. Without the C:\ce mount, the broken pixi env dies
     # with --rm and we can't dumpbin /dependents on its DLLs from outside the container.
@@ -259,7 +231,7 @@ def cmd_dockertest(args) -> int:
     docker_cmd += [
         "-w", container_node_path,
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
-        DOCKER_IMAGE,
+        DOCKER_IMAGE_WINDOWS,
     ] + ct_args
 
     print(f"[dockertest] Running: {' '.join(docker_cmd)}")
@@ -292,10 +264,6 @@ def cmd_dockertest(args) -> int:
             capture_output=True,
         )
 
-    # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
-    if not args.keep_clone:
-        shutil.rmtree(work_root, ignore_errors=True)
-    print(f"[dockertest] Logs: {logs_dir}")
     if workspace_dir is not None:
         print(f"[dockertest] Workspace: {workspace_dir}")
     if env_cache_dir is not None:
@@ -304,11 +272,138 @@ def cmd_dockertest(args) -> int:
     return result.returncode
 
 
+def _run_linux(args, docker_exe: str, gpu: bool,
+               node_path: Path, node_name: str, logs_dir: Path, timestamp: str) -> int:
+    """Run dockertest on a Linux host with NVIDIA Container Toolkit."""
+    workspace_dir = None
+    if args.persist:
+        workspace_dir = Path.home() / "comfy-test-workspaces" / f"{node_name}-{timestamp}"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        args.keep_clone = True
+
+    # Build comfy-test args inside the container
+    ct_args = ["run", "--platform", "linux"]
+    if args.branch:
+        ct_args.extend(["--branch", args.branch])
+    if gpu:
+        ct_args.append("--gpu")
+    if args.workflow:
+        ct_args.extend(["--workflow", args.workflow])
+
+    container_node_path = f"/node"
+    docker_cmd = [
+        docker_exe, "run", "--rm",
+        "--gpus", "all",
+        "-v", f"{node_path}:{container_node_path}",
+        "-v", f"{logs_dir}:/logs",
+    ]
+    if workspace_dir is not None:
+        docker_cmd += ["-v", f"{workspace_dir}:/workspaces"]
+    docker_cmd += [
+        "-w", container_node_path,
+        "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
+        DOCKER_IMAGE_LINUX,
+    ] + ct_args
+
+    print(f"[dockertest] Running: {' '.join(docker_cmd)}")
+    result = subprocess.run(docker_cmd)
+
+    if workspace_dir is not None:
+        print(f"[dockertest] Workspace: {workspace_dir}")
+
+    return result.returncode
+
+
+def cmd_dockertest(args) -> int:
+    """Clone a node from a URL (or local path) and run comfy-test in Docker."""
+    # --portable is a shorthand for --platform windows-portable; reject mixing both.
+    if args.portable and args.platform and args.platform != "windows-portable":
+        print(f"[dockertest] --portable conflicts with --platform={args.platform}", file=sys.stderr)
+        return 1
+
+    # Platform handling
+    host_platform = _detect_host_platform()
+    if args.portable:
+        target_platform = "windows-portable"
+    else:
+        target_platform = args.platform or host_platform
+
+    # Validate host/target combination
+    if host_platform == "linux":
+        if target_platform != "linux":
+            print(f"[dockertest] Linux host can only target 'linux', got '{target_platform}'.",
+                  file=sys.stderr)
+            return 1
+        if args.portable:
+            print("[dockertest] --portable is not supported on Linux.", file=sys.stderr)
+            return 1
+    elif host_platform == "windows":
+        if target_platform not in ("windows", "windows-portable"):
+            print(f"[dockertest] Windows host only supports 'windows'/'windows-portable', "
+                  f"got '{target_platform}'.", file=sys.stderr)
+            return 1
+    else:
+        print(f"[dockertest] Docker mode is not supported on {host_platform}.", file=sys.stderr)
+        return 1
+
+    gpu = bool(args.gpu)
+
+    # Docker preflight
+    docker_exe = _find_docker()
+    if not docker_exe:
+        hint = "Run install-host.ps1 first." if host_platform == "windows" else "Install docker."
+        print(f"[dockertest] docker not found. {hint}", file=sys.stderr)
+        return 1
+
+    if host_platform == "windows":
+        err = _docker_preflight_windows(docker_exe)
+    else:
+        err = _docker_preflight_linux(docker_exe)
+    if err:
+        print(f"[dockertest] {err}", file=sys.stderr)
+        return 1
+
+    # Clone or copy node
+    work_root = Path(tempfile.mkdtemp(prefix="comfy-test-dockertest-"))
+    print(f"[dockertest] Working dir: {work_root}")
+    try:
+        node_name = _clone_node(args.nodelink, args.branch, work_root)
+    except Exception as e:
+        print(f"[dockertest] {e}", file=sys.stderr)
+        shutil.rmtree(work_root, ignore_errors=True)
+        return 1
+    node_path = work_root / node_name
+
+    # Logs dir — user-provided or a persistent per-run dir under ~/comfy-test-logs/.
+    # NOT work_root/logs: work_root is rmtree'd at the end, which would delete the logs.
+    timestamp = datetime.now().strftime("%H%M")
+    if args.logs_dir:
+        logs_dir = Path(args.logs_dir).resolve()
+    else:
+        logs_dir = Path.home() / "comfy-test-logs" / f"{node_name}-{timestamp}"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Dispatch to platform-specific runner
+    if host_platform == "windows":
+        rc = _run_windows(args, docker_exe, target_platform, gpu,
+                          node_path, node_name, logs_dir, timestamp)
+    else:
+        rc = _run_linux(args, docker_exe, gpu,
+                        node_path, node_name, logs_dir, timestamp)
+
+    # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
+    if not args.keep_clone:
+        shutil.rmtree(work_root, ignore_errors=True)
+    print(f"[dockertest] Logs: {logs_dir}")
+
+    return rc
+
+
 def add_dockertest_parser(subparsers):
     """Register the `dockertest` subcommand."""
     p = subparsers.add_parser(
         "dockertest",
-        help="Clone a node from URL and run comfy-test in an isolated Windows container",
+        help="Clone a node from URL and run comfy-test in an isolated Docker container",
     )
     p.add_argument("nodelink", help="Git URL (or local path) to the custom node")
     p.add_argument("--branch", "-b", default=None, help="Git branch to clone (default: repo default)")
