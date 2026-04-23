@@ -1,5 +1,6 @@
 """Publish commands for comfy-test CLI."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -8,10 +9,23 @@ from pathlib import Path
 
 
 def cmd_publish(args) -> int:
-    """Publish results to gh-pages."""
-    from ..reporting.html_report import generate_html_report
+    """Publish results to gh-pages.
 
-    results_dir = Path(args.results_dir).expanduser()
+    Expects results_dir to be a platform results directory containing
+    results.json, with branch and platform inferred from the path:
+
+        logs/node-2115/dev/linux-gpu/   →  branch=dev, platform=linux-gpu
+
+    Only the target branch/platform directory is replaced on gh-pages;
+    other platforms' results are preserved.
+    """
+    from ..reporting.html_report import (
+        generate_html_report,
+        generate_root_index,
+        generate_branch_root_index,
+    )
+
+    results_dir = Path(args.results_dir).expanduser().resolve()
     if not results_dir.exists():
         print(f"Results directory not found: {results_dir}", file=sys.stderr)
         return 1
@@ -23,17 +37,25 @@ def cmd_publish(args) -> int:
 
     repo = args.repo
 
-    # Generate HTML report
-    print("Generating HTML report...")
-    generate_html_report(results_dir)
+    # Infer branch and platform from path (last two components)
+    platform = results_dir.name
+    branch = results_dir.parent.name
 
-    # Push to gh-pages
-    print(f"Publishing to gh-pages for {repo}...")
+    if not platform or not branch:
+        print(f"Cannot infer branch/platform from path: {results_dir}", file=sys.stderr)
+        print("Expected path like: logs/node-2115/dev/linux-gpu/", file=sys.stderr)
+        return 1
+
+    print(f"Publishing {repo} → gh-pages/{branch}/{platform}/")
+
+    # Generate HTML report for this platform's results
+    print("Generating HTML report...")
+    generate_html_report(results_dir, repo_name=repo, current_platform=platform)
 
     with tempfile.TemporaryDirectory() as tmp:
         gh_pages_dir = Path(tmp) / "gh-pages"
 
-        # Try to clone existing gh-pages branch
+        # Clone existing gh-pages (preserves all other content)
         clone_result = subprocess.run(
             ["git", "clone", "--depth=1", "--branch=gh-pages",
              f"https://github.com/{repo}.git", str(gh_pages_dir)],
@@ -41,65 +63,72 @@ def cmd_publish(args) -> int:
         )
 
         if clone_result.returncode != 0:
-            # No gh-pages branch exists, create empty dir
             print("No existing gh-pages branch, creating new one...")
             gh_pages_dir.mkdir(parents=True)
             subprocess.run(["git", "init"], cwd=gh_pages_dir, capture_output=True)
-            subprocess.run(["git", "checkout", "-b", "gh-pages"], cwd=gh_pages_dir, capture_output=True)
+            subprocess.run(
+                ["git", "checkout", "-b", "gh-pages"],
+                cwd=gh_pages_dir, capture_output=True,
+            )
 
-        # Clear old content (except .git)
-        for item in gh_pages_dir.iterdir():
-            if item.name != ".git":
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
+        # Replace only target branch/platform directory
+        dest = gh_pages_dir / branch / platform
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.mkdir(parents=True)
 
-        # Copy new content
-        files_to_copy = ["results.json", "index.html"]
-        dirs_to_copy = ["screenshots", "videos", "logs"]
+        # Copy results
+        for item in results_dir.iterdir():
+            if item.name.startswith("."):
+                continue
+            if item.is_dir():
+                shutil.copytree(item, dest / item.name)
+            else:
+                shutil.copy2(item, dest / item.name)
 
-        for f in files_to_copy:
-            src = results_dir / f
-            if src.exists():
-                shutil.copy2(src, gh_pages_dir / f)
+        # Ensure .nojekyll exists
+        (gh_pages_dir / ".nojekyll").touch()
 
-        for d in dirs_to_copy:
-            src = results_dir / d
-            if src.exists():
-                shutil.copytree(src, gh_pages_dir / d)
+        # Regenerate index pages
+        branch_dir = gh_pages_dir / branch
+        if branch_dir.exists():
+            print(f"Generating branch index: {branch_dir}")
+            generate_root_index(branch_dir, repo_name=repo)
+
+        print(f"Generating root index: {gh_pages_dir}")
+        generate_branch_root_index(gh_pages_dir, repo_name=repo)
 
         # Commit and push
         subprocess.run(["git", "add", "-A"], cwd=gh_pages_dir, check=True)
 
-        # Check if there are changes to commit
         status = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=gh_pages_dir, capture_output=True, text=True
+            cwd=gh_pages_dir, capture_output=True, text=True,
         )
         if not status.stdout.strip():
             print("No changes to publish")
             return 0
 
         subprocess.run(
-            ["git", "commit", "-m", "Update test results"],
-            cwd=gh_pages_dir, check=True
+            ["git", "commit", "-m", f"Update {platform} results ({branch})"],
+            cwd=gh_pages_dir, check=True,
         )
 
-        # Push (requires auth - user should have git credentials configured)
         push_result = subprocess.run(
             ["git", "push", "-f", f"https://github.com/{repo}.git", "gh-pages"],
-            cwd=gh_pages_dir
+            cwd=gh_pages_dir,
         )
 
         if push_result.returncode != 0:
             print("Push failed. Make sure you have write access to the repo.")
-            print("You may need to set up a GitHub token:")
-            print("  git config --global credential.helper store")
-            print("  # Then push manually once to save credentials")
+            print("Set up auth with one of:")
+            print("  - GH_TOKEN or GITHUB_TOKEN env var + git credential helper")
+            print("  - git config --global credential.helper store")
             return 1
 
-    print(f"Published to https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/")
+    owner = repo.split("/")[0]
+    repo_name_short = repo.split("/")[1]
+    print(f"Published to https://{owner}.github.io/{repo_name_short}/{branch}/")
     return 0
 
 
@@ -111,7 +140,8 @@ def add_publish_parser(subparsers):
     )
     publish_parser.add_argument(
         "results_dir",
-        help="Directory with test results (e.g., ~/logs/SAM3DBody-1445)",
+        help="Platform results directory containing results.json "
+             "(e.g., logs/node-2115/dev/linux-gpu)",
     )
     publish_parser.add_argument(
         "--repo", "-r",
