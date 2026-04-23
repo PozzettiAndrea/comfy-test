@@ -290,6 +290,11 @@ def run(ctx: LevelContext) -> LevelContext:
     commit_hash = None
     if (ctx.node_dir / ".git").exists():
         try:
+            # Mark dir as safe (Docker bind mounts have different ownership)
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", str(ctx.node_dir)],
+                capture_output=True, timeout=5,
+            )
             hash_result = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=ctx.node_dir, capture_output=True, text=True, timeout=5,

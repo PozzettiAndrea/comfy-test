@@ -41,6 +41,9 @@ ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
     COMFY_TEST_LOGS_DIR=/logs \
     COMFY_TEST_GPU=1
 
+# Trust bind-mounted repos (different ownership in container vs host)
+RUN git config --global --add safe.directory '*'
+
 RUN mkdir -p /workspaces /logs
 
 ENTRYPOINT ["comfy-test"]
