@@ -105,11 +105,25 @@ def _docker_preflight_linux(docker_exe: str) -> Optional[str]:
     return None
 
 
-def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
-    """Clone nodelink (git URL) into dest. Returns the node folder name.
+def _expand_nodelink(nodelink: str) -> str:
+    """Expand owner/repo shorthand to a full GitHub URL."""
+    # Skip if it's a local path, already a URL, or doesn't match owner/repo pattern
+    if Path(nodelink).exists() or "://" in nodelink or nodelink.count("/") != 1:
+        return nodelink
+    owner, repo = nodelink.split("/", 1)
+    if not owner or not repo:
+        return nodelink
+    url = f"https://github.com/{owner}/{repo}.git"
+    print(f"[dockertest] Expanding {nodelink} → {url}")
+    return url
 
-    If nodelink is a local path, copy from there instead.
+
+def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
+    """Clone nodelink (git URL, owner/repo shorthand, or local path) into dest.
+
+    Returns the node folder name.
     """
+    nodelink = _expand_nodelink(nodelink)
     src_path = Path(nodelink) if Path(nodelink).exists() else None
     if src_path and src_path.is_dir():
         node_name = src_path.name
@@ -294,6 +308,7 @@ def _run_linux(args, docker_exe: str, gpu: bool,
     docker_cmd = [
         docker_exe, "run", "--rm",
         "--gpus", "all",
+        "--shm-size=8g",
         "-v", f"{node_path}:{container_node_path}",
         "-v", f"{logs_dir}:/logs",
     ]
