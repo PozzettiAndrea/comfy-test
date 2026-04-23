@@ -284,17 +284,20 @@ def run(ctx: LevelContext) -> LevelContext:
     passed_count = sum(1 for r in results if r["status"] == "pass")
     failed_count = sum(1 for r in results if r["status"] == "fail")
 
-    # Resolve commit hash of the node being tested
+    # Resolve commit hash of the node being tested.
+    # Only read if .git exists directly in node_dir — don't let git walk
+    # up to a parent repo (e.g., ComfyUI) and return the wrong hash.
     commit_hash = None
-    try:
-        hash_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ctx.node_dir, capture_output=True, text=True, timeout=5,
-        )
-        if hash_result.returncode == 0:
-            commit_hash = hash_result.stdout.strip()
-    except Exception:
-        pass
+    if (ctx.node_dir / ".git").exists():
+        try:
+            hash_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ctx.node_dir, capture_output=True, text=True, timeout=5,
+            )
+            if hash_result.returncode == 0:
+                commit_hash = hash_result.stdout.strip()
+        except Exception:
+            pass
 
     results_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
