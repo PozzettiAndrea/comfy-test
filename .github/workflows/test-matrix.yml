@@ -26,6 +26,14 @@ on:
         description: "Run only this platform (e.g. linux-cpu, windows-cpu, macos-cpu). Empty = all platforms."
         type: string
         default: ""
+      node_repo:
+        description: "owner/repo of the node to test (default: caller repo). When set, comfy-test.toml + skip-check + publish target this repo instead of the caller."
+        type: string
+        default: ""
+      node_branch:
+        description: "branch of the node to test (default: caller ref_name)"
+        type: string
+        default: ""
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -58,7 +66,32 @@ jobs:
       # Publish
       run-publish: ${{ steps.platforms.outputs.publish }}
     steps:
+      - name: Resolve target repo/branch
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+          INPUT_BRANCH: ${{ inputs.node_branch }}
+        run: |
+          TARGET_REPO="${INPUT_REPO:-${{ github.repository }}}"
+          TARGET_BRANCH="${INPUT_BRANCH:-${{ github.ref_name }}}"
+          TARGET_SHA="${{ github.sha }}"
+          if [ -n "$INPUT_REPO" ] || [ -n "$INPUT_BRANCH" ]; then
+            # Resolve sha from the target repo+branch via the GitHub API
+            RESOLVED=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.NODE_PAT || secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/$TARGET_REPO/branches/$TARGET_BRANCH" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('commit',{}).get('sha',''))" 2>/dev/null || echo "")
+            if [ -n "$RESOLVED" ]; then TARGET_SHA="$RESOLVED"; fi
+          fi
+          echo "TARGET_REPO=$TARGET_REPO" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_SHA=$TARGET_SHA" >> $GITHUB_ENV
+
       - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: ${{ env.TARGET_BRANCH }}
+          token: ${{ secrets.NODE_PAT || github.token }}
 
       - name: Parse platform config
         id: platforms
@@ -103,8 +136,9 @@ jobs:
       - name: Skip platforms with existing passing results
         id: skip-check
         run: |
-          BRANCH="${GITHUB_REF_NAME}"
-          REPO="${GITHUB_REPOSITORY}"
+          BRANCH="$TARGET_BRANCH"
+          REPO="$TARGET_REPO"
+          SHA="$TARGET_SHA"
           BASE_URL="https://raw.githubusercontent.com/${REPO}/gh-pages/${BRANCH}"
 
           check_platform() {
@@ -118,13 +152,13 @@ jobs:
               existing_hash=$(python3 -c "import json; d=json.load(open('/tmp/results_${platform}.json')); print(d.get('commit_hash', ''))" 2>/dev/null || echo "")
               existing_success=$(python3 -c "import json; d=json.load(open('/tmp/results_${platform}.json')); print(str(d.get('success', False)).lower())" 2>/dev/null || echo "false")
 
-              if [ "$existing_hash" = "$GITHUB_SHA" ] && [ "$existing_success" = "true" ]; then
-                echo "SKIP ${platform}: passing results already exist for ${GITHUB_SHA:0:7}"
+              if [ "$existing_hash" = "$SHA" ] && [ "$existing_success" = "true" ]; then
+                echo "SKIP ${platform}: passing results already exist for ${SHA:0:7}"
                 echo "${platform}=true" >> $GITHUB_OUTPUT
                 return
               fi
             fi
-            echo "RUN ${platform}: no passing results for ${GITHUB_SHA:0:7} (HTTP ${http_code})"
+            echo "RUN ${platform}: no passing results for ${SHA:0:7} (HTTP ${http_code})"
             echo "${platform}=false" >> $GITHUB_OUTPUT
           }
 
@@ -140,21 +174,37 @@ jobs:
     needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true' && needs.setup.outputs.skip-linux != 'true'
     uses: ./.github/workflows/_test-linux.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit
 
   macos-cpu:
     needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true' && needs.setup.outputs.skip-macos != 'true'
     uses: ./.github/workflows/_test-macos.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit
 
   windows-cpu:
     needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true' && needs.setup.outputs.skip-windows != 'true'
     uses: ./.github/workflows/_test-windows.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit
 
   windows-portable-cpu:
     needs: [setup]
     if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true' && needs.setup.outputs.skip-windows-portable != 'true'
     uses: ./.github/workflows/_test-windows-portable.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit
 
   # ---------------------------------------------------------------------------
   # GPU tests (self-hosted runners) - only if gpu workflows defined AND platform enabled
@@ -190,3 +240,7 @@ jobs:
     needs: [setup, linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, linux-gpu, windows-gpu, windows-portable-gpu]
     if: always() && needs.setup.outputs.run-publish == 'true'
     uses: ./.github/workflows/_publish-results.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit

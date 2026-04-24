@@ -2,6 +2,15 @@ name: Test Windows Portable
 
 on:
   workflow_call:
+    inputs:
+      node_repo:
+        description: "owner/repo of the node to test (default: caller repo)"
+        type: string
+        default: ""
+      node_branch:
+        description: "branch of the node to test (default: caller ref)"
+        type: string
+        default: ""
 
 jobs:
   windows-portable-test:
@@ -16,11 +25,21 @@ jobs:
       COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
-      NODE_NAME: ${{ github.event.repository.name }}
       COMFYUI_DIR: ${{ github.workspace }}\ComfyUI_windows_portable\ComfyUI
       PYTHON_EXE: ${{ github.workspace }}\ComfyUI_windows_portable\python_embeded\python.exe
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
     steps:
+      - name: Resolve target node
+        shell: bash
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+        run: |
+          if [ -n "$INPUT_REPO" ]; then
+            echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
+          else
+            echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
         id: setup-cache
@@ -86,7 +105,10 @@ jobs:
       # --- Checkout ---
       - uses: actions/checkout@v4
         with:
-          path: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ github.event.repository.name }}
+          repository: ${{ inputs.node_repo || github.repository }}
+          ref: ${{ inputs.node_branch || github.ref }}
+          token: ${{ secrets.NODE_PAT || github.token }}
+          path: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
 
       - name: Install node dependencies
         shell: powershell

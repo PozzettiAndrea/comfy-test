@@ -3,6 +3,15 @@ name: Publish Results
 
 on:
   workflow_call:
+    inputs:
+      node_repo:
+        description: "owner/repo whose gh-pages should receive results (default: caller repo)"
+        type: string
+        default: ""
+      node_branch:
+        description: "branch name to publish under (default: caller ref_name)"
+        type: string
+        default: ""
 
 jobs:
   publish:
@@ -10,6 +19,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: publish
     steps:
+      - name: Resolve target repo
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+          INPUT_BRANCH: ${{ inputs.node_branch }}
+        run: |
+          TARGET_REPO="${INPUT_REPO:-${{ github.repository }}}"
+          TARGET_BRANCH="${INPUT_BRANCH:-${{ github.ref_name }}}"
+          echo "TARGET_REPO=$TARGET_REPO" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -29,16 +48,18 @@ jobs:
       - name: Checkout existing gh-pages
         uses: actions/checkout@v4
         with:
+          repository: ${{ env.TARGET_REPO }}
           ref: gh-pages
           path: gh-pages
           fetch-depth: 1
+          token: ${{ secrets.NODE_PAT || github.token }}
         continue-on-error: true
 
       - name: Prepare gh-pages structure
         run: |
           mkdir -p gh-pages
           if [ "${{ github.event_name }}" != "pull_request" ]; then
-            BRANCH="${{ github.ref_name }}"
+            BRANCH="$TARGET_BRANCH"
             TARGET="gh-pages/$BRANCH"
           else
             BRANCH="_pr"
@@ -66,14 +87,24 @@ jobs:
       - name: Generate index pages
         if: github.event_name != 'pull_request'
         run: |
-          comfy-test generate-index "gh-pages/$BRANCH" --repo-name "${{ github.repository }}"
-          comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
+          comfy-test generate-index "gh-pages/$BRANCH" --repo-name "$TARGET_REPO"
+          comfy-test generate-root-index gh-pages --repo-name "$TARGET_REPO"
 
-      - name: Publish to gh-pages
-        if: github.event_name != 'pull_request'
+      - name: Publish to gh-pages (caller repo)
+        if: github.event_name != 'pull_request' && inputs.node_repo == ''
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: gh-pages
+          force_orphan: true
+
+      - name: Publish to gh-pages (external repo)
+        if: github.event_name != 'pull_request' && inputs.node_repo != ''
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.NODE_PAT }}
+          external_repository: ${{ inputs.node_repo }}
           publish_branch: gh-pages
           publish_dir: gh-pages
           force_orphan: true
