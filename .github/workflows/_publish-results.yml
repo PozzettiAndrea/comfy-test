@@ -37,7 +37,7 @@ jobs:
       - name: Prepare gh-pages structure
         run: |
           mkdir -p gh-pages
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
             BRANCH="${{ github.ref_name }}"
             TARGET="gh-pages/$BRANCH"
           else
@@ -64,13 +64,13 @@ jobs:
           echo "TARGET=$TARGET" >> $GITHUB_ENV
 
       - name: Generate index pages
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: |
           comfy-test generate-index "gh-pages/$BRANCH" --repo-name "${{ github.repository }}"
           comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
 
       - name: Publish to gh-pages
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
