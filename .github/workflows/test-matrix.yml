@@ -22,6 +22,10 @@ on:
         description: "DEPRECATED - GPU tests now auto-run when gpu=[...] is defined in config"
         type: boolean
         default: false
+      platform:
+        description: "Run only this platform (e.g. linux-cpu, windows-cpu, macos-cpu). Empty = all platforms."
+        type: string
+        default: ""
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -82,6 +86,19 @@ jobs:
 
           # Publish toggle (defaults to true)
           echo "publish=$(get_platform publish)" >> $GITHUB_OUTPUT
+
+          # Per-platform filter: if platform input is set, only run that one
+          FILTER="${{ inputs.platform }}"
+          if [ -n "$FILTER" ]; then
+            MAPPED=$(echo "$FILTER" | sed 's/-cpu$//')
+            for p in linux macos windows windows-portable linux-gpu windows-gpu windows-portable-gpu; do
+              if [ "$p" = "$MAPPED" ]; then
+                echo "${p}=true" >> $GITHUB_OUTPUT
+              else
+                echo "${p}=false" >> $GITHUB_OUTPUT
+              fi
+            done
+          fi
 
       - name: Skip platforms with existing passing results
         id: skip-check
