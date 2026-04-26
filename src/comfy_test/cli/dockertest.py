@@ -329,6 +329,30 @@ def _run_linux(args, docker_exe: str, gpu: bool,
     return result.returncode
 
 
+def _patch_null_commit_hash(node_path: Path, logs_dir: Path) -> None:
+    """Set commit_hash on any results.json the container left as null."""
+    sha_proc = subprocess.run(
+        ["git", "-C", str(node_path), "rev-parse", "HEAD"],
+        capture_output=True, text=True,
+    )
+    if sha_proc.returncode != 0:
+        return
+    sha = sha_proc.stdout.strip()
+    if not sha:
+        return
+    import json as _json
+    for results_file in logs_dir.rglob("results.json"):
+        try:
+            data = _json.loads(results_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("commit_hash"):
+            continue
+        data["commit_hash"] = sha
+        results_file.write_text(_json.dumps(data, indent=2), encoding="utf-8")
+        print(f"[dockertest] Patched commit_hash={sha[:12]} in {results_file}")
+
+
 def cmd_dockertest(args) -> int:
     """Clone a node from a URL (or local path) and run comfy-test in Docker."""
     # --portable is a shorthand for --platform windows-portable; reject mixing both.
@@ -405,6 +429,12 @@ def cmd_dockertest(args) -> int:
     else:
         rc = _run_linux(args, docker_exe, gpu,
                         node_path, node_name, logs_dir, timestamp)
+
+    # Older container images bake an older comfy-test that doesn't run
+    # `git config --global --add safe.directory <bind-mount>` before
+    # `git rev-parse HEAD`, so commit_hash silently lands as null in
+    # results.json. Patch it on the host where we already know the SHA.
+    _patch_null_commit_hash(node_path, logs_dir)
 
     # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
     if not args.keep_clone:
