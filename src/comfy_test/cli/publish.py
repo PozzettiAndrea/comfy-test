@@ -34,6 +34,31 @@ def _find_result_dirs(base: Path) -> list[Path]:
     return sorted(p.parent for p in base.rglob("results.json"))
 
 
+_GIT_TIMEOUT_SECONDS = 300
+
+
+def _git_env() -> dict:
+    """Env for git subprocesses: never block on a credential prompt."""
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+
+def _git_remote_url(repo: str) -> str:
+    """HTTPS URL for the repo, with embedded token if one is in env.
+
+    On self-hosted Windows runners the credential helper often doesn't resolve
+    (e.g. the user account has no .git-credentials in the expected location),
+    so we bake the token into the URL when available.
+    """
+    token = (
+        os.environ.get("GH_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("NODE_PAT")
+    )
+    if token:
+        return f"https://x-access-token:{token}@github.com/{repo}.git"
+    return f"https://github.com/{repo}.git"
+
+
 def _publish_platforms(
     platforms: list[tuple[str, str, Path]],  # [(branch, platform, results_dir), ...]
     repo: str,
@@ -48,24 +73,42 @@ def _publish_platforms(
         print(f"Generating HTML report for {branch}/{platform}...")
         generate_html_report(results_dir, repo_name=repo, current_platform=platform)
 
+    remote_url = _git_remote_url(repo)
+    git_env = _git_env()
+
     with tempfile.TemporaryDirectory() as tmp:
         gh_pages_dir = Path(tmp) / "gh-pages"
 
         # Clone existing gh-pages (preserves all other content)
-        clone_result = subprocess.run(
-            ["git", "clone", "--depth=1", "--branch=gh-pages",
-             f"https://github.com/{repo}.git", str(gh_pages_dir)],
-            capture_output=True,
-        )
+        try:
+            clone_result = subprocess.run(
+                ["git", "clone", "--depth=1", "--branch=gh-pages",
+                 remote_url, str(gh_pages_dir)],
+                capture_output=True, text=True, env=git_env,
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"git clone of gh-pages timed out after {_GIT_TIMEOUT_SECONDS}s. "
+                "Check network and credentials.",
+                file=sys.stderr,
+            )
+            return 1
 
         if clone_result.returncode != 0:
-            print("No existing gh-pages branch, creating new one...")
-            gh_pages_dir.mkdir(parents=True)
-            subprocess.run(["git", "init"], cwd=gh_pages_dir, capture_output=True)
-            subprocess.run(
-                ["git", "checkout", "-b", "gh-pages"],
-                cwd=gh_pages_dir, capture_output=True,
-            )
+            stderr = (clone_result.stderr or "").strip()
+            # A missing gh-pages branch is fine; any other failure is fatal.
+            if "Remote branch gh-pages not found" in stderr or "couldn't find remote ref" in stderr.lower():
+                print("No existing gh-pages branch, creating new one...")
+                gh_pages_dir.mkdir(parents=True)
+                subprocess.run(["git", "init"], cwd=gh_pages_dir, capture_output=True, env=git_env)
+                subprocess.run(
+                    ["git", "checkout", "-b", "gh-pages"],
+                    cwd=gh_pages_dir, capture_output=True, env=git_env,
+                )
+            else:
+                print(f"git clone failed: {stderr}", file=sys.stderr)
+                return 1
 
         # Replace each platform directory
         branches_touched = set()
@@ -116,16 +159,30 @@ def _publish_platforms(
             cwd=gh_pages_dir, check=True,
         )
 
-        push_result = subprocess.run(
-            ["git", "push", "-f", f"https://github.com/{repo}.git", "gh-pages"],
-            cwd=gh_pages_dir,
-        )
+        try:
+            push_result = subprocess.run(
+                ["git", "push", "-f", remote_url, "gh-pages"],
+                cwd=gh_pages_dir, env=git_env,
+                capture_output=True, text=True,
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"git push timed out after {_GIT_TIMEOUT_SECONDS}s. "
+                "Likely a stuck credential prompt or network stall.",
+                file=sys.stderr,
+            )
+            return 1
 
+        if push_result.stdout:
+            sys.stdout.write(push_result.stdout)
+        if push_result.stderr:
+            sys.stderr.write(push_result.stderr)
         if push_result.returncode != 0:
             print("Push failed. Make sure you have write access to the repo.")
             print("Set up auth with one of:")
-            print("  - GH_TOKEN or GITHUB_TOKEN env var + git credential helper")
-            print("  - git config --global credential.helper store")
+            print("  - GH_TOKEN, GITHUB_TOKEN, or NODE_PAT env var (preferred)")
+            print("  - git config --global credential.helper store + ~/.git-credentials")
             return 1
 
     owner, repo_name = repo.split("/")
