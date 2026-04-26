@@ -205,7 +205,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
             ["robocopy", str(node_path), str(node_mount_src),
              "/MIR", "/XJ", "/R:1", "/W:1",
              "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
-             "/XD", ".venv", "venv", ".git", "__pycache__", ".pytest_cache",
+             "/XD", ".venv", "venv", "__pycache__", ".pytest_cache",
              ".comfy-test", "node_modules"],
             capture_output=True, text=True,
         )
