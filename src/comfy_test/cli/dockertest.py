@@ -413,14 +413,21 @@ def cmd_dockertest(args) -> int:
         return 1
     node_path = work_root / node_name
 
-    # Logs dir — user-provided or a persistent per-run dir under ~/comfy-test-logs/.
+    # Logs dir — base directory bind-mounted into the container as /logs (or C:\logs).
+    # The container's `comfy-test run` creates its own <short_name>-<timestamp>/<branch>/<platform>
+    # subtree under it (see run.py). Don't pre-create a per-run dir here, or the host ends up
+    # with doubled levels like ~/comfy-test-logs/ComfyUI-Foo-HHMM/Foo-HHMM/...
     # NOT work_root/logs: work_root is rmtree'd at the end, which would delete the logs.
     timestamp = datetime.now().strftime("%H%M")
     if args.logs_dir:
         logs_dir = Path(args.logs_dir).resolve()
     else:
-        logs_dir = Path.home() / "comfy-test-logs" / f"{node_name}-{timestamp}"
+        logs_dir = Path.home() / "comfy-test-logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mirror run.py:66/93 so the host can locate this invocation's output.
+    short_name = node_name.removeprefix("ComfyUI-")
+    run_dir = logs_dir / f"{short_name}-{timestamp}"
 
     # Dispatch to platform-specific runner
     if host_platform == "windows":
@@ -434,12 +441,13 @@ def cmd_dockertest(args) -> int:
     # `git config --global --add safe.directory <bind-mount>` before
     # `git rev-parse HEAD`, so commit_hash silently lands as null in
     # results.json. Patch it on the host where we already know the SHA.
-    _patch_null_commit_hash(node_path, logs_dir)
+    # Scope to this run's subtree so we don't stamp this SHA onto sibling runs.
+    _patch_null_commit_hash(node_path, run_dir)
 
     # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
     if not args.keep_clone:
         shutil.rmtree(work_root, ignore_errors=True)
-    print(f"[dockertest] Logs: {logs_dir}")
+    print(f"[dockertest] Logs: {run_dir}")
 
     return rc
 
