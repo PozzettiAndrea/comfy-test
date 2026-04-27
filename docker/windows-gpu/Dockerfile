@@ -2,7 +2,13 @@
 #
 # Build context expects:
 #   - Git-2.53.0-64-bit.exe   (staged from \\192.168.1.19\pxe\scripts\installers\)
-#   - comfy-test-src\          (copy of D:\utils\comfy-test without .venv / .git / __pycache__)
+#   - entrypoint.ps1          (installs comfy-test from PyPI at container start)
+#
+# comfy-test is no longer baked into the image — it's installed at container
+# startup by entrypoint.ps1, so each `comfy-test dockertest` invocation gets
+# the version currently on PyPI without rebuilding the image. Pin to a
+# specific release with `-e COMFY_TEST_VERSION=0.2.46` if reproducibility
+# matters.
 
 FROM comfy-test-windows-gpu:spike
 
@@ -34,10 +40,10 @@ RUN Start-Process -Wait -FilePath C:\install\7z.exe -ArgumentList '/S'; \
 # shutil.copytree fails without this registry flag when moving the extracted tree into the workspace.
 RUN New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
 
-# Install comfy-test as a uv tool (matches how cds test does it on the host)
-COPY comfy-test-src C:\\tools\\comfy-test-src
-RUN $env:PATH += ';C:\Users\ContainerAdministrator\.local\bin;C:\Program Files\Git\cmd'; \
-    uv tool install --no-cache C:\tools\comfy-test-src
+# Install comfy-test from PyPI at container start so the image stays
+# version-agnostic. Optional COMFY_TEST_VERSION env var pins to a specific
+# release; default is latest.
+COPY entrypoint.ps1 C:\\tools\\entrypoint.ps1
 
 # Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=C:\\workspaces \
@@ -49,5 +55,5 @@ RUN New-Item -ItemType Directory -Force -Path C:\workspaces,C:\logs | Out-Null
 # Activate uv tool shims on every entry
 ENV PATH="C:\\Program Files\\Python310\\Scripts;C:\\Program Files\\Python310;C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\bin;C:\\Users\\ContainerAdministrator\\.local\\bin;C:\\Windows\\system32;C:\\Windows"
 
-ENTRYPOINT ["comfy-test"]
+ENTRYPOINT ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\tools\\entrypoint.ps1"]
 CMD ["--help"]

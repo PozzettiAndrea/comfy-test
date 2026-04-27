@@ -6,7 +6,6 @@ param(
     [string]$StageDir      = 'D:\docker-stage\windows-gpu',
     [string]$NvidiaExe     = 'nvidia-driver-581.57.exe',
     [string]$GitExe        = 'Git-2.53.0-64-bit.exe',
-    [string]$ComfyTestSrc  = 'D:\utils\comfy-test',
     [ValidateSet('spike','full')] [string]$Target = 'spike',
     [string]$ImageTag      = ''
 )
@@ -45,12 +44,12 @@ if ($Target -eq 'full') {
         Write-Host "Git installer already staged at $gitDst (skip copy)" -ForegroundColor Green
     }
 
-    # Stage comfy-test source (exclude .venv, .git, __pycache__, dist, build, node_modules)
-    $srcDst = Join-Path $StageDir 'comfy-test-src'
-    Write-Host "Staging $ComfyTestSrc -> $srcDst (excluding venv/git/cache)" -ForegroundColor Cyan
-    if (Test-Path $srcDst) { Remove-Item -Recurse -Force $srcDst }
-    $excludes = @('.venv','venv','.git','__pycache__','.pytest_cache','dist','build','node_modules','.comfy-test','logs','workspaces')
-    robocopy $ComfyTestSrc $srcDst /E /NFL /NDL /NJH /NJS /NP /XD @excludes | Out-Null
+    # comfy-test is no longer baked into the image — it's installed from PyPI
+    # at container start by entrypoint.ps1 (copied into the build context below).
+    $entrypointSrc = Join-Path $PSScriptRoot 'entrypoint.ps1'
+    $entrypointDst = Join-Path $StageDir 'entrypoint.ps1'
+    Copy-Item -Force -Path $entrypointSrc -Destination $entrypointDst
+    Write-Host "Staged entrypoint.ps1 -> $entrypointDst" -ForegroundColor Cyan
 }
 
 # Copy relevant Dockerfile into the staging dir
