@@ -94,7 +94,11 @@ def cmd_run(args) -> int:
         branch = getattr(args, 'branch', None)
         gpu = args.gpu or os.environ.get("COMFY_TEST_GPU") == "1"
         gpu_suffix = "gpu" if gpu else "cpu"
-        platform_dir = f"{platform}-{gpu_suffix}"
+        # External naming uses hyphens (gh-pages URLs, CI workflow inputs, artifact
+        # names). The internal `platform` string is `windows_portable` for valid Python
+        # identifier purposes; normalize the on-disk dir name to hyphens so e.g.
+        # findstr/grep expressions in CI publish steps match without renaming.
+        platform_dir = f"{platform.replace('_', '-')}-{gpu_suffix}"
         if branch:
             output_dir = logs_dir / run_id / branch / platform_dir
         else:
