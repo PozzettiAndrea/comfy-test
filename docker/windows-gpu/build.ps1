@@ -23,14 +23,18 @@ if (-not $ImageTag) { $ImageTag = "comfy-test-windows-gpu:$Target" }
 
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-# Always stage the NVIDIA installer (both targets inherit from it via the spike image)
-$nvSrc = Join-Path $SmbInstallers $NvidiaExe
-$nvDst = Join-Path $StageDir $NvidiaExe
-if (-not (Test-Path $nvDst)) {
-    Write-Host "Copying $NvidiaExe from SMB staging -> $StageDir" -ForegroundColor Cyan
-    Copy-Item -Path $nvSrc -Destination $nvDst
-} else {
-    Write-Host "NVIDIA installer already staged at $nvDst (skip copy)" -ForegroundColor Green
+if ($Target -eq 'spike') {
+    # Only the spike Dockerfile installs the NVIDIA driver; the full image
+    # inherits CUDA via FROM comfy-test-windows-gpu:spike and never references
+    # the .exe directly.
+    $nvSrc = Join-Path $SmbInstallers $NvidiaExe
+    $nvDst = Join-Path $StageDir $NvidiaExe
+    if (-not (Test-Path $nvDst)) {
+        Write-Host "Copying $NvidiaExe from SMB staging -> $StageDir" -ForegroundColor Cyan
+        Copy-Item -Path $nvSrc -Destination $nvDst
+    } else {
+        Write-Host "NVIDIA installer already staged at $nvDst (skip copy)" -ForegroundColor Green
+    }
 }
 
 if ($Target -eq 'full') {

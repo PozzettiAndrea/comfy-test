@@ -55,5 +55,8 @@ RUN New-Item -ItemType Directory -Force -Path C:\workspaces,C:\logs | Out-Null
 # Activate uv tool shims on every entry
 ENV PATH="C:\\Program Files\\Python310\\Scripts;C:\\Program Files\\Python310;C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\bin;C:\\Users\\ContainerAdministrator\\.local\\bin;C:\\Windows\\system32;C:\\Windows"
 
-ENTRYPOINT ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\tools\\entrypoint.ps1"]
+# Use a fully-qualified powershell path: the ENV PATH below doesn't include
+# C:\Windows\System32\WindowsPowerShell\v1.0, so bare ["powershell", ...] would
+# fail at container start with hcs::CreateProcess 0x2 (file not found).
+ENTRYPOINT ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\tools\\entrypoint.ps1"]
 CMD ["--help"]

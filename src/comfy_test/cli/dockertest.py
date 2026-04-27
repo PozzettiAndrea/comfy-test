@@ -238,6 +238,14 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         "-v", f"{node_mount_src}:{container_node_path}",
         "-v", f"{logs_mount_src}:C:\\logs",
     ]
+    # Project nvidia-smi.exe from the host. With Windows GPU paravirtualization
+    # (--device class/{GUID}), CUDA libraries work inside the container but
+    # nvidia-smi.exe is NOT injected — comfy-env's `has_nvidia_gpu()` probes via
+    # `nvidia-smi -L` and would otherwise return False, causing comfy-env to
+    # treat the runner as CPU-only and pin a CPU torch index.
+    host_smi = Path("C:\\Windows\\System32\\nvidia-smi.exe")
+    if host_smi.exists():
+        docker_cmd += ["-v", f"{host_smi}:C:\\Windows\\System32\\nvidia-smi.exe"]
     if workspace_mount_src is not None:
         docker_cmd += ["-v", f"{workspace_mount_src}:C:\\workspaces"]
     if env_cache_mount_src is not None:
