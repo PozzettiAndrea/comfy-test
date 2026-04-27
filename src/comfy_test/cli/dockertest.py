@@ -192,13 +192,21 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         DOCKER_STAGE_ROOT.mkdir(parents=True, exist_ok=True)
         node_mount_src = DOCKER_STAGE_ROOT / "node" / node_name
         logs_mount_src = DOCKER_STAGE_ROOT / "logs"
+        # Stage root persists across runs on self-hosted Windows runners. Wipe
+        # the per-run subtrees before staging so we don't drag a previous
+        # node's results.json into this run's robocopy-back step (which would
+        # then publish the wrong repo's results to gh-pages).
+        shutil.rmtree(logs_mount_src, ignore_errors=True)
+        shutil.rmtree(node_mount_src, ignore_errors=True)
         logs_mount_src.mkdir(parents=True, exist_ok=True)
         node_mount_src.parent.mkdir(parents=True, exist_ok=True)
         if workspace_dir is not None:
             workspace_mount_src = DOCKER_STAGE_ROOT / "workspace"
+            shutil.rmtree(workspace_mount_src, ignore_errors=True)
             workspace_mount_src.mkdir(parents=True, exist_ok=True)
         if env_cache_dir is not None:
             env_cache_mount_src = DOCKER_STAGE_ROOT / "env_cache"
+            # NOT wiped — env cache is the whole point of caching across runs.
             env_cache_mount_src.mkdir(parents=True, exist_ok=True)
         print(f"[dockertest] Dev Drive filters not attached; staging to {DOCKER_STAGE_ROOT}")
         rc = subprocess.run(
