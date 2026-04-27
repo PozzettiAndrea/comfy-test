@@ -1,6 +1,5 @@
 """INSTALL level - Setup ComfyUI and install custom node."""
 
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -49,7 +48,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If setup fails
     """
-    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
+    ctx.log(f"\n[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     platform = get_platform(ctx.platform_name, ctx.log)
 
     # Determine work directory
@@ -74,15 +73,25 @@ def run(ctx: LevelContext) -> LevelContext:
         "ComfyUI-validate-endpoint"
     )
 
-    # Get CUDA packages to mock from comfy-env.toml
-    cuda_packages = get_cuda_packages(ctx.node_dir)
-    gpu_mode = os.environ.get("COMFY_TEST_GPU")
-    ctx.log(f"COMFY_TEST_GPU env var = {gpu_mode!r}")
-    if gpu_mode:
-        ctx.log("GPU mode: using real CUDA (no mocking)")
-        cuda_packages = []
-    elif cuda_packages:
-        ctx.log(f"Found CUDA packages to mock: {', '.join(cuda_packages)}")
+    # Get CUDA packages from comfy-env.toml. Whether we mock them depends on
+    # whether the per-node pixi env actually has them installed — not on the
+    # `--gpu` flag. comfy-env now inlines cuda-wheel URLs into pixi.toml when a
+    # GPU is detected and a combo resolves, so on those runs the wheels live
+    # in `<comfyui>/.ce/.pixi/envs/<env>/Lib/site-packages/<pkg>/`. On no-GPU
+    # hosts the cuda-wheels resolution is skipped, the wheels aren't installed,
+    # and we still need to mock them so `import flash_attn` doesn't crash node
+    # code at import time.
+    declared_cuda_packages = get_cuda_packages(ctx.node_dir)
+    cuda_packages = [
+        pkg for pkg in declared_cuda_packages
+        if not _cuda_wheel_present(paths.comfyui_dir, pkg)
+    ]
+    if declared_cuda_packages:
+        installed = [p for p in declared_cuda_packages if p not in cuda_packages]
+        if installed:
+            ctx.log(f"CUDA packages installed (no mock): {', '.join(installed)}")
+        if cuda_packages:
+            ctx.log(f"CUDA packages absent (will mock): {', '.join(cuda_packages)}")
 
     # Get env_vars from comfy-env.toml
     env_vars = get_env_vars(ctx.node_dir)
@@ -119,7 +128,7 @@ def _setup_existing_with_install(
         custom_nodes_dir=comfyui_path / "custom_nodes",
     )
 
-    ctx.log("Installing custom node...")
+    ctx.log("\nInstalling custom node...")
     platform.install_node(paths, ctx.node_dir, deps_installed=ctx.deps_installed)
 
     _install_node_dependencies(ctx, platform, paths)
@@ -133,15 +142,53 @@ def _setup_full(
     work_path: Path,
 ) -> TestPaths:
     """Full setup: clone ComfyUI and install node."""
-    ctx.log("Setting up ComfyUI...")
+    ctx.log("\nSetting up ComfyUI...")
     paths = platform.setup_comfyui(ctx.config, work_path)
 
-    ctx.log("Installing custom node...")
+    ctx.log("\nInstalling custom node...")
     platform.install_node(paths, ctx.node_dir, deps_installed=ctx.deps_installed)
 
     _install_node_dependencies(ctx, platform, paths)
 
     return paths
+
+
+def _cuda_wheel_present(comfyui_dir: Path, pkg: str) -> bool:
+    """True iff `pkg` is installed in any of the workspace's per-node pixi envs.
+
+    Looks under `<comfyui_dir>/.ce/.pixi/envs/*/Lib/site-packages/` (Windows)
+    and the equivalent `lib/python*/site-packages/` (Linux/macOS). Tolerates
+    both `pkg/` (package dir) and `pkg.dist-info/` (metadata-only) layouts.
+    Underscores and hyphens are normalized — e.g. `flash-attn` and `flash_attn`
+    both match a `flash_attn/` site-packages dir.
+    """
+    if not comfyui_dir:
+        return False
+    envs_dir = Path(comfyui_dir) / ".ce" / ".pixi" / "envs"
+    if not envs_dir.is_dir():
+        return False
+
+    norm = pkg.replace("-", "_").lower()
+    candidate_names = {norm, pkg.replace("_", "-").lower()}
+
+    for env_dir in envs_dir.iterdir():
+        if not env_dir.is_dir():
+            continue
+        site_packages_candidates = [
+            env_dir / "Lib" / "site-packages",                 # Windows pixi env
+        ] + list((env_dir / "lib").glob("python*/site-packages"))  # POSIX pixi env
+        for sp in site_packages_candidates:
+            if not sp.is_dir():
+                continue
+            for entry in sp.iterdir():
+                name = entry.name.lower().split("-")[0]
+                if name in candidate_names:
+                    return True
+                if entry.name.lower().endswith(".dist-info"):
+                    base = entry.name.rsplit("-", 1)[0].lower()
+                    if base.replace("-", "_") in candidate_names:
+                        return True
+    return False
 
 
 def _find_python(platform_name: str, comfyui_path: Path) -> Path:

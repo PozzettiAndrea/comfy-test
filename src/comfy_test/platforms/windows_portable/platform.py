@@ -325,13 +325,14 @@ class WindowsPortablePlatform(TestPlatform):
         # Run install.py if present
         install_py = target_dir / "install.py"
         if install_py.exists():
-            self._log("Running install.py...")
+            self._log("\nRunning install.py...")
             install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
             result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
                 env=install_env,
                 check=False,
+                verbose=True,  # install.py prints structured progress; stream live
             )
             if result.returncode != 0:
                 self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")

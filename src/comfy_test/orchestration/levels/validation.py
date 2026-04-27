@@ -25,7 +25,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If any workflow fails validation
     """
-    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
+    ctx.log(f"\n[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     workflows = ctx.config.workflow.workflows
 
     if not workflows:

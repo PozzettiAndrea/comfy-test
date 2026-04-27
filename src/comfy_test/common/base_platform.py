@@ -159,27 +159,44 @@ class TestPlatform(ABC):
         cwd: Optional[Path] = None,
         env: Optional[dict] = None,
         check: bool = True,
+        verbose: Optional[bool] = None,
     ) -> subprocess.CompletedProcess:
         """
         Run a command with logging.
+
+        By default, the subprocess's stdout is captured silently; only the
+        `Running: …` header and any error output (on non-zero exit) are
+        logged. Set `COMFY_TEST_VERBOSE=1` (or `COMFY_ENV_DEBUG=1`) in the
+        environment, or pass `verbose=True` per-call, to stream every stdout
+        line live — useful for `install.py` runs (which print structured
+        progress) and for debugging slow pip installs.
 
         Args:
             cmd: Command and arguments
             cwd: Working directory
             env: Environment variables
             check: Raise on non-zero exit
+            verbose: If True, stream stdout live regardless of env vars.
+                If False, suppress streaming even if env vars are set.
+                If None (default), follow env vars.
 
         Returns:
             CompletedProcess result
         """
+        import os
+
         self._log(f"Running: {' '.join(str(c) for c in cmd)}")
 
-        import os
         run_env = os.environ.copy()
         if env:
             run_env.update(env)
 
-        # Stream stdout line-by-line so users see progress live
+        if verbose is None:
+            verbose = (
+                os.environ.get("COMFY_TEST_VERBOSE", "").lower() in ("1", "true", "yes")
+                or os.environ.get("COMFY_ENV_DEBUG", "").lower() in ("1", "true", "yes")
+            )
+
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         proc = subprocess.Popen(
@@ -205,7 +222,8 @@ class TestPlatform(ABC):
         for line in proc.stdout:
             line_text = line.rstrip("\n")
             stdout_lines.append(line_text)
-            self._log(f"  {line_text}")
+            if verbose:
+                self._log(f"  {line_text}")
 
         proc.wait()
         stderr_thread.join(timeout=5)
@@ -214,7 +232,11 @@ class TestPlatform(ABC):
         stderr_text = "".join(stderr_lines)
 
         if proc.returncode != 0 and check:
+            # On failure, dump everything we captured so the actual error is
+            # visible even when we suppressed live streaming.
             self._log(f"Command failed with code {proc.returncode}")
+            if not verbose and stdout_text:
+                self._log(f"stdout: {stdout_text}")
             if stderr_text:
                 self._log(f"stderr: {stderr_text}")
             raise subprocess.CalledProcessError(

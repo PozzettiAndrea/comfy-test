@@ -69,7 +69,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         WorkflowExecutionError: If any workflow fails
     """
-    ctx.log(f"[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
+    ctx.log(f"\n[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
     # Set up server connection if not already done (e.g., when skipping registration)
     if ctx.server is None:
         from ...comfyui.server import ComfyUIServer, ExternalComfyUIServer
