@@ -11,11 +11,15 @@ on:
         description: "branch of the node to test (default: caller ref)"
         type: string
         default: ""
+      runs_on:
+        description: "Runner image (e.g. macos-latest, macos-13, macos-14-large)"
+        type: string
+        default: "macos-latest"
 
 jobs:
   macos-test:
     name: macos-test
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runs_on }}
     timeout-minutes: 300
     env:
       PYTHONUNBUFFERED: "1"
