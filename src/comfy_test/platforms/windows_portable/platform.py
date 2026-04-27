@@ -3,8 +3,36 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
+
+
+def _copy_tree_long_path(src: Path, dst: Path) -> None:
+    """Long-path-safe directory copy.
+
+    On Windows, ComfyUI portable's pytorch + transformers trees include paths
+    longer than 260 chars (e.g. cuda mem_eff_attention iterators headers).
+    `shutil.copytree` walks via stat()/listdir which can ENOENT on the source
+    side without `\\?\` prefixing. robocopy is long-path-aware natively and
+    is the recommended tool here. Fall back to a `\\?\`-prefixed copytree on
+    non-Windows hosts (where MAX_PATH doesn't apply).
+    """
+    if sys.platform == "win32":
+        # robocopy exit codes 0-7 are success/info; >=8 is real failure.
+        rc = subprocess.run(
+            ["robocopy", str(src), str(dst),
+             "/E", "/COPY:DAT", "/R:1", "/W:1",
+             "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/MT:8"],
+            capture_output=True, text=True,
+        )
+        if rc.returncode >= 8:
+            raise SetupError(
+                f"robocopy {src} -> {dst} failed (exit {rc.returncode})",
+                f"stdout: {rc.stdout}\nstderr: {rc.stderr}",
+            )
+        return
+    shutil.copytree(src, dst)
 
 from ...common.base_platform import TestPlatform, TestPaths
 from ...common.errors import DownloadError, SetupError
@@ -193,7 +221,7 @@ class WindowsPortablePlatform(TestPlatform):
                 stderr=subprocess.DEVNULL,
             )
         self._log(f"Copying from cache to: {portable_work_dir}")
-        shutil.copytree(cached_extract_dir, portable_work_dir)
+        _copy_tree_long_path(cached_extract_dir, portable_work_dir)
         extract_dir = portable_work_dir
 
         # Find ComfyUI directory

@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -100,23 +101,41 @@ def find_7z_executable() -> Optional[str]:
 
 
 def extract_7z(archive: Path, dest: Path, log: Callable[[str], None]) -> None:
-    """Extract 7z archive using 7z CLI or py7zr."""
+    """Extract 7z archive using 7z CLI or py7zr.
+
+    Windows long-path note: ComfyUI portable contains pytorch headers and
+    transformers __pycache__ trees with paths > 260 chars. 7z silently emits
+    "Cannot create file" warnings (returncode still 0) when MAX_PATH is hit
+    unless the dest is given as a `\\?\`-prefixed absolute path. We prefix the
+    dest and treat any per-file warnings as a hard failure.
+    """
     log(f"Extracting {archive.name}...")
 
     seven_z = find_7z_executable()
     if seven_z:
         dest.mkdir(parents=True, exist_ok=True)
         log(f"Using 7z: {seven_z}")
+        if sys.platform == "win32":
+            abs_dest = str(dest.resolve())
+            long_dest = abs_dest if abs_dest.startswith("\\\\?\\") else "\\\\?\\" + abs_dest
+        else:
+            long_dest = str(dest)
         result = subprocess.run(
-            [seven_z, "x", str(archive), f"-o{dest}", "-y"],
+            [seven_z, "x", str(archive), f"-o{long_dest}", "-y"],
             capture_output=True,
             text=True,
         )
-        if result.returncode == 0:
+        warn_lines = [
+            ln for ln in (result.stdout or "").splitlines()
+            if "Cannot create file" in ln or "WARNING" in ln.upper()
+        ]
+        if result.returncode == 0 and not warn_lines:
             log(f"Extracted to {dest}")
             return
-        else:
-            log(f"7z failed: {result.stderr}")
+        log(
+            f"7z failed (rc={result.returncode}, warnings={len(warn_lines)}): "
+            f"{result.stderr or warn_lines[:5]}"
+        )
 
     # Fallback to py7zr
     try:
