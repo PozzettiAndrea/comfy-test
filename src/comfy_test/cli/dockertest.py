@@ -312,7 +312,7 @@ def _run_linux(args, docker_exe: str, gpu: bool,
     if args.workflow:
         ct_args.extend(["--workflow", args.workflow])
 
-    container_node_path = f"/node"
+    container_node_path = f"/node/{node_name}"
     docker_cmd = [
         docker_exe, "run", "--rm",
         "--gpus", "all",

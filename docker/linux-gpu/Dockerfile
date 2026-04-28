@@ -2,8 +2,11 @@
 # NVIDIA Container Toolkit on the host injects the driver at runtime,
 # so no driver matching or spike stage is needed.
 #
-# Build context expects:
-#   - comfy-test-src/   (copy of utils/comfy-test without .venv / .git / __pycache__)
+# comfy-test is NOT baked into the image — it's installed from PyPI
+# at container start by entrypoint.sh, so each `comfy-test dockertest`
+# invocation gets the version currently on PyPI without rebuilding the
+# image. Pin to a specific release with `-e COMFY_TEST_VERSION=0.3.5`
+# if reproducibility matters.
 
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
@@ -30,12 +33,6 @@ ENV PATH="/root/.local/bin:$PATH"
 # Python 3.10 via uv (matches the Windows image)
 RUN uv python install 3.10
 
-# Install comfy-test as a uv tool (same pattern as the Windows image).
-# PyTorch is NOT pre-installed — comfy-test's INSTALL level handles it
-# inside a fresh venv each run, picking CPU or CUDA wheels as needed.
-COPY comfy-test-src /tools/comfy-test-src
-RUN uv tool install --no-cache --python 3.10 /tools/comfy-test-src
-
 # Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
     COMFY_TEST_LOGS_DIR=/logs \
@@ -46,5 +43,9 @@ RUN git config --global --add safe.directory '*'
 
 RUN mkdir -p /workspaces /logs
 
-ENTRYPOINT ["comfy-test"]
+# Install comfy-test from PyPI at container start (same pattern as Windows image)
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--help"]
