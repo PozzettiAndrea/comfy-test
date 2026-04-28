@@ -289,37 +289,24 @@ def ensure_dependencies(
     log("Installing screenshot dependencies (playwright, pillow)...")
 
     try:
-        # Try installing into the running process's environment first
+        # Install into the running interpreter so imports work without cross-env hacks.
+        # Try uv first, then pip. Use --break-system-packages since comfy-test is a
+        # CI tool and needs to install deps into whatever Python is running it.
         python = sys.executable
-        result = subprocess.run(
-            ["uv", "pip", "install", "--python", python, "playwright", "pillow"],
-            capture_output=True,
-            text=True,
-        )
+        packages = ["playwright", "pillow", "greenlet"]
 
+        result = subprocess.run(
+            ["uv", "pip", "install", "--python", python, "--break-system-packages"] + packages,
+            capture_output=True, text=True,
+        )
         if result.returncode != 0:
-            # Current env not writable (e.g. system Python). Fall back to workspace venv.
-            if python_path and str(python_path) != python:
-                log(f"  Current env not writable, installing into workspace venv...")
-                python = str(python_path)
-                result = subprocess.run(
-                    ["uv", "pip", "install", "--python", python, "playwright", "pillow"],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    log(f"  Failed to install packages: {result.stderr}")
-                    return False
-                # Add workspace venv site-packages to sys.path so we can import
-                sp_result = subprocess.run(
-                    [python, "-c", "import site; print(site.getsitepackages()[0])"],
-                    capture_output=True, text=True,
-                )
-                if sp_result.returncode == 0:
-                    site_pkg = sp_result.stdout.strip()
-                    if site_pkg not in sys.path:
-                        sys.path.insert(0, site_pkg)
-            else:
+            # uv failed — try pip directly
+            log(f"  uv install failed, trying pip...")
+            result = subprocess.run(
+                [python, "-m", "pip", "install", "--break-system-packages"] + packages,
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
                 log(f"  Failed to install packages: {result.stderr}")
                 return False
 
@@ -337,18 +324,27 @@ def ensure_dependencies(
 
         log("  Screenshot dependencies installed successfully")
 
+        # Invalidate import caches so Python can find newly installed packages
+        import importlib
+        importlib.invalidate_caches()
+
         # Update availability flags and import globals
         try:
-            from playwright.sync_api import sync_playwright, Page, Browser
+            from playwright.sync_api import sync_playwright as _sp, Page as _P, Browser as _B
+            sync_playwright = _sp
+            Page = _P
+            Browser = _B
             PLAYWRIGHT_AVAILABLE = True
-        except ImportError:
-            pass
+        except ImportError as e:
+            log(f"  WARNING: playwright installed but import failed: {e}")
 
         try:
-            from PIL import Image, PngImagePlugin
+            from PIL import Image as _Img, PngImagePlugin as _Png
+            Image = _Img
+            PngImagePlugin = _Png
             PIL_AVAILABLE = True
-        except ImportError:
-            pass
+        except ImportError as e:
+            log(f"  WARNING: pillow installed but import failed: {e}")
 
         return PLAYWRIGHT_AVAILABLE and PIL_AVAILABLE
 
