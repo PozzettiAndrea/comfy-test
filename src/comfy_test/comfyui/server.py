@@ -152,7 +152,7 @@ class ComfyUIServer:
         if not self._process:
             return
 
-        def read_stream(stream):
+        def read_stream(stream, name):
             """Read from a stream and log each line."""
             try:
                 for line in iter(stream.readline, ''):
@@ -162,12 +162,12 @@ class ComfyUIServer:
                         line_text = line.rstrip()
                         self._output_lines.append(line_text)
                         self._log_all(f"  [ComfyUI] {line_text}")
-            except Exception:
-                pass  # Stream closed
+            except Exception as exc:
+                self._log_all(f"  [ComfyUI:{name}] reader thread died: {exc!r}")
 
         # Start separate threads for stdout and stderr
-        stdout_thread = threading.Thread(target=read_stream, args=(self._process.stdout,), daemon=True)
-        stderr_thread = threading.Thread(target=read_stream, args=(self._process.stderr,), daemon=True)
+        stdout_thread = threading.Thread(target=read_stream, args=(self._process.stdout, "stdout"), daemon=True)
+        stderr_thread = threading.Thread(target=read_stream, args=(self._process.stderr, "stderr"), daemon=True)
         stdout_thread.start()
         stderr_thread.start()
 
