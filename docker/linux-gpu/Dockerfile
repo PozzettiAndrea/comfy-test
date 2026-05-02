@@ -23,7 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnspr4 libnss3 libnss3-tools libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
     libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
-    libatspi2.0-0 libxfixes3 && \
+    libatspi2.0-0 libxfixes3 \
+    libegl1 libgl1 libgles2 && \
     rm -rf /var/lib/apt/lists/*
 
 # uv
