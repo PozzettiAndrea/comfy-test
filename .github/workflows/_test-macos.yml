@@ -69,7 +69,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-macos
+          key: setup-macos-pw1.39
 
       # --- Setup (skip if cache hit) ---
       - name: Create venv and install uv
@@ -106,7 +106,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-macos
+          key: setup-macos-pw1.39
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
