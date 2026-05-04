@@ -89,7 +89,12 @@ jobs:
       - name: Install Playwright
         if: steps.setup-cache.outputs.cache-hit != 'true'
         run: |
-          $VENV/bin/uv pip install playwright
+          # Pin to 1.39.x: v1.40+ ballooned memory ~70%, and v1.57+ swapped
+          # Chromium for "Chrome for Testing" which uses ~20 GB per instance.
+          # On macos-latest's 7 GB RAM, that OOM-kills mid-capture and Node
+          # dies with `Unexpected end of JSON input` at pipeTransport.js.
+          # Refs: microsoft/playwright#38489, microsoft/playwright#28942
+          $VENV/bin/uv pip install 'playwright>=1.39.0,<1.40'
           $VENV/bin/python -m playwright install chromium
           $VENV/bin/python -m playwright install-deps chromium || true
 
