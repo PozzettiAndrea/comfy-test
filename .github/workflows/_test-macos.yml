@@ -43,23 +43,11 @@ jobs:
             echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
           fi
 
-      # Free ~30-60 GB so the kernel has room to grow swapfile* in /private/var/vm
-      # under memory pressure. macos-latest has only 7 GB RAM and headless
-      # Chromium during long video-capture loops gets OOM-killed without this.
-      - name: Free disk for swap headroom
-        run: |
-          echo "Before:"; df -h /
-          sudo rm -rf /Users/runner/Library/Android 2>/dev/null || true
-          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
-          sudo rm -rf /Users/runner/.dotnet 2>/dev/null || true
-          sudo rm -rf /Users/runner/Library/Caches/CocoaPods 2>/dev/null || true
-          # Keep one Xcode (the symlinked /Applications/Xcode.app); drop versioned ones
-          ls /Applications/ | grep '^Xcode_' | while read x; do sudo rm -rf "/Applications/$x"; done
-          echo "After:"; df -h /
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          # Pinned to 3.12 because Playwright 1.39.x bundles greenlet 3.0,
+          # which uses private `_PyCFrame` APIs removed in CPython 3.13.
+          python-version: "3.12"
 
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
@@ -69,7 +57,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-macos-pw1.39
+          key: setup-macos-pw1.39-py3.12
 
       # --- Setup (skip if cache hit) ---
       - name: Create venv and install uv
@@ -106,7 +94,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-macos-pw1.39
+          key: setup-macos-pw1.39-py3.12
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
