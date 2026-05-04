@@ -43,6 +43,20 @@ jobs:
             echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
           fi
 
+      # Free ~30-60 GB so the kernel has room to grow swapfile* in /private/var/vm
+      # under memory pressure. macos-latest has only 7 GB RAM and headless
+      # Chromium during long video-capture loops gets OOM-killed without this.
+      - name: Free disk for swap headroom
+        run: |
+          echo "Before:"; df -h /
+          sudo rm -rf /Users/runner/Library/Android 2>/dev/null || true
+          sudo rm -rf /Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf /Users/runner/.dotnet 2>/dev/null || true
+          sudo rm -rf /Users/runner/Library/Caches/CocoaPods 2>/dev/null || true
+          # Keep one Xcode (the symlinked /Applications/Xcode.app); drop versioned ones
+          ls /Applications/ | grep '^Xcode_' | while read x; do sudo rm -rf "/Applications/$x"; done
+          echo "After:"; df -h /
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
