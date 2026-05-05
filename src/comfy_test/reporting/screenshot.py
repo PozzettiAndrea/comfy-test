@@ -501,7 +501,7 @@ class WorkflowScreenshot:
         )
         self._page = self._browser.new_page(
             viewport={"width": self.width, "height": self.height},
-            device_scale_factor=2,  # HiDPI for crisp screenshots
+            device_scale_factor=1,  # 1x: 4x smaller screenshot payload (Chromium pipe)
         )
         # Increase default timeout for CI environments (macOS/WSL can be slow)
         screenshot_timeout = int(os.environ.get("COMFY_TEST_SCREENSHOT_TIMEOUT", "120000"))
