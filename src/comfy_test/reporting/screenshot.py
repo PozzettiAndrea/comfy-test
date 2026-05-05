@@ -483,6 +483,14 @@ class WorkflowScreenshot:
             else:
                 self._log("  Mesa unavailable — falling back to SwiftShader")
                 chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
+        elif platform.system() == "Darwin":
+            # Apple Silicon macos-latest runners are real M1/M2 hardware with a
+            # working GPU. SwiftShader's WebGL is disabled on ARM (Chromium
+            # docs), so forcing it deadlocks the renderer at 100% CPU until the
+            # GPU process watchdog kills the browser — pipe close, JSON parse
+            # crash in pipeTransport.js. Use Apple's Metal GPU via ANGLE.
+            self._log("  macOS — using Apple Metal GPU via ANGLE")
+            chrome_args = ["--enable-gpu", "--use-angle=metal", "--ignore-gpu-blocklist"]
         else:
             self._log("  No GPU, no Mesa — using SwiftShader software rendering")
             chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
