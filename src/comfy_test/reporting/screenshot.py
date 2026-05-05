@@ -1748,7 +1748,7 @@ class WorkflowScreenshot:
                     ws_disconnected_since = None
 
                 # Debug: log every 50th iteration with a resource snapshot
-                if loop_iter % 10 == 0:
+                if loop_iter % 50 == 0:
                     self._log(
                         f"  [capture-loop] iter={loop_iter} t={elapsed:.1f}s "
                         f"state={state} eval_ms={t_eval*1000:.0f} "
