@@ -1,6 +1,10 @@
 [project]
 name = "comfy-test"
+<<<<<<< HEAD
 version = "0.3.13"
+=======
+version = "0.3.14"
+>>>>>>> 045d4c5 (screenshot: add cross-platform resource snapshot to capture-loop log + bump 0.3.14)
 description = "Installation testing infrastructure for ComfyUI custom nodes"
 readme = "README.md"
 license = {text = "MIT"}

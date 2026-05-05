@@ -9,8 +9,58 @@ import sys
 import tempfile
 import time
 import traceback
+import psutil
 import requests
 from pathlib import Path
+
+
+def _browser_tree_rss_bytes() -> int:
+    """Sum RSS of every chrome/chromium descendant of this process tree.
+
+    Playwright spawns Chromium as a grandchild of the Python interpreter (via
+    a Node driver). Walking children recursively and matching the process name
+    works identically on macOS / Linux / Windows.
+    """
+    total = 0
+    try:
+        me = psutil.Process()
+        for p in me.children(recursive=True):
+            try:
+                name = (p.name() or "").lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if "chrom" in name or "headless_shell" in name:
+                try:
+                    total += p.memory_info().rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    return total
+
+
+def _resource_snapshot() -> str:
+    """One-line cross-platform memory/CPU snapshot for the capture-loop log.
+
+    Reports system RAM (used/total), swap, current-process tree CPU%, and the
+    combined RSS of every chrome/chromium descendant. Identical output on
+    macOS / Linux / Windows.
+    """
+    try:
+        vm = psutil.virtual_memory()
+        sw = psutil.swap_memory()
+        gb = 1024 ** 3
+        parts = [
+            f"ram={vm.used/gb:.1f}/{vm.total/gb:.1f}GB ({vm.percent:.0f}%)",
+            f"swap={sw.used/gb:.1f}/{sw.total/gb:.1f}GB ({sw.percent:.0f}%)",
+            f"cpu={psutil.cpu_percent(interval=None):.0f}%",
+        ]
+        browser_rss = _browser_tree_rss_bytes()
+        if browser_rss:
+            parts.append(f"browser_rss={browser_rss/gb:.2f}GB")
+        return " ".join(parts)
+    except Exception as e:
+        return f"resource-snap-error:{type(e).__name__}"
 from typing import Optional, Callable, List, TYPE_CHECKING
 
 try:
@@ -1689,9 +1739,13 @@ class WorkflowScreenshot:
                         self._log(f"  [capture-loop] WebSocket reconnected after {time.time()-ws_disconnected_since:.1f}s")
                     ws_disconnected_since = None
 
-                # Debug: log every 10th iteration or when something interesting happens
+                # Debug: log every 50th iteration with a resource snapshot
                 if loop_iter % 50 == 0:
-                    self._log(f"  [capture-loop] iter={loop_iter} t={elapsed:.1f}s state={state} eval_ms={t_eval*1000:.0f}")
+                    self._log(
+                        f"  [capture-loop] iter={loop_iter} t={elapsed:.1f}s "
+                        f"state={state} eval_ms={t_eval*1000:.0f} "
+                        f"{_resource_snapshot()}"
+                    )
 
                 # Screenshot on node completion (with freeze to avoid GPU stalls)
                 if state["executedCount"] > last_executed_count:
