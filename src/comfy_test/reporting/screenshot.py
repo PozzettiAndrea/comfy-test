@@ -1578,6 +1578,9 @@ class WorkflowScreenshot:
             last_hash = h
             jpg_path = output_dir / f"frame_{frame_num:03d}.jpg"
             img = Image.open(io.BytesIO(screenshot_bytes))
+            # PNG screenshots open as RGBA; JPEG requires RGB.
+            if img.mode != "RGB":
+                img = img.convert("RGB")
             img.save(jpg_path, "JPEG", quality=webp_quality)
             img.close()
             frame_paths.append(jpg_path)
@@ -1957,6 +1960,8 @@ class WorkflowScreenshot:
                     # Also save as final frame in video folder
                     final_frame_path = output_dir / f"frame_{frame_num:03d}.jpg"
                     img = Image.open(final_screenshot_path)
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
                     img.save(final_frame_path, "JPEG", quality=webp_quality)
                     img.close()
                     frame_paths.append(final_frame_path)
