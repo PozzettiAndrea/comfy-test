@@ -37,7 +37,8 @@ RUN uv python install 3.10
 # Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
     COMFY_TEST_LOGS_DIR=/logs \
-    COMFY_TEST_GPU=1
+    COMFY_TEST_GPU=1 \
+    NVIDIA_DRIVER_CAPABILITIES=all
 
 # Trust bind-mounted repos (different ownership in container vs host)
 RUN git config --global --add safe.directory '*'
