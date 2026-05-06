@@ -14,7 +14,7 @@ on:
       runs_on:
         description: "Runner image (e.g. macos-latest, macos-13, macos-14-large)"
         type: string
-        default: "macos-latest-large"
+        default: "macos-latest"
 
 jobs:
   macos-test:
