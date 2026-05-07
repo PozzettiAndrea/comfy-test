@@ -1,0 +1,160 @@
+name: Test Windows Desktop (GPU)
+
+on:
+  workflow_call:
+    inputs:
+      node_repo:
+        description: "owner/repo of the node to test"
+        type: string
+        required: true
+      node_branch:
+        type: string
+        default: "main"
+      runs_on:
+        type: string
+        default: '["self-hosted", "windows", "gpu"]'
+
+jobs:
+  windows-desktop-gpu-test:
+    name: windows-desktop-gpu-test
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      COMFY_TEST_GPU: "1"
+    steps:
+
+      # --- Download and install desktop app ---
+      - name: Download ComfyUI Desktop
+        shell: pwsh
+        run: |
+          $installer = "${{ github.workspace }}\ComfyUI-Setup.exe"
+          Invoke-WebRequest -Uri "https://download.comfy.org/windows/nsis/x64" -OutFile $installer -UseBasicParsing
+          Start-Process -Wait -FilePath $installer -ArgumentList '/S'
+          $appPath = "$env:LOCALAPPDATA\Programs\ComfyUI"
+          if (Test-Path "$appPath\ComfyUI.exe") {
+            Write-Host "Desktop app installed at $appPath"
+          } else {
+            Write-Error "Desktop app not found at $appPath"
+            exit 1
+          }
+
+      # --- Pre-seed config to skip setup wizard ---
+      - name: Pre-seed desktop config
+        shell: pwsh
+        run: |
+          $configDir = "$env:APPDATA\ComfyUI"
+          $userData = "$env:USERPROFILE\Documents\ComfyUI"
+          $appPath = "$env:LOCALAPPDATA\Programs\ComfyUI"
+
+          New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+          New-Item -ItemType Directory -Force -Path "$userData\custom_nodes" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$userData\input" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$userData\output" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$userData\user" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$userData\models" | Out-Null
+
+          @"
+          {
+            "basePath": "$($userData -replace '\\', '\\')",
+            "installState": "installed",
+            "selectedDevice": "cuda"
+          }
+          "@ | Set-Content "$configDir\config.json" -Encoding UTF8
+
+          @"
+          comfyui_desktop:
+            is_default: 'true'
+            base_path: $userData
+            custom_nodes: custom_nodes/
+            download_model_base: models
+          desktop_extensions:
+            custom_nodes: $appPath\resources\ComfyUI\custom_nodes
+          "@ | Set-Content "$configDir\extra_models_config.yaml" -Encoding UTF8
+
+      # --- First boot: app creates venv + installs Python/torch ---
+      - name: First boot (venv setup)
+        shell: bash
+        run: |
+          APP="$LOCALAPPDATA/Programs/ComfyUI/ComfyUI.exe"
+          "$APP" &
+          echo "Waiting for app to create venv and start server (up to 10 min)..."
+          for i in $(seq 1 600); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "Still waiting... ${i}s"
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/system_stats || {
+            echo "Server failed to start"
+            cat "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -50
+            exit 1
+          }
+
+      # --- Install node via ComfyUI Manager CLI ---
+      - name: Install custom node via Manager
+        shell: bash
+        run: |
+          VENV="$USERPROFILE/Documents/ComfyUI/.venv/Scripts/python.exe"
+          echo "Using Python: $VENV"
+          "$VENV" --version
+          "$VENV" -m comfyui_manager.cm_cli install \
+            "https://github.com/${{ inputs.node_repo }}.git"
+
+      # --- Restart app for node to load ---
+      - name: Restart app
+        shell: bash
+        run: |
+          taskkill //F //IM ComfyUI.exe 2>/dev/null || true
+          sleep 5
+          APP="$LOCALAPPDATA/Programs/ComfyUI/ComfyUI.exe"
+          "$APP" &
+          echo "Waiting for server after restart..."
+          for i in $(seq 1 180); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after restart (${i}s)"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/system_stats || {
+            echo "Server failed to start after restart"
+            cat "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -50
+            exit 1
+          }
+
+      # --- Install comfy-test and run ---
+      - name: Install comfy-test
+        run: pip install comfy-test
+
+      - name: Run tests
+        shell: bash
+        run: |
+          git clone --depth 1 -b ${{ inputs.node_branch }} \
+            "https://github.com/${{ inputs.node_repo }}.git" node_source
+          cd node_source
+          python -m comfy_test run --server-url http://127.0.0.1:8000 --gpu
+
+      # --- Cleanup ---
+      - name: Stop app
+        if: always()
+        shell: bash
+        run: taskkill //F //IM ComfyUI.exe 2>/dev/null || true
+
+      - name: Collect logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p test-logs
+          cp "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" test-logs/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-windows-desktop-gpu
+          path: test-logs/
+          if-no-files-found: ignore
