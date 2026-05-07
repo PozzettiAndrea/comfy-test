@@ -90,27 +90,188 @@ jobs:
           ) &
           echo "SCREENCAP_PID=$!" >> $GITHUB_ENV
 
-      # --- First boot: app creates venv + installs Python/torch ---
-      - name: First boot (venv setup)
+      # --- First boot: launch app + drive maintenance UI via CDP if needed ---
+      # Same idea as windows-desktop: attach Playwright via CDP, click through
+      # the Maintenance page (Recreate → wait → Continue), capture renderer
+      # frames at 5fps, ffmpeg-assemble into driver.mp4.
+      - name: First boot (CDP-driven)
         run: |
-          open "${{ github.workspace }}/ComfyUI.app"
-          echo "Waiting for app to create venv and start server (up to 10 min)..."
-          for i in $(seq 1 600); do
+          OUT="$COMFY_TEST_LOGS_DIR/electron_inspect"
+          mkdir -p "$OUT/frames"
+
+          cat > /tmp/cdp_driver.py <<'PY'
+          import json, os, subprocess, sys, time, urllib.request
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          OUT = Path(os.environ['COMFY_TEST_LOGS_DIR']) / 'electron_inspect'
+          FRAMES = OUT / 'frames'
+          OUT.mkdir(parents=True, exist_ok=True)
+          FRAMES.mkdir(parents=True, exist_ok=True)
+          fi = [0]
+
+          def snap(page, name):
+              try:
+                  page.screenshot(path=str(OUT / f'{name}.png'), full_page=True)
+                  (OUT / f'{name}.html').write_text(page.content(), encoding='utf-8')
+              except Exception as e:
+                  print(f'  snap {name}: {e}')
+
+          def frame(page):
+              try:
+                  fi[0] += 1
+                  page.screenshot(path=str(FRAMES / f'frame_{fi[0]:06d}.png'))
+              except Exception:
+                  pass
+
+          def sleep_capturing(page, seconds, fps=5):
+              interval = 1.0 / fps
+              end = time.time() + seconds
+              while time.time() < end:
+                  frame(page)
+                  time.sleep(interval)
+
+          def buttons(page):
+              try:
+                  return page.eval_on_selector_all(
+                      'button, a[role=button], [role=button], input[type=submit], input[type=button]',
+                      "els => els.map(e => ({text:(e.innerText||e.value||'').trim(), tag:e.tagName, id:e.id, cls:e.className, disabled:!!(e.disabled||e.getAttribute('aria-disabled')==='true'||e.getAttribute('disabled')!==null)}))"
+                  )
+              except Exception:
+                  return []
+
+          def main_page(browser):
+              cands = []
+              for ctx in browser.contexts:
+                  for pg in ctx.pages:
+                      try:
+                          u = pg.url or ''
+                          if u.startswith('devtools://'):
+                              continue
+                          t = pg.title()
+                      except Exception:
+                          continue
+                      cands.append((pg, u, t))
+              for pg, u, t in cands:
+                  if any(k in (t or '') for k in ('ComfyUI', 'Maintenance')) or 'maintenance' in (u or '').lower():
+                      return pg
+              return cands[0][0] if cands else None
+
+          try:
+              tg = json.loads(urllib.request.urlopen('http://localhost:9222/json').read())
+              (OUT / 'targets.json').write_text(json.dumps(tg, indent=2))
+              print(f'CDP targets: {len(tg)}')
+              for t in tg:
+                  print(f"  {t.get('type')}: {t.get('url')} | {t.get('title')}")
+          except Exception as e:
+              print(f'targets list: {e}')
+
+          with sync_playwright() as p:
+              browser = p.chromium.connect_over_cdp('http://localhost:9222')
+              page = main_page(browser)
+              if not page:
+                  print('No usable page')
+                  sys.exit(0)
+              print(f'Main page: {page.url} | {page.title()}')
+              snap(page, 'initial')
+              btns = buttons(page)
+              (OUT / 'initial_buttons.json').write_text(json.dumps(btns, indent=2))
+              print(f"Buttons: {[b['text'] for b in btns]}")
+              frame(page)
+
+              try:
+                  body = page.content()
+              except Exception:
+                  body = ''
+              if 'Maintenance' in body or 'maintenance' in (page.url or '').lower():
+                  print('Maintenance UI detected — auto-resolving')
+                  try:
+                      page.locator('button:has-text("Recreate")').first.click(timeout=10000)
+                      print('  clicked Recreate')
+                  except Exception as e:
+                      print(f'  Recreate click failed: {e}')
+                      snap(page, 'recreate_failed')
+
+                  start = time.time()
+                  end = start + 900
+                  while time.time() < end:
+                      sleep_capturing(page, 5, fps=5)
+                      try:
+                          body2 = page.content()
+                      except Exception:
+                          body2 = ''
+                      btns2 = buttons(page)
+                      cont = next((b for b in btns2 if b['text'].strip().startswith('Continue')), None)
+                      err_visible = '>Error<' in body2 or '> Error<' in body2
+                      if cont and not cont.get('disabled') and not err_visible:
+                          print(f'  recreate complete after {int(time.time()-start)}s')
+                          break
+                  else:
+                      print('  recreate timed out — clicking Continue anyway')
+
+                  snap(page, 'before_continue')
+                  frame(page)
+                  try:
+                      page.locator('button:has-text("Continue")').first.click(timeout=10000)
+                      print('  clicked Continue')
+                  except Exception as e:
+                      print(f'  Continue click failed: {e}')
+                  sleep_capturing(page, 5, fps=5)
+                  snap(page, 'after_continue')
+              else:
+                  print('No maintenance UI; nothing to drive')
+
+              snap(page, 'final')
+              print(f'Captured {fi[0]} frames')
+              browser.close()
+
+          mp4 = OUT / 'driver.mp4'
+          try:
+              subprocess.run([
+                  'ffmpeg', '-y', '-framerate', '5',
+                  '-i', str(FRAMES / 'frame_%06d.png'),
+                  '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                  '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+                  str(mp4),
+              ], check=True)
+              print(f'Wrote {mp4}')
+          except Exception as e:
+              print(f'ffmpeg failed: {e}')
+          PY
+
+          # Launch the .app with CDP enabled. `open --args` forwards flags to argv.
+          open "${{ github.workspace }}/ComfyUI.app" --args --remote-debugging-port=9222
+          echo "App launched with CDP on :9222"
+
+          SHORT=""
+          for i in $(seq 1 60); do
             if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
-              echo "Server ready after ${i}s"
-              break
+              SHORT=server; break
             fi
-            if [ $((i % 30)) -eq 0 ]; then
-              echo "Still waiting... ${i}s"
+            if curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
+              SHORT=cdp; break
             fi
             sleep 1
           done
-          # Verify server is actually up
-          curl -sf http://127.0.0.1:8000/system_stats || {
-            echo "Server failed to start within 600s"
-            cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null || true
-            exit 1
-          }
+          echo "Phase 1 outcome: ${SHORT:-neither}"
+
+          if [ "$SHORT" = "cdp" ]; then
+            pip3 install --quiet playwright || pip3 install playwright
+            python3 /tmp/cdp_driver.py || echo "CDP driver had errors; continuing"
+          fi
+
+          echo "Polling /system_stats up to 15min..."
+          for i in $(seq 1 900); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              exit 0
+            fi
+            if [ $((i % 30)) -eq 0 ]; then echo "still polling... ${i}s"; fi
+            sleep 1
+          done
+          echo "Server failed to start within 15min"
+          cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -80 || true
+          exit 1
 
       # --- Install node via ComfyUI Manager CLI ---
       - name: Install custom node via Manager
