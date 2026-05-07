@@ -34,7 +34,7 @@ ENV PATH="/root/.local/bin:$PATH"
 # Python 3.10–3.14 via uv: pre-install all candidates so per-test venv
 # creation (uv venv --python 3.X) is fast regardless of which version
 # `_random_python_version()` picks for the run.
-RUN uv python install 3.10 3.11 3.12 3.13 3.14
+RUN uv python install 3.10 3.11 3.12 3.13
 
 # Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \

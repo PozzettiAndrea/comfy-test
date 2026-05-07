@@ -47,7 +47,7 @@ jobs:
         id: python
         shell: bash
         run: |
-          versions=(3.10 3.11 3.12 3.13 3.14)
+          versions=(3.10 3.11 3.12 3.13)
           chosen=${versions[$RANDOM % ${#versions[@]}]}
           echo "version=$chosen" >> $GITHUB_OUTPUT
           echo "Picked Python $chosen"
