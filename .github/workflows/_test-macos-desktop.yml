@@ -291,10 +291,15 @@ jobs:
           exit 1
 
       # --- Install node via ComfyUI Manager CLI ---
+      # comfyui_manager imports `from comfy.cli_args import args` at module
+      # load. The `comfy` source package isn't in the venv — it lives in the
+      # bundled app at .../Resources/ComfyUI/. The desktop app puts that on
+      # PYTHONPATH at launch; running cm_cli standalone has to do the same.
       - name: Install custom node via Manager
         run: |
+          export PYTHONPATH="${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI:$PYTHONPATH"
           VENV="$HOME/Documents/ComfyUI/.venv/bin/python"
-          echo "Using Python: $VENV"
+          echo "Using Python: $VENV  PYTHONPATH=$PYTHONPATH"
           $VENV --version
           $VENV -m comfyui_manager.cm_cli install \
             "https://github.com/${{ inputs.node_repo }}.git"

@@ -344,11 +344,14 @@ jobs:
           exit 1
 
       # --- Install node via ComfyUI Manager CLI ---
+      # See macOS workflow for the rationale: cm_cli imports from `comfy`,
+      # which is the bundled-app source dir, not a site-packages module.
       - name: Install custom node via Manager
         shell: bash
         run: |
+          export PYTHONPATH="$LOCALAPPDATA/Programs/ComfyUI/resources/ComfyUI:$PYTHONPATH"
           VENV="$USERPROFILE/Documents/ComfyUI/.venv/Scripts/python.exe"
-          echo "Using Python: $VENV"
+          echo "Using Python: $VENV  PYTHONPATH=$PYTHONPATH"
           "$VENV" --version
           "$VENV" -m comfyui_manager.cm_cli install \
             "https://github.com/${{ inputs.node_repo }}.git"
