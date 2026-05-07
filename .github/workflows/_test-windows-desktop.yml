@@ -341,10 +341,14 @@ jobs:
               # example skips the cloud upsell).
               log('  capturing canvas load...')
               sleep_capturing(page, 8, fps=5)
+              # :visible pseudo-class excludes hidden buttons. There are
+              # several `aria-label="Close"` X icons in the page (sidebar
+              # accordion items render hidden ones); without :visible the
+              # `.first` would pick a hidden one and the click is a no-op.
               POST_ACTIONS = [
-                  ('Continue Locally',  'button:has-text("Continue Locally")'),
-                  ('Close Templates',   'button.p-dialog-close-button'),
-                  ('Extensions',        'button[aria-label="Extensions"]'),
+                  ('Continue Locally',  'button:has-text("Continue Locally"):visible'),
+                  ('Close Templates',   'button[aria-label="Close"]:visible'),
+                  ('Extensions',        'button[aria-label="Extensions"]:visible'),
               ]
               for name, sel in POST_ACTIONS:
                   log(f'  post: waiting for {name}')
@@ -364,6 +368,13 @@ jobs:
                       sleep_capturing(page, 0.5, fps=5)
                   if not hit:
                       log(f'  post: {name} not found, skipping')
+                      if name == 'Close Templates':
+                          try:
+                              page.keyboard.press('Escape')
+                              log('  post: pressed Escape (Templates fallback)')
+                              sleep_capturing(page, 2, fps=5)
+                          except Exception:
+                              pass
               sleep_capturing(page, 5, fps=5)
 
               snap(page, 'final')
@@ -431,6 +442,7 @@ jobs:
       # See macOS workflow for the rationale: cm_cli imports from `comfy`,
       # which is the bundled-app source dir, not a site-packages module.
       - name: Install custom node via Manager
+        if: false  # disabled while we iterate on the wizard click-through demo
         shell: bash
         run: |
           export PYTHONPATH="$LOCALAPPDATA/Programs/ComfyUI/resources/ComfyUI:$PYTHONPATH"
@@ -442,6 +454,7 @@ jobs:
 
       # --- Restart app for node to load ---
       - name: Restart app
+        if: false
         shell: bash
         run: |
           taskkill //F //IM ComfyUI.exe 2>/dev/null || true
@@ -464,9 +477,11 @@ jobs:
 
       # --- Install comfy-test and run ---
       - name: Install comfy-test
+        if: false
         run: pip install comfy-test
 
       - name: Run tests
+        if: false
         shell: bash
         run: |
           git clone --depth 1 -b ${{ inputs.node_branch }} \

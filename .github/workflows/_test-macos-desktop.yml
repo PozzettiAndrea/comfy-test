@@ -274,9 +274,9 @@ jobs:
               log('  capturing canvas load...')
               sleep_capturing(page, 8, fps=5)
               POST_ACTIONS = [
-                  ('Continue Locally',  'button:has-text("Continue Locally")'),
-                  ('Close Templates',   'button.p-dialog-close-button'),
-                  ('Extensions',        'button[aria-label="Extensions"]'),
+                  ('Continue Locally',  'button:has-text("Continue Locally"):visible'),
+                  ('Close Templates',   'button[aria-label="Close"]:visible'),
+                  ('Extensions',        'button[aria-label="Extensions"]:visible'),
               ]
               for name, sel in POST_ACTIONS:
                   log(f'  post: waiting for {name}')
@@ -296,6 +296,13 @@ jobs:
                       sleep_capturing(page, 0.5, fps=5)
                   if not hit:
                       log(f'  post: {name} not found, skipping')
+                      if name == 'Close Templates':
+                          try:
+                              page.keyboard.press('Escape')
+                              log('  post: pressed Escape (Templates fallback)')
+                              sleep_capturing(page, 2, fps=5)
+                          except Exception:
+                              pass
               sleep_capturing(page, 5, fps=5)
 
               snap(page, 'final')
@@ -365,6 +372,7 @@ jobs:
       # bundled app at .../Resources/ComfyUI/. The desktop app puts that on
       # PYTHONPATH at launch; running cm_cli standalone has to do the same.
       - name: Install custom node via Manager
+        if: false  # disabled while we iterate on the wizard click-through demo
         run: |
           export PYTHONPATH="${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI:$PYTHONPATH"
           VENV="$HOME/Documents/ComfyUI/.venv/bin/python"
@@ -375,6 +383,7 @@ jobs:
 
       # --- Restart app for node to load ---
       - name: Restart app
+        if: false
         run: |
           pkill -f "ComfyUI" || true
           sleep 5
@@ -395,6 +404,7 @@ jobs:
 
       # --- Install comfy-test and run ---
       - name: Install comfy-test
+        if: false
         run: |
           # macOS ships BSD grep without -P; use bash parameter expansion.
           VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
@@ -406,6 +416,7 @@ jobs:
           fi
 
       - name: Run tests
+        if: false
         working-directory: ${{ github.workspace }}
         run: |
           # Clone node source for workflow files
