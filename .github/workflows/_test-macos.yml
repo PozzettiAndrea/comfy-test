@@ -89,9 +89,13 @@ jobs:
           # On macos-latest's 7 GB RAM, that OOM-kills mid-capture and Node
           # dies with `Unexpected end of JSON input` at pipeTransport.js.
           # Refs: microsoft/playwright#38489, microsoft/playwright#28942
-          # greenlet>=3.1 needed for Python 3.13/3.14 (Playwright 1.39's bundled
-          # greenlet 3.0 uses removed `_PyCFrame` API).
-          $VENV/bin/uv pip install 'playwright>=1.39.0,<1.40' 'greenlet>=3.1.0'
+          # Playwright 1.39's metadata strictly pins greenlet==3.0.0, which
+          # doesn't build on Python 3.13/3.14 (uses removed `_PyCFrame` API).
+          # Install with --no-deps to bypass that pin, then install
+          # greenlet>=3.1 + pyee (the only other runtime dep) separately.
+          # Verified locally to import cleanly on Python 3.10–3.14.
+          $VENV/bin/uv pip install --no-deps 'playwright>=1.39.0,<1.40'
+          $VENV/bin/uv pip install 'greenlet>=3.1.0' 'pyee>=11'
           $VENV/bin/python -m playwright install chromium
           $VENV/bin/python -m playwright install-deps chromium || true
 
