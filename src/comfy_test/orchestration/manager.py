@@ -219,15 +219,16 @@ class TestManager:
         platform_name = platform_name.lower().replace("-", "_")
 
         # Determine which levels to run
-        requested_levels = self.config.levels
+        requested_levels = list(self.config.levels)
         if level:
-            # Override the node's config: run all levels up to and including --level,
-            # ignoring what comfy-test.toml lists. Matches the CLI help text
-            # ("overrides config") and lets users force a level the node didn't
-            # opt into (e.g. --level execution_light on a node that only lists
-            # ["syntax", "install", "registration", "instantiation", "execution"]).
+            # Respect the node's config but force-include `--level X` (so it's
+            # actually run if the config didn't list it), then cap at X (so
+            # levels above X are dropped). Doesn't pull in unrelated levels
+            # like VALIDATION when the node didn't opt into them.
+            if level not in requested_levels:
+                requested_levels.append(level)
             max_idx = ALL_LEVELS.index(level)
-            requested_levels = [l for l in ALL_LEVELS if ALL_LEVELS.index(l) <= max_idx]
+            requested_levels = [l for l in requested_levels if ALL_LEVELS.index(l) <= max_idx]
 
         # Resolve dependencies
         config_levels = TestLevel.resolve_dependencies(requested_levels)

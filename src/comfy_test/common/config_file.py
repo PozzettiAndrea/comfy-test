@@ -190,11 +190,12 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     python_version = test_section.get("python_version")  # None = random selection
     timeout = 600  # Fixed timeout for setup operations
 
-    # Parse levels - default to all levels, supports "all" or list
+    # Parse levels - default to all levels, supports "all" or list.
+    # Accept hyphens as well as underscores (e.g. "execution-light" → "execution_light").
     levels_raw = test_section.get("levels", ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"])
     if levels_raw == "all":
-        levels_raw = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"]
-    levels = [TestLevel(l) for l in levels_raw]
+        levels_raw = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution_light", "execution"]
+    levels = [TestLevel(l.replace("-", "_")) for l in levels_raw]
 
     # Parse platforms section
     platforms = test_section.get("platforms", {})
