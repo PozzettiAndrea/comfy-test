@@ -43,15 +43,22 @@ jobs:
         run: |
           $installer = "${{ github.workspace }}\ComfyUI-Setup.exe"
           Invoke-WebRequest -Uri "https://download.comfy.org/windows/nsis/x64" -OutFile $installer -UseBasicParsing
-          # Silent install
-          Start-Process -Wait -FilePath $installer -ArgumentList '/S'
-          # Default install path
+          # Silent install. NSIS on Windows Server 2025 sometimes spawns a child
+          # and returns immediately, so we can't rely on -Wait alone.
+          $proc = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '/S'
+          Write-Host "Installer exited with code $($proc.ExitCode)"
           $appPath = "$env:LOCALAPPDATA\Programs\ComfyUI"
-          if (Test-Path "$appPath\ComfyUI.exe") {
-            Write-Host "Desktop app installed at $appPath"
-          } else {
-            Write-Error "Desktop app not found at $appPath"
+          for ($i = 0; $i -lt 180; $i++) {
+            if (Test-Path "$appPath\ComfyUI.exe") {
+              Write-Host "App ready at $appPath after ${i}s"
+              break
+            }
+            Start-Sleep -Seconds 1
+          }
+          if (-not (Test-Path "$appPath\ComfyUI.exe")) {
+            Write-Error "Desktop app not found at $appPath after 180s"
             Get-ChildItem "$env:LOCALAPPDATA\Programs" -ErrorAction SilentlyContinue
+            Get-ChildItem "C:\Program Files" -Filter "*ComfyUI*" -ErrorAction SilentlyContinue
             exit 1
           }
 

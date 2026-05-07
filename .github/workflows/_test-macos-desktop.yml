@@ -256,7 +256,9 @@ jobs:
           echo "Phase 1 outcome: ${SHORT:-neither}"
 
           if [ "$SHORT" = "cdp" ]; then
-            pip3 install --quiet playwright || pip3 install playwright
+            # macOS Homebrew Python is PEP 668 externally-managed; --break-system-packages
+            # is fine in CI since the runner is thrown away after the job.
+            pip3 install --break-system-packages --quiet playwright
             python3 /tmp/cdp_driver.py || echo "CDP driver had errors; continuing"
           fi
 
