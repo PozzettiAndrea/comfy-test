@@ -335,10 +335,36 @@ jobs:
                   log(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
 
               # Keep capturing past server-up so the main canvas/UI lands in
-              # the video. ComfyUI's main page typically renders within ~10s
-              # after /system_stats responds.
+              # the video, then drive a short post-flow: dismiss the cloud
+              # upsell, close the workflow templates dialog, open Extensions.
+              # Each step tolerates the element not being there (Windows for
+              # example skips the cloud upsell).
               log('  capturing canvas load...')
-              sleep_capturing(page, 20, fps=5)
+              sleep_capturing(page, 8, fps=5)
+              POST_ACTIONS = [
+                  ('Continue Locally',  'button:has-text("Continue Locally")'),
+                  ('Close Templates',   'button.p-dialog-close-button'),
+                  ('Extensions',        'button[aria-label="Extensions"]'),
+              ]
+              for name, sel in POST_ACTIONS:
+                  log(f'  post: waiting for {name}')
+                  deadline = time.time() + 8
+                  hit = False
+                  while time.time() < deadline:
+                      try:
+                          loc = page.locator(sel).first
+                          if loc.count() and loc.is_visible() and not loc.is_disabled():
+                              click_with_cursor(page, loc)
+                              log(f'  post: clicked {name}')
+                              sleep_capturing(page, 2, fps=5)
+                              hit = True
+                              break
+                      except Exception:
+                          pass
+                      sleep_capturing(page, 0.5, fps=5)
+                  if not hit:
+                      log(f'  post: {name} not found, skipping')
+              sleep_capturing(page, 5, fps=5)
 
               snap(page, 'final')
               log(f'Captured {fi[0]} frames')
