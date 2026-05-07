@@ -22,15 +22,29 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
     steps:
+
+      - name: Resolve target node
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+        run: |
+          if [ -n "$INPUT_REPO" ]; then
+            echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
+          else
+            echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+          mkdir -p "$COMFY_TEST_LOGS_DIR"
 
       # --- Download and install desktop app ---
       - name: Download ComfyUI Desktop
         run: |
           curl -L --retry 3 -o ComfyUI.dmg "https://download.comfy.org/mac/dmg/arm64"
-          hdiutil attach ComfyUI.dmg
-          cp -R "/Volumes/ComfyUI/ComfyUI.app" "${{ github.workspace }}/ComfyUI.app"
-          hdiutil detach "/Volumes/ComfyUI"
+          # DMG mount path includes the version suffix (e.g. "ComfyUI 0.8.36-arm64"),
+          # which varies per release. Use a glob to match whatever it is.
+          hdiutil attach -nobrowse ComfyUI.dmg
+          cp -R /Volumes/ComfyUI*/ComfyUI.app "${{ github.workspace }}/ComfyUI.app"
+          hdiutil detach /Volumes/ComfyUI* || true
           rm ComfyUI.dmg
 
       # --- Pre-seed config to skip setup wizard ---
@@ -114,7 +128,27 @@ jobs:
 
       # --- Install comfy-test and run ---
       - name: Install comfy-test
-        run: pip3 install comfy-test
+        run: |
+          # macOS ships BSD grep without -P; use bash parameter expansion.
+          VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
+          if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
+          if [ -n "$VERSION" ]; then
+            pip3 install --upgrade "comfy-test==$VERSION"
+          else
+            pip3 install --upgrade comfy-test
+          fi
+
+      # --- Background desktop screenshot loop (every 5s) ---
+      - name: Start desktop screenshot loop
+        run: |
+          mkdir -p "$COMFY_TEST_LOGS_DIR/desktop_capture"
+          (
+            for i in $(seq 0 9999); do
+              screencapture -x "$COMFY_TEST_LOGS_DIR/desktop_capture/desktop_$(printf '%04d' $i)_$(date +%s).png" 2>/dev/null || true
+              sleep 5
+            done
+          ) &
+          echo "SCREENCAP_PID=$!" >> $GITHUB_ENV
 
       - name: Run tests
         working-directory: ${{ github.workspace }}
@@ -123,19 +157,54 @@ jobs:
           git clone --depth 1 -b ${{ inputs.node_branch }} \
             "https://github.com/${{ inputs.node_repo }}.git" node_source
           cd node_source
-          python3 -m comfy_test run --server-url http://127.0.0.1:8000
+          python3 -m comfy_test run --server-url http://127.0.0.1:8000 --level execution
 
       # --- Cleanup ---
+      - name: Stop desktop screenshot loop + finalize "system" card
+        if: always()
+        run: |
+          kill $SCREENCAP_PID 2>/dev/null || true
+          # Latest desktop frame becomes the system-card thumbnail. The HTML
+          # report's _render_workflow_cards looks up screenshots/{stem}_executed.png.
+          LATEST=$(ls -1t "$COMFY_TEST_LOGS_DIR/desktop_capture/"*.png 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            mkdir -p "$COMFY_TEST_LOGS_DIR/screenshots"
+            cp "$LATEST" "$COMFY_TEST_LOGS_DIR/screenshots/system_executed.png"
+          fi
+          # Inject a synthetic "system" workflow into results.json so the
+          # report renders a card with the desktop screenshot. The full
+          # timeline is still browsable at gh-pages/.../desktop_capture/.
+          python3 - <<'PY' || true
+          import json, os, pathlib
+          p = pathlib.Path(os.environ["COMFY_TEST_LOGS_DIR"]) / "results.json"
+          if not p.exists():
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          data.setdefault("workflows", []).insert(0, {
+              "name": "system", "status": "pass",
+              "duration_seconds": 0, "error": None,
+              "hardware": data.get("hardware"),
+          })
+          p.write_text(json.dumps(data, indent=2))
+          PY
+
       - name: Stop app
         if: always()
         run: pkill -f "ComfyUI" || true
 
-      - name: Collect logs
+      - name: Collect ComfyUI app log
         if: always()
         run: |
-          mkdir -p ${{ github.workspace }}/test-logs
           cp "$HOME/Documents/ComfyUI/user/comfyui.log" \
-             "${{ github.workspace }}/test-logs/" 2>/dev/null || true
+             "$COMFY_TEST_LOGS_DIR/" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-macos-desktop
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+          include-hidden-files: true
 
       - uses: actions/upload-artifact@v4
         if: always()
