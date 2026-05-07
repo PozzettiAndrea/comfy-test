@@ -62,6 +62,16 @@ jobs:
             exit 1
           }
 
+      # Cache the venv so subsequent runs skip the ~6-8 min Python + 80
+      # package install. Keyed on OS only — on a stale cache vs a new
+      # ComfyUI Desktop release, the wizard's validator will reject and
+      # the CDP driver falls back to the Recreate maintenance flow.
+      - name: Cache ComfyUI Desktop venv
+        uses: actions/cache@v4
+        with:
+          path: ~/Documents/ComfyUI/.venv
+          key: comfyui-desktop-venv-${{ runner.os }}-v1
+
       # --- Background desktop screenshot loop (every 5s) ---
       # Started BEFORE first boot so we capture any maintenance UI / install
       # wizard that's blocking on a "human click" — the most common silent hang
