@@ -22,7 +22,20 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       COMFY_TEST_GPU: "0"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
     steps:
+
+      - name: Resolve target node
+        shell: bash
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+        run: |
+          if [ -n "$INPUT_REPO" ]; then
+            echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
+          else
+            echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+          mkdir -p "${COMFY_TEST_LOGS_DIR//\\//}"
 
       # --- Download and install desktop app ---
       - name: Download ComfyUI Desktop
@@ -76,6 +89,37 @@ jobs:
           desktop_extensions:
             custom_nodes: $appPath\resources\ComfyUI\custom_nodes
           "@ | Set-Content "$configDir\extra_models_config.yaml" -Encoding UTF8
+
+      # --- Background desktop screenshot loop (every 5s) ---
+      # Started BEFORE first boot so we capture any maintenance UI / install
+      # wizard that's blocking on a "human click" — the most common silent hang
+      # on desktop runners. Uses System.Drawing in a detached pwsh process so
+      # the loop runs in the SAME interactive session as the runner (Session 0
+      # would capture only a black screen).
+      - name: Start desktop screenshot loop
+        shell: bash
+        run: |
+          OUT="${COMFY_TEST_LOGS_DIR//\\//}/desktop_capture"
+          mkdir -p "$OUT"
+          cat > /tmp/screencap.ps1 << 'PSEOF'
+          param([string]$OutDir, [int]$Index)
+          Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+          $ts = [int][double]::Parse((Get-Date -UFormat %s))
+          $name = "desktop_{0:D4}_{1}.png" -f $Index, $ts
+          $bmp.Save((Join-Path $OutDir $name), [System.Drawing.Imaging.ImageFormat]::Png)
+          $g.Dispose(); $bmp.Dispose()
+          PSEOF
+          (
+            for i in $(seq 0 9999); do
+              powershell -NoProfile -ExecutionPolicy Bypass -File /tmp/screencap.ps1 -OutDir "$OUT" -Index $i 2>/dev/null || true
+              sleep 5
+            done
+          ) &
+          echo "SCREENCAP_PID=$!" >> $GITHUB_ENV
 
       # --- First boot: app creates venv + installs Python/torch ---
       - name: First boot (venv setup)
@@ -145,21 +189,47 @@ jobs:
           python -m comfy_test run --server-url http://127.0.0.1:8000
 
       # --- Cleanup ---
+      - name: Stop desktop screenshot loop + finalize "system" card
+        if: always()
+        shell: bash
+        run: |
+          kill $SCREENCAP_PID 2>/dev/null || true
+          OUT="${COMFY_TEST_LOGS_DIR//\\//}"
+          LATEST=$(ls -1t "$OUT/desktop_capture/"*.png 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            mkdir -p "$OUT/screenshots"
+            cp "$LATEST" "$OUT/screenshots/system_executed.png"
+          fi
+          python -c "
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\\\','/')) / 'results.json'
+          if not p.exists():
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          data.setdefault('workflows', []).insert(0, {
+              'name': 'system', 'status': 'pass',
+              'duration_seconds': 0, 'error': None,
+              'hardware': data.get('hardware'),
+          })
+          p.write_text(json.dumps(data, indent=2))
+          " || true
+
       - name: Stop app
         if: always()
         shell: bash
         run: taskkill //F //IM ComfyUI.exe 2>/dev/null || true
 
-      - name: Collect logs
+      - name: Collect ComfyUI app log
         if: always()
         shell: bash
         run: |
-          mkdir -p test-logs
-          cp "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" test-logs/ 2>/dev/null || true
+          OUT="${COMFY_TEST_LOGS_DIR//\\//}"
+          cp "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" "$OUT/" 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-windows-desktop
-          path: test-logs/
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}\
           if-no-files-found: ignore
+          include-hidden-files: true

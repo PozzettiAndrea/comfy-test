@@ -75,6 +75,21 @@ jobs:
             custom_nodes: ${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI/custom_nodes
           EOF
 
+      # --- Background desktop screenshot loop (every 5s) ---
+      # Started BEFORE first boot so we capture any maintenance UI / install wizard
+      # that's blocking on a "human click" — the most common silent hang on
+      # desktop runners. Output is uploaded as part of the comfy-test-logs artifact.
+      - name: Start desktop screenshot loop
+        run: |
+          mkdir -p "$COMFY_TEST_LOGS_DIR/desktop_capture"
+          (
+            for i in $(seq 0 9999); do
+              screencapture -x "$COMFY_TEST_LOGS_DIR/desktop_capture/desktop_$(printf '%04d' $i)_$(date +%s).png" 2>/dev/null || true
+              sleep 5
+            done
+          ) &
+          echo "SCREENCAP_PID=$!" >> $GITHUB_ENV
+
       # --- First boot: app creates venv + installs Python/torch ---
       - name: First boot (venv setup)
         run: |
@@ -137,18 +152,6 @@ jobs:
           else
             pip3 install --upgrade comfy-test
           fi
-
-      # --- Background desktop screenshot loop (every 5s) ---
-      - name: Start desktop screenshot loop
-        run: |
-          mkdir -p "$COMFY_TEST_LOGS_DIR/desktop_capture"
-          (
-            for i in $(seq 0 9999); do
-              screencapture -x "$COMFY_TEST_LOGS_DIR/desktop_capture/desktop_$(printf '%04d' $i)_$(date +%s).png" 2>/dev/null || true
-              sleep 5
-            done
-          ) &
-          echo "SCREENCAP_PID=$!" >> $GITHUB_ENV
 
       - name: Run tests
         working-directory: ${{ github.workspace }}
