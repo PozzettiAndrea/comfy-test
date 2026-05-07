@@ -1,0 +1,145 @@
+name: Test macOS Desktop
+
+on:
+  workflow_call:
+    inputs:
+      node_repo:
+        description: "owner/repo of the node to test"
+        type: string
+        required: true
+      node_branch:
+        type: string
+        default: "main"
+      runs_on:
+        type: string
+        default: "macos-latest"
+
+jobs:
+  macos-desktop-test:
+    name: macos-desktop-test
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      COMFY_TEST_GPU: "0"
+    steps:
+
+      # --- Download and install desktop app ---
+      - name: Download ComfyUI Desktop
+        run: |
+          curl -L --retry 3 -o ComfyUI.dmg "https://download.comfy.org/mac/dmg/arm64"
+          hdiutil attach ComfyUI.dmg
+          cp -R "/Volumes/ComfyUI/ComfyUI.app" "${{ github.workspace }}/ComfyUI.app"
+          hdiutil detach "/Volumes/ComfyUI"
+          rm ComfyUI.dmg
+
+      # --- Pre-seed config to skip setup wizard ---
+      - name: Pre-seed desktop config
+        run: |
+          CONFIG_DIR="$HOME/Library/Application Support/ComfyUI"
+          USER_DATA="$HOME/Documents/ComfyUI"
+          mkdir -p "$CONFIG_DIR"
+          mkdir -p "$USER_DATA"/{custom_nodes,input,output,user,models}
+
+          # electron-store config.json — tells the app installation is done
+          cat > "$CONFIG_DIR/config.json" << EOF
+          {
+            "basePath": "$USER_DATA",
+            "installState": "installed",
+            "selectedDevice": "mps"
+          }
+          EOF
+
+          # extra_models_config.yaml — tells ComfyUI where user data lives
+          cat > "$CONFIG_DIR/extra_models_config.yaml" << EOF
+          comfyui_desktop:
+            is_default: 'true'
+            base_path: $USER_DATA
+            custom_nodes: custom_nodes/
+            download_model_base: models
+          desktop_extensions:
+            custom_nodes: ${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI/custom_nodes
+          EOF
+
+      # --- First boot: app creates venv + installs Python/torch ---
+      - name: First boot (venv setup)
+        run: |
+          open "${{ github.workspace }}/ComfyUI.app"
+          echo "Waiting for app to create venv and start server (up to 10 min)..."
+          for i in $(seq 1 600); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "Still waiting... ${i}s"
+            fi
+            sleep 1
+          done
+          # Verify server is actually up
+          curl -sf http://127.0.0.1:8000/system_stats || {
+            echo "Server failed to start within 600s"
+            cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null || true
+            exit 1
+          }
+
+      # --- Install node via ComfyUI Manager CLI ---
+      - name: Install custom node via Manager
+        run: |
+          VENV="$HOME/Documents/ComfyUI/.venv/bin/python"
+          echo "Using Python: $VENV"
+          $VENV --version
+          $VENV -m comfyui_manager.cm_cli install \
+            "https://github.com/${{ inputs.node_repo }}.git"
+
+      # --- Restart app for node to load ---
+      - name: Restart app
+        run: |
+          pkill -f "ComfyUI" || true
+          sleep 5
+          open "${{ github.workspace }}/ComfyUI.app"
+          echo "Waiting for server after restart..."
+          for i in $(seq 1 180); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after restart (${i}s)"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/system_stats || {
+            echo "Server failed to start after restart"
+            cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -50
+            exit 1
+          }
+
+      # --- Install comfy-test and run ---
+      - name: Install comfy-test
+        run: pip3 install comfy-test
+
+      - name: Run tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Clone node source for workflow files
+          git clone --depth 1 -b ${{ inputs.node_branch }} \
+            "https://github.com/${{ inputs.node_repo }}.git" node_source
+          cd node_source
+          python3 -m comfy_test run --server-url http://127.0.0.1:8000
+
+      # --- Cleanup ---
+      - name: Stop app
+        if: always()
+        run: pkill -f "ComfyUI" || true
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p ${{ github.workspace }}/test-logs
+          cp "$HOME/Documents/ComfyUI/user/comfyui.log" \
+             "${{ github.workspace }}/test-logs/" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-macos-desktop
+          path: ${{ github.workspace }}/test-logs/
+          if-no-files-found: ignore
