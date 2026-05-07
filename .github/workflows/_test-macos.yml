@@ -128,7 +128,7 @@ jobs:
         working-directory: ${{ env.COMFYUI_DIR }}
         run: |
           mkdir -p "$COMFY_TEST_LOGS_DIR"
-          $VENV/bin/python -u main.py --listen 127.0.0.1 --port 8188 --cpu > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
+          $VENV/bin/python -u main.py --listen 127.0.0.1 --port 8188 > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
           echo "SERVER_PID=$!" >> $GITHUB_ENV
 
       - name: Wait for server
