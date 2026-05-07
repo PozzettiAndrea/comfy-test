@@ -218,13 +218,25 @@ class TestManager:
         # Normalize platform name
         platform_name = platform_name.lower().replace("-", "_")
 
-        # Determine which levels to run
+        # Determine which levels to run.
+        # Without --level: use the config's levels list as-is.
+        # With --level X: swap terminal levels (STATIC_CAPTURE / VALIDATION /
+        #   EXECUTION_LIGHT / EXECUTION) for X. This is how per-platform CI
+        #   workflows pick a different "runtime" level (e.g. macos passes
+        #   execution_light because of the headless-Chromium pipe issue;
+        #   linux/windows pass execution for the full capture). Other levels
+        #   in the config (syntax/install/registration/instantiation) are
+        #   preserved untouched. Doesn't pull in unrelated terminals.
+        TERMINAL_LEVELS = {
+            TestLevel.STATIC_CAPTURE,
+            TestLevel.VALIDATION,
+            TestLevel.EXECUTION_LIGHT,
+            TestLevel.EXECUTION,
+        }
         requested_levels = list(self.config.levels)
         if level:
-            # Respect the node's config but force-include `--level X` (so it's
-            # actually run if the config didn't list it), then cap at X (so
-            # levels above X are dropped). Doesn't pull in unrelated levels
-            # like VALIDATION when the node didn't opt into them.
+            if level in TERMINAL_LEVELS:
+                requested_levels = [l for l in requested_levels if l not in TERMINAL_LEVELS]
             if level not in requested_levels:
                 requested_levels.append(level)
             max_idx = ALL_LEVELS.index(level)
