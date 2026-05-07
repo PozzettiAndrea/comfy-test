@@ -200,7 +200,7 @@ jobs:
             exit 1
           fi
 
-          xvfb-run --auto-servernum $PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8388
+          xvfb-run --auto-servernum $PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8388 --level execution
           TEST_EXIT_CODE=$?
 
           kill $SERVER_PID 2>/dev/null || true

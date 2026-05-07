@@ -218,7 +218,7 @@ jobs:
           }
 
           Set-Location "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
-          & $env:PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8188
+          & $env:PYTHON_EXE -m comfy_test run --server-url http://127.0.0.1:8188 --level execution
           $testExitCode = $LASTEXITCODE
 
           Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
