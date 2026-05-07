@@ -226,29 +226,37 @@ jobs:
                   body = ''
               if 'Maintenance' in body or 'maintenance' in (page.url or '').lower():
                   print('Maintenance UI detected — auto-resolving')
+                  # Click card's Recreate → opens "Delete the .venv directory?" confirm popover.
                   try:
-                      page.locator('button:has-text("Recreate")').first.click(timeout=10000)
-                      print('  clicked Recreate')
+                      page.locator('button.p-button-raised:has-text("Recreate")').first.click(timeout=10000)
+                      print('  clicked Recreate (card)')
                   except Exception as e:
-                      print(f'  Recreate click failed: {e}')
-                      snap(page, 'recreate_failed')
+                      print(f'  Recreate(card) failed: {e}')
+                      snap(page, 'recreate_card_failed')
+                  sleep_capturing(page, 1, fps=5)
+                  # Click confirm popover's Recreate (the red danger button).
+                  try:
+                      page.locator('button.p-confirmpopup-accept-button').first.click(timeout=10000)
+                      print('  clicked Recreate (confirm)')
+                  except Exception as e:
+                      print(f'  Recreate(confirm) failed: {e}')
+                      snap(page, 'recreate_confirm_failed')
 
+                  # Wait for venv recreation — signal: "Reset virtual environment"
+                  # card disappears from the Errors filter view.
                   start = time.time()
-                  end = start + 900  # 15min for venv recreate
+                  end = start + 900
                   while time.time() < end:
                       sleep_capturing(page, 5, fps=5)
                       try:
-                          body2 = page.content()
+                          card_count = page.locator('text="Reset virtual environment"').count()
                       except Exception:
-                          body2 = ''
-                      btns2 = buttons(page)
-                      cont = next((b for b in btns2 if b['text'].strip().startswith('Continue')), None)
-                      err_visible = '>Error<' in body2 or '> Error<' in body2
-                      if cont and not cont.get('disabled') and not err_visible:
-                          print(f'  recreate complete after {int(time.time()-start)}s')
+                          card_count = -1
+                      if card_count == 0:
+                          print(f'  recreate complete after {int(time.time()-start)}s (card gone)')
                           break
                   else:
-                      print('  recreate timed out — clicking Continue anyway')
+                      print('  recreate timed out — proceeding to Continue')
 
                   snap(page, 'before_continue')
                   frame(page)
@@ -259,6 +267,12 @@ jobs:
                       print(f'  Continue click failed: {e}')
                   sleep_capturing(page, 5, fps=5)
                   snap(page, 'after_continue')
+                  try:
+                      toast = page.locator('text=/Unable to continue/i').count()
+                  except Exception:
+                      toast = 0
+                  if toast:
+                      print('  WARN: "Unable to continue" toast — venv still broken')
               else:
                   print('No maintenance UI; nothing to drive')
 
@@ -266,10 +280,18 @@ jobs:
               print(f'Captured {fi[0]} frames')
               browser.close()
 
+          # imageio-ffmpeg ships a static ffmpeg binary so we don't need a system install.
+          try:
+              import imageio_ffmpeg
+              ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+          except Exception as e:
+              print(f'imageio-ffmpeg unavailable ({e}); falling back to PATH ffmpeg')
+              ffmpeg_exe = 'ffmpeg'
+
           mp4 = OUT / 'driver.mp4'
           try:
               subprocess.run([
-                  'ffmpeg', '-y', '-framerate', '5',
+                  ffmpeg_exe, '-y', '-framerate', '5',
                   '-i', str(FRAMES / 'frame_%06d.png'),
                   '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
                   '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
@@ -297,7 +319,7 @@ jobs:
           echo "Phase 1 outcome: ${SHORT:-neither}"
 
           if [ "$SHORT" = "cdp" ]; then
-            pip install --quiet playwright || pip install playwright
+            pip install --quiet playwright imageio-ffmpeg || pip install playwright imageio-ffmpeg
             python /tmp/cdp_driver.py || echo "CDP driver had errors; continuing"
           fi
 
