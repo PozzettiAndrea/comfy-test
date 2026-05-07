@@ -47,34 +47,6 @@ jobs:
           hdiutil detach /Volumes/ComfyUI* || true
           rm ComfyUI.dmg
 
-      # --- Pre-seed config to skip setup wizard ---
-      - name: Pre-seed desktop config
-        run: |
-          CONFIG_DIR="$HOME/Library/Application Support/ComfyUI"
-          USER_DATA="$HOME/Documents/ComfyUI"
-          mkdir -p "$CONFIG_DIR"
-          mkdir -p "$USER_DATA"/{custom_nodes,input,output,user,models}
-
-          # electron-store config.json — tells the app installation is done
-          cat > "$CONFIG_DIR/config.json" << EOF
-          {
-            "basePath": "$USER_DATA",
-            "installState": "installed",
-            "selectedDevice": "mps"
-          }
-          EOF
-
-          # extra_models_config.yaml — tells ComfyUI where user data lives
-          cat > "$CONFIG_DIR/extra_models_config.yaml" << EOF
-          comfyui_desktop:
-            is_default: 'true'
-            base_path: $USER_DATA
-            custom_nodes: custom_nodes/
-            download_model_base: models
-          desktop_extensions:
-            custom_nodes: ${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI/custom_nodes
-          EOF
-
       # --- Background desktop screenshot loop (every 5s) ---
       # Started BEFORE first boot so we capture any maintenance UI / install wizard
       # that's blocking on a "human click" — the most common silent hang on
@@ -179,57 +151,65 @@ jobs:
               print(f"Buttons: {[b['text'] for b in btns]}")
               frame(page)
 
-              try:
-                  body = page.content()
-              except Exception:
-                  body = ''
-              if 'Maintenance' in body or 'maintenance' in (page.url or '').lower():
-                  print('Maintenance UI detected — auto-resolving')
-                  try:
-                      page.locator('button.p-button-raised:has-text("Recreate")').first.click(timeout=10000)
-                      print('  clicked Recreate (card)')
-                  except Exception as e:
-                      print(f'  Recreate(card) failed: {e}')
-                      snap(page, 'recreate_card_failed')
-                  sleep_capturing(page, 1, fps=5)
-                  try:
-                      page.locator('button.p-confirmpopup-accept-button').first.click(timeout=10000)
-                      print('  clicked Recreate (confirm)')
-                  except Exception as e:
-                      print(f'  Recreate(confirm) failed: {e}')
-                      snap(page, 'recreate_confirm_failed')
+              PRIMARY_LABELS = ['Get Started', 'Next', 'Continue', 'Install', 'OK',
+                                'Recreate', 'Confirm', 'Accept', 'Allow', 'Yes', 'Finish']
 
-                  start = time.time()
-                  end = start + 900
-                  while time.time() < end:
-                      sleep_capturing(page, 5, fps=5)
-                      try:
-                          card_count = page.locator('text="Reset virtual environment"').count()
-                      except Exception:
-                          card_count = -1
-                      if card_count == 0:
-                          print(f'  recreate complete after {int(time.time()-start)}s (card gone)')
-                          break
-                  else:
-                      print('  recreate timed out — proceeding to Continue')
-
-                  snap(page, 'before_continue')
-                  frame(page)
+              def server_up():
                   try:
-                      page.locator('button:has-text("Continue")').first.click(timeout=10000)
-                      print('  clicked Continue')
-                  except Exception as e:
-                      print(f'  Continue click failed: {e}')
-                  sleep_capturing(page, 5, fps=5)
-                  snap(page, 'after_continue')
-                  try:
-                      toast = page.locator('text=/Unable to continue/i').count()
+                      urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
+                      return True
                   except Exception:
-                      toast = 0
-                  if toast:
-                      print('  WARN: "Unable to continue" toast — venv still broken')
+                      return False
+
+              def find_action(page):
+                  try:
+                      loc = page.locator('button.p-confirmpopup-accept-button').first
+                      if loc.count():
+                          return ('confirm', loc, f'CONFIRM|{(loc.text_content() or "").strip()}')
+                  except Exception:
+                      pass
+                  for label in PRIMARY_LABELS:
+                      for sel_kind, sel in (('raised', f'button.p-button-raised:has-text("{label}")'),
+                                            ('any',    f'button:has-text("{label}")')):
+                          try:
+                              loc = page.locator(sel).first
+                              if loc.count() and not loc.is_disabled():
+                                  return (sel_kind, loc, f'{sel_kind.upper()}|{label}')
+                          except Exception:
+                              pass
+                  return None
+
+              clicked = set()
+              page_url = page.url
+              start = time.time()
+              deadline = start + 1500
+              while time.time() < deadline:
+                  frame(page)
+                  if server_up():
+                      print(f'  /system_stats up after {int(time.time()-start)}s')
+                      break
+                  new_url = page.url
+                  if new_url != page_url:
+                      print(f'  url: {page_url} -> {new_url}')
+                      page_url = new_url
+                      clicked.clear()
+                  found = find_action(page)
+                  if found:
+                      kind, loc, sig = found
+                      if sig in clicked:
+                          time.sleep(2); continue
+                      try:
+                          loc.click(timeout=3000)
+                          print(f'  clicked [{sig}]')
+                          clicked.add(sig)
+                          sleep_capturing(page, 1, fps=4)
+                      except Exception as e:
+                          print(f'  click [{sig}] failed: {e}')
+                          clicked.add(sig)
+                  else:
+                      time.sleep(2)
               else:
-                  print('No maintenance UI; nothing to drive')
+                  print(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
 
               snap(page, 'final')
               print(f'Captured {fi[0]} frames')
