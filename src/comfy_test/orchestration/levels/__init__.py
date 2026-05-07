@@ -9,6 +9,7 @@ from .registration import run as run_registration
 from .instantiation import run as run_instantiation
 from .static_capture import run as run_static_capture
 from .validation import run as run_validation
+from .execution_light import run as run_execution_light
 from .execution import run as run_execution
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "run_instantiation",
     "run_static_capture",
     "run_validation",
+    "run_execution_light",
     "run_execution",
 ]

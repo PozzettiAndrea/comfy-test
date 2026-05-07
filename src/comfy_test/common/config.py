@@ -37,6 +37,7 @@ class TestLevel(str, Enum):
     INSTANTIATION = "instantiation"
     STATIC_CAPTURE = "static_capture"
     VALIDATION = "validation"
+    EXECUTION_LIGHT = "execution_light"
     EXECUTION = "execution"
 
     @classmethod
@@ -53,6 +54,7 @@ class TestLevel(str, Enum):
             cls.INSTANTIATION: [cls.INSTALL],
             cls.STATIC_CAPTURE: [cls.INSTALL],
             cls.VALIDATION: [cls.INSTALL],
+            cls.EXECUTION_LIGHT: [cls.INSTALL],
             cls.EXECUTION: [cls.INSTALL],
         }
         return deps.get(level, [])
@@ -73,7 +75,7 @@ class TestLevel(str, Enum):
                 all_levels.add(dep)
 
         # Return in execution order
-        order = [cls.SYNTAX, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.STATIC_CAPTURE, cls.VALIDATION, cls.EXECUTION]
+        order = [cls.SYNTAX, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.STATIC_CAPTURE, cls.VALIDATION, cls.EXECUTION_LIGHT, cls.EXECUTION]
         return [l for l in order if l in all_levels]
 
 

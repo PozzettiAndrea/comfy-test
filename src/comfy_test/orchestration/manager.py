@@ -17,6 +17,7 @@ from .levels import (
     run_instantiation,
     run_static_capture,
     run_validation,
+    run_execution_light,
     run_execution,
 )
 
@@ -29,6 +30,7 @@ LEVEL_RUNNERS = {
     TestLevel.INSTANTIATION: run_instantiation,
     TestLevel.STATIC_CAPTURE: run_static_capture,
     TestLevel.VALIDATION: run_validation,
+    TestLevel.EXECUTION_LIGHT: run_execution_light,
     TestLevel.EXECUTION: run_execution,
 }
 
@@ -40,6 +42,7 @@ ALL_LEVELS = [
     TestLevel.INSTANTIATION,
     TestLevel.STATIC_CAPTURE,
     TestLevel.VALIDATION,
+    TestLevel.EXECUTION_LIGHT,
     TestLevel.EXECUTION,
 ]
 
