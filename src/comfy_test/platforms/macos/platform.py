@@ -194,6 +194,9 @@ class MacOSPlatform(TestPlatform):
             )
             if result.returncode != 0:
                 self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[-20:]:
+                        self._log(f"  [!] {line}")
 
     def start_server(
         self,
@@ -287,3 +290,6 @@ class MacOSPlatform(TestPlatform):
             )
             if result.returncode != 0:
                 self._log(f"Warning: {name} install.py failed (exit code {result.returncode}), continuing...")
+                if result.stderr:
+                    for line in result.stderr.strip().splitlines()[-20:]:
+                        self._log(f"  [!] {line}")
