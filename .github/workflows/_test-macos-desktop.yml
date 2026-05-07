@@ -76,6 +76,11 @@ jobs:
           from pathlib import Path
           from playwright.sync_api import sync_playwright
 
+          t0 = time.time()
+          import builtins as _b
+          def log(*a, **k):
+              _b.print(f'[{int(time.time()-t0):4d}s]', *a, **k, flush=True)
+
           OUT = Path(os.environ['COMFY_TEST_LOGS_DIR']) / 'electron_inspect'
           FRAMES = OUT / 'frames'
           OUT.mkdir(parents=True, exist_ok=True)
@@ -87,7 +92,7 @@ jobs:
                   page.screenshot(path=str(OUT / f'{name}.png'), full_page=True)
                   (OUT / f'{name}.html').write_text(page.content(), encoding='utf-8')
               except Exception as e:
-                  print(f'  snap {name}: {e}')
+                  log(f'  snap {name}: {e}')
 
           def frame(page):
               try:
@@ -132,23 +137,23 @@ jobs:
           try:
               tg = json.loads(urllib.request.urlopen('http://localhost:9222/json').read())
               (OUT / 'targets.json').write_text(json.dumps(tg, indent=2))
-              print(f'CDP targets: {len(tg)}')
+              log(f'CDP targets: {len(tg)}')
               for t in tg:
-                  print(f"  {t.get('type')}: {t.get('url')} | {t.get('title')}")
+                  log(f"  {t.get('type')}: {t.get('url')} | {t.get('title')}")
           except Exception as e:
-              print(f'targets list: {e}')
+              log(f'targets list: {e}')
 
           with sync_playwright() as p:
               browser = p.chromium.connect_over_cdp('http://localhost:9222')
               page = main_page(browser)
               if not page:
-                  print('No usable page')
+                  log('No usable page')
                   sys.exit(0)
-              print(f'Main page: {page.url} | {page.title()}')
+              log(f'Main page: {page.url} | {page.title()}')
               snap(page, 'initial')
               btns = buttons(page)
               (OUT / 'initial_buttons.json').write_text(json.dumps(btns, indent=2))
-              print(f"Buttons: {[b['text'] for b in btns]}")
+              log(f"Buttons: {[b['text'] for b in btns]}")
               frame(page)
 
               PRIMARY_LABELS = ['Get Started', 'Next', 'Continue', 'Install', 'OK',
@@ -186,11 +191,11 @@ jobs:
               while time.time() < deadline:
                   frame(page)
                   if server_up():
-                      print(f'  /system_stats up after {int(time.time()-start)}s')
+                      log(f'  /system_stats up after {int(time.time()-start)}s')
                       break
                   new_url = page.url
                   if new_url != page_url:
-                      print(f'  url: {page_url} -> {new_url}')
+                      log(f'  url: {page_url} -> {new_url}')
                       page_url = new_url
                       clicked.clear()
                   found = find_action(page)
@@ -200,26 +205,26 @@ jobs:
                           time.sleep(2); continue
                       try:
                           loc.click(timeout=3000)
-                          print(f'  clicked [{sig}]')
+                          log(f'  clicked [{sig}]')
                           clicked.add(sig)
                           sleep_capturing(page, 1, fps=4)
                       except Exception as e:
-                          print(f'  click [{sig}] failed: {e}')
+                          log(f'  click [{sig}] failed: {e}')
                           clicked.add(sig)
                   else:
                       time.sleep(2)
               else:
-                  print(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
+                  log(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
 
               snap(page, 'final')
-              print(f'Captured {fi[0]} frames')
+              log(f'Captured {fi[0]} frames')
               browser.close()
 
           try:
               import imageio_ffmpeg
               ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
           except Exception as e:
-              print(f'imageio-ffmpeg unavailable ({e}); falling back to PATH ffmpeg')
+              log(f'imageio-ffmpeg unavailable ({e}); falling back to PATH ffmpeg')
               ffmpeg_exe = 'ffmpeg'
 
           mp4 = OUT / 'driver.mp4'
@@ -231,9 +236,9 @@ jobs:
                   '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
                   str(mp4),
               ], check=True)
-              print(f'Wrote {mp4}')
+              log(f'Wrote {mp4}')
           except Exception as e:
-              print(f'ffmpeg failed: {e}')
+              log(f'ffmpeg failed: {e}')
           PY
 
           # Launch the .app with CDP enabled. `open --args` forwards flags to argv.
