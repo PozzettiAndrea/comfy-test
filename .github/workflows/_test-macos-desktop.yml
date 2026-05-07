@@ -184,7 +184,8 @@ jobs:
                               pass
                   return None
 
-              clicked = set()
+              clicked = {}
+              CLICK_TTL = 5
               page_url = page.url
               start = time.time()
               deadline = start + 1500
@@ -201,16 +202,17 @@ jobs:
                   found = find_action(page)
                   if found:
                       kind, loc, sig = found
-                      if sig in clicked:
-                          time.sleep(2); continue
+                      last_t = clicked.get(sig, 0)
+                      if time.time() - last_t < CLICK_TTL:
+                          time.sleep(1); continue
                       try:
                           loc.click(timeout=3000)
                           log(f'  clicked [{sig}]')
-                          clicked.add(sig)
+                          clicked[sig] = time.time()
                           sleep_capturing(page, 1, fps=4)
                       except Exception as e:
                           log(f'  click [{sig}] failed: {e}')
-                          clicked.add(sig)
+                          clicked[sig] = time.time()
                   else:
                       time.sleep(2)
               else:
