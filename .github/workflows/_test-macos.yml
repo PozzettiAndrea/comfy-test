@@ -112,11 +112,17 @@ jobs:
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test
         run: |
-          VERSION=$(echo "$GITHUB_WORKFLOW_REF" | grep -oP '(?<=@refs/tags/v)[^/]+' || echo "")
+          # macOS ships BSD grep which does NOT support `-P` — the previous
+          # `grep -oP` would silently produce nothing on macOS, so VERSION
+          # was empty and we fell into the "install latest" branch, which
+          # on a cache-hit venv leaves the older comfy-test in place.
+          # Use bash parameter expansion (portable, no external tool).
+          VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
+          if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
           if [ -n "$VERSION" ]; then
-            $VENV/bin/uv pip install "comfy-test==$VERSION"
+            $VENV/bin/uv pip install --reinstall "comfy-test==$VERSION"
           else
-            $VENV/bin/uv pip install comfy-test
+            $VENV/bin/uv pip install --reinstall comfy-test
           fi
 
       # --- Checkout ---
