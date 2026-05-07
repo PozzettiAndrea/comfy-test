@@ -43,11 +43,18 @@ jobs:
             echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
           fi
 
+      - name: Pick Python version
+        id: python
+        shell: bash
+        run: |
+          versions=(3.10 3.11 3.12 3.13 3.14)
+          chosen=${versions[$RANDOM % ${#versions[@]}]}
+          echo "version=$chosen" >> $GITHUB_OUTPUT
+          echo "Picked Python $chosen"
+
       - uses: actions/setup-python@v5
         with:
-          # Pinned to 3.12 because Playwright 1.39.x bundles greenlet 3.0,
-          # which uses private `_PyCFrame` APIs removed in CPython 3.13.
-          python-version: "3.12"
+          python-version: ${{ steps.python.outputs.version }}
 
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
@@ -57,7 +64,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-macos-pw1.39-py3.12
+          key: setup-macos-pw1.39-py${{ steps.python.outputs.version }}
 
       # --- Setup (skip if cache hit) ---
       - name: Create venv and install uv
@@ -82,7 +89,9 @@ jobs:
           # On macos-latest's 7 GB RAM, that OOM-kills mid-capture and Node
           # dies with `Unexpected end of JSON input` at pipeTransport.js.
           # Refs: microsoft/playwright#38489, microsoft/playwright#28942
-          $VENV/bin/uv pip install 'playwright>=1.39.0,<1.40'
+          # greenlet>=3.1 needed for Python 3.13/3.14 (Playwright 1.39's bundled
+          # greenlet 3.0 uses removed `_PyCFrame` API).
+          $VENV/bin/uv pip install 'playwright>=1.39.0,<1.40' 'greenlet>=3.1.0'
           $VENV/bin/python -m playwright install chromium
           $VENV/bin/python -m playwright install-deps chromium || true
 
@@ -94,7 +103,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-macos-pw1.39-py3.12
+          key: setup-macos-pw1.39-py${{ steps.python.outputs.version }}
 
       # --- Install comfy-test (always fresh) ---
       - name: Install comfy-test

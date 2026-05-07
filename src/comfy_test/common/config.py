@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, List
 
 # Supported Python versions for random selection
-PYTHON_VERSIONS = ["3.11", "3.12", "3.13"]
+PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
 
 def _random_python_version() -> str:

@@ -82,7 +82,7 @@ class LinuxPlatform(TestPlatform):
 
         # Create venv (isolated from system Python)
         self._log("Creating virtual environment...")
-        self._run_command(["uv", "venv", str(venv_dir), "--python", "3.10"], cwd=work_dir)
+        self._run_command(["uv", "venv", str(venv_dir), "--python", config.python_version], cwd=work_dir)
         python = venv_dir / "bin" / "python"
         self._venv_python = python
 

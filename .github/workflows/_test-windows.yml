@@ -40,9 +40,18 @@ jobs:
             echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
           fi
 
+      - name: Pick Python version
+        id: python
+        shell: bash
+        run: |
+          versions=(3.10 3.11 3.12 3.13 3.14)
+          chosen=${versions[$RANDOM % ${#versions[@]}]}
+          echo "version=$chosen" >> $GITHUB_OUTPUT
+          echo "Picked Python $chosen"
+
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ steps.python.outputs.version }}
 
       # --- Restore cache ---
       - uses: actions/cache/restore@v4
@@ -52,7 +61,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-windows-cpu
+          key: setup-windows-cpu-py${{ steps.python.outputs.version }}
 
       # --- Setup (skip if cache hit) ---
       - name: Create venv and install uv
@@ -87,7 +96,7 @@ jobs:
             ${{ env.VENV }}
             ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
             ${{ env.COMFYUI_DIR }}
-          key: setup-windows-cpu
+          key: setup-windows-cpu-py${{ steps.python.outputs.version }}
 
       # --- Verify base setup ---
       - name: Verify base setup

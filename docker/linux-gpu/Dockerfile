@@ -31,8 +31,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Python 3.10 via uv (matches the Windows image)
-RUN uv python install 3.10
+# Python 3.10–3.14 via uv: pre-install all candidates so per-test venv
+# creation (uv venv --python 3.X) is fast regardless of which version
+# `_random_python_version()` picks for the run.
+RUN uv python install 3.10 3.11 3.12 3.13 3.14
 
 # Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
