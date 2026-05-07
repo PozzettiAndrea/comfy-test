@@ -169,19 +169,27 @@ jobs:
               def find_action(page):
                   try:
                       loc = page.locator('button.p-confirmpopup-accept-button').first
-                      if loc.count():
+                      if loc.count() and loc.is_visible():
                           return ('confirm', loc, f'CONFIRM|{(loc.text_content() or "").strip()}')
                   except Exception:
                       pass
                   for label in PRIMARY_LABELS:
-                      for sel_kind, sel in (('raised', f'button.p-button-raised:has-text("{label}")'),
-                                            ('any',    f'button:has-text("{label}")')):
+                      for sel in (f'button.p-button-raised:text-is("{label}")',
+                                  f'button:not(.hardware-option):text-is("{label}")',
+                                  f'button[aria-label="{label}"]:not(.hardware-option)'):
                           try:
                               loc = page.locator(sel).first
-                              if loc.count() and not loc.is_disabled():
-                                  return (sel_kind, loc, f'{sel_kind.upper()}|{label}')
+                              if loc.count() and loc.is_visible() and not loc.is_disabled():
+                                  return ('btn', loc, f'BTN|{label}')
                           except Exception:
                               pass
+                  try:
+                      tile = page.locator('button.hardware-option:not([aria-disabled="true"])').first
+                      if tile.count() and tile.is_visible():
+                          name = (tile.get_attribute('aria-label') or tile.text_content() or 'tile').strip()[:40]
+                          return ('tile', tile, f'TILE|{name}')
+                  except Exception:
+                      pass
                   return None
 
               clicked = {}

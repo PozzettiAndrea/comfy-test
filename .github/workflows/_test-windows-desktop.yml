@@ -208,21 +208,34 @@ jobs:
                       return False
 
               def find_action(page):
+                  # Confirm popover (e.g., "Delete .venv" → Recreate accept)
                   try:
                       loc = page.locator('button.p-confirmpopup-accept-button').first
-                      if loc.count():
+                      if loc.count() and loc.is_visible():
                           return ('confirm', loc, f'CONFIRM|{(loc.text_content() or "").strip()}')
                   except Exception:
                       pass
+                  # Exact-text primary buttons (exclude hardware tiles, must be visible+enabled).
+                  # :text-is is exact match; :has-text is substring (catches tiles by accident).
                   for label in PRIMARY_LABELS:
-                      for sel_kind, sel in (('raised', f'button.p-button-raised:has-text("{label}")'),
-                                            ('any',    f'button:has-text("{label}")')):
+                      for sel in (f'button.p-button-raised:text-is("{label}")',
+                                  f'button:not(.hardware-option):text-is("{label}")',
+                                  f'button[aria-label="{label}"]:not(.hardware-option)'):
                           try:
                               loc = page.locator(sel).first
-                              if loc.count() and not loc.is_disabled():
-                                  return (sel_kind, loc, f'{sel_kind.upper()}|{label}')
+                              if loc.count() and loc.is_visible() and not loc.is_disabled():
+                                  return ('btn', loc, f'BTN|{label}')
                           except Exception:
                               pass
+                  # Hardware-tile fallback: on the GPU picker the bottom Install button is
+                  # disabled until a tile is clicked. Click the first visible enabled tile.
+                  try:
+                      tile = page.locator('button.hardware-option:not([aria-disabled="true"])').first
+                      if tile.count() and tile.is_visible():
+                          name = (tile.get_attribute('aria-label') or tile.text_content() or 'tile').strip()[:40]
+                          return ('tile', tile, f'TILE|{name}')
+                  except Exception:
+                      pass
                   return None
 
               clicked = {}  # sig -> last_click_time; allow re-click after CLICK_TTL
