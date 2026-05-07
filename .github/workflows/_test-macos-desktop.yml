@@ -146,6 +146,46 @@ jobs:
           except Exception as e:
               log(f'targets list: {e}')
 
+          # Visible cursor injected into the page so the captured video shows
+          # where the driver clicks. The CSS transform transitions over 300ms,
+          # so move-then-wait-then-click looks like a smooth pointer move.
+          CURSOR_JS = r'''
+          (() => {
+            if (document.getElementById('__fake_cursor')) return;
+            const c = document.createElement('div');
+            c.id = '__fake_cursor';
+            c.style.cssText = [
+              'position:fixed','top:0','left:0','width:28px','height:28px',
+              'pointer-events:none','z-index:2147483647',
+              'transition:transform 300ms cubic-bezier(.4,0,.2,1),filter 120ms',
+              'transform:translate(40px,40px)',
+              "background:url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M3 2 L3 19 L8 14 L11 21 L14 20 L11 13 L18 13 Z' fill='black' stroke='white' stroke-width='1.5'/></svg>\") no-repeat center / contain"
+            ].join(';');
+            document.documentElement.appendChild(c);
+            window.__moveCursor = (x, y) => { c.style.transform = `translate(${x}px,${y}px)`; };
+            window.__clickFlash  = () => { c.style.filter = 'drop-shadow(0 0 8px #4af) brightness(1.4)'; setTimeout(()=>c.style.filter='',180); };
+          })();
+          '''
+
+          def install_cursor(page):
+              try:
+                  page.evaluate(CURSOR_JS)
+              except Exception as e:
+                  log(f'  cursor inject failed: {e}')
+
+          def click_with_cursor(page, loc):
+              try:
+                  box = loc.bounding_box()
+                  if box:
+                      cx = box['x'] + box['width']/2
+                      cy = box['y'] + box['height']/2
+                      page.evaluate(f'window.__moveCursor && window.__moveCursor({cx}, {cy})')
+                      time.sleep(0.4)
+                      page.evaluate('window.__clickFlash && window.__clickFlash()')
+              except Exception:
+                  pass
+              loc.click(timeout=3000)
+
           with sync_playwright() as p:
               browser = p.chromium.connect_over_cdp('http://localhost:9222')
               page = main_page(browser)
@@ -153,6 +193,7 @@ jobs:
                   log('No usable page')
                   sys.exit(0)
               log(f'Main page: {page.url} | {page.title()}')
+              install_cursor(page)
               snap(page, 'initial')
               btns = buttons(page)
               (OUT / 'initial_buttons.json').write_text(json.dumps(btns, indent=2))
@@ -210,6 +251,7 @@ jobs:
                       log(f'  url: {page_url} -> {new_url}')
                       page_url = new_url
                       clicked.clear()
+                      install_cursor(page)
                   found = find_action(page)
                   if found:
                       kind, loc, sig = found
@@ -217,7 +259,7 @@ jobs:
                       if time.time() - last_t < CLICK_TTL:
                           time.sleep(1); continue
                       try:
-                          loc.click(timeout=3000)
+                          click_with_cursor(page, loc)
                           log(f'  clicked [{sig}]')
                           clicked[sig] = time.time()
                           sleep_capturing(page, 1, fps=4)
@@ -228,6 +270,9 @@ jobs:
                       time.sleep(2)
               else:
                   log(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
+
+              log('  capturing canvas load...')
+              sleep_capturing(page, 20, fps=5)
 
               snap(page, 'final')
               log(f'Captured {fi[0]} frames')
