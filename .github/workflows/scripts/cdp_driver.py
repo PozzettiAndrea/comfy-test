@@ -280,11 +280,38 @@ with sync_playwright() as p:
                 except Exception:
                     pass
 
-    # Extensions search → pick tile → choose Latest → Install.
-    # Hard-coded to SAM3/pznodes while we iterate; generalizing to
-    # parse pyproject.toml from inputs.node_repo is out of scope.
-    NODE_DISPLAY_NAME = 'SAM3'
-    PUBLISHER = 'pznodes'
+    # Extensions search → pick tile → choose pinned version → Install.
+    # Pull DisplayName / PublisherId / version from the node repo's
+    # pyproject.toml at https://raw.githubusercontent.com/<repo>/<branch>/.
+    # If that fails we can't reliably target the right tile, so bail
+    # out of the search-install flow rather than guess.
+    def _fetch_node_meta():
+        repo = os.environ.get('NODE_REPO', '')
+        branch = os.environ.get('NODE_BRANCH', 'main')
+        if not repo:
+            return None, None, None
+        url = f'https://raw.githubusercontent.com/{repo}/{branch}/pyproject.toml'
+        try:
+            body = urllib.request.urlopen(url, timeout=10).read().decode('utf-8')
+            try:
+                import tomllib
+            except ImportError:
+                import tomli as tomllib  # type: ignore
+            data = tomllib.loads(body)
+            comfy = data.get('tool', {}).get('comfy', {})
+            return (comfy.get('DisplayName'),
+                    comfy.get('PublisherId'),
+                    data.get('project', {}).get('version'))
+        except Exception as e:
+            log(f'  ext: pyproject.toml fetch/parse failed: {e}')
+            return None, None, None
+
+    NODE_DISPLAY_NAME, PUBLISHER, NODE_VERSION = _fetch_node_meta()
+    log(f'  ext: node meta = display={NODE_DISPLAY_NAME!r} publisher={PUBLISHER!r} version={NODE_VERSION!r}')
+    if not NODE_DISPLAY_NAME or not PUBLISHER:
+        # Existing `if not clicked_tile` branch will log + skip the rest.
+        NODE_DISPLAY_NAME = NODE_DISPLAY_NAME or '__no_match_should_ever__'
+        PUBLISHER = PUBLISHER or '__no_match_should_ever__'
     sleep_capturing(page, 3, fps=5)
     log(f'  ext: searching "{NODE_DISPLAY_NAME}"')
     fill_with_cursor(page, 'input[placeholder="Search"]:visible', NODE_DISPLAY_NAME)
@@ -333,7 +360,8 @@ with sync_playwright() as p:
                 # which CNR can't always resolve — but it's the
                 # next-best signal. Nightly is git-main tracking.
                 picked = False
-                for label in ('0.1.10', 'Latest', 'Nightly'):
+                version_labels = tuple(filter(None, (NODE_VERSION, 'Latest', 'Nightly')))
+                for label in version_labels:
                     try:
                         opt = page.locator(
                             f'[role="option"]:has-text("{label}"):visible, '
@@ -745,3 +773,15 @@ try:
     log(f'Wrote {mp4}')
 except Exception as e:
     log(f'ffmpeg failed: {e}')
+
+# Drop the per-frame PNGs once the mp4 is encoded — they're only the
+# raw input to ffmpeg and bloat both the artifact and gh-pages
+# (300+ frame_*.png files per platform). Keep frames/ on ffmpeg failure
+# so the run is still debuggable.
+try:
+    if mp4.exists() and mp4.stat().st_size > 0:
+        import shutil
+        shutil.rmtree(FRAMES, ignore_errors=True)
+        log(f'  removed {FRAMES} after successful encode')
+except Exception as e:
+    log(f'  frames cleanup failed: {e}')
