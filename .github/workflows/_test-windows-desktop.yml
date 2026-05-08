@@ -490,6 +490,29 @@ jobs:
                       log(f'  ext: install click failed: {e}')
                   sleep_capturing(page, 8, fps=5)
 
+                  # After install fires, ComfyUI shows a bottom toast:
+                  # "To apply changes, please restart ComfyUI" with an
+                  # "Apply Changes" button. Clicking it restarts the
+                  # backend so the newly-extracted node loads.
+                  log('  ext: waiting for "Apply Changes" toast')
+                  applied = False
+                  deadline = time.time() + 20
+                  while time.time() < deadline:
+                      try:
+                          ac = page.locator('button:has-text("Apply Changes"):visible').first
+                          if ac.count() and ac.is_visible() and not ac.is_disabled():
+                              click_with_cursor(page, ac)
+                              log('  ext: clicked Apply Changes')
+                              applied = True
+                              break
+                      except Exception:
+                          pass
+                      sleep_capturing(page, 1, fps=5)
+                  if not applied:
+                      log('  ext: Apply Changes toast not seen, skipping')
+                  # Capture the restart so the video shows the splash + reload.
+                  sleep_capturing(page, 20, fps=5)
+
               snap(page, 'final')
               log(f'Captured {fi[0]} frames')
               browser.close()
