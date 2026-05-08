@@ -513,6 +513,29 @@ jobs:
                   # Capture the restart so the video shows the splash + reload.
                   sleep_capturing(page, 20, fps=5)
 
+                  # Post-restart: close Nodes Manager, open Templates sidebar.
+                  log('  ext: closing Nodes Manager dialog')
+                  try:
+                      cd = page.locator('button[aria-label="Close dialog"]:visible').first
+                      if cd.count():
+                          click_with_cursor(page, cd)
+                          log('  ext: clicked Close dialog')
+                          sleep_capturing(page, 2, fps=5)
+                  except Exception as e:
+                      log(f'  ext: Close dialog failed: {e}')
+
+                  log('  ext: opening Templates sidebar')
+                  try:
+                      tpl = page.locator('button[aria-label="Templates"]:visible').first
+                      if tpl.count():
+                          click_with_cursor(page, tpl)
+                          log('  ext: clicked Templates')
+                          sleep_capturing(page, 6, fps=5)
+                      else:
+                          log('  ext: Templates sidebar button not found')
+                  except Exception as e:
+                      log(f'  ext: Templates click failed: {e}')
+
               snap(page, 'final')
               log(f'Captured {fi[0]} frames')
               browser.close()
