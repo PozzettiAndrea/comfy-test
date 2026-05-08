@@ -254,33 +254,53 @@ with sync_playwright() as p:
     # several `aria-label="Close"` X icons in the page (sidebar
     # accordion items render hidden ones); without :visible the
     # `.first` would pick a hidden one and the click is a no-op.
+    # The "Run ComfyUI in the Cloud?" upsell dialog can render with any
+    # of several button copies depending on Desktop version. Try them
+    # all, longer deadline (modal can render >8s after server-up on a
+    # CI runner), and Escape fallback so a stuck modal doesn't block
+    # downstream Extensions/Templates steps.
     POST_ACTIONS = [
-        ('Continue Locally',  'button:has-text("Continue Locally"):visible'),
-        ('Close Templates',   'button[aria-label="Close"]:visible'),
-        ('Extensions',        'button[aria-label="Extensions"]:visible'),
+        ('Cloud upsell',  'cloud',
+         ['button:has-text("Continue Locally"):visible',
+          'button:has-text("Use Local"):visible',
+          'button:has-text("Stay Local"):visible',
+          'button:has-text("Run Locally"):visible',
+          'button:has-text("Local Install"):visible',
+          'button:has-text("No thanks"):visible',
+          'button:has-text("Skip"):visible',
+          'button:has-text("Maybe later"):visible',
+          'button[aria-label="Close"]:visible'],
+         30),
+        ('Close Templates', 'templates',
+         ['button[aria-label="Close"]:visible'], 8),
+        ('Extensions', 'extensions',
+         ['button[aria-label="Extensions"]:visible'], 8),
     ]
-    for name, sel in POST_ACTIONS:
+    for name, kind, selectors, secs in POST_ACTIONS:
         log(f'  post: waiting for {name}')
-        deadline = time.time() + 8
+        deadline = time.time() + secs
         hit = False
         while time.time() < deadline:
-            try:
-                loc = page.locator(sel).first
-                if loc.count() and loc.is_visible() and not loc.is_disabled():
-                    click_with_cursor(page, loc)
-                    log(f'  post: clicked {name}')
-                    sleep_capturing(page, 2, fps=5)
-                    hit = True
-                    break
-            except Exception:
-                pass
+            for sel in selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.count() and loc.is_visible() and not loc.is_disabled():
+                        click_with_cursor(page, loc)
+                        log(f'  post: clicked {name} via [{sel}]')
+                        sleep_capturing(page, 2, fps=5)
+                        hit = True
+                        break
+                except Exception:
+                    pass
+            if hit:
+                break
             sleep_capturing(page, 0.5, fps=5)
         if not hit:
             log(f'  post: {name} not found, skipping')
-            if name == 'Close Templates':
+            if kind in ('templates', 'cloud'):
                 try:
                     page.keyboard.press('Escape')
-                    log('  post: pressed Escape (Templates fallback)')
+                    log(f'  post: pressed Escape ({name} fallback)')
                     sleep_capturing(page, 2, fps=5)
                 except Exception:
                     pass
@@ -817,16 +837,8 @@ with sync_playwright() as p:
 # comfy-test's generate_html_report() requires this to render the per-
 # platform index.html on gh-pages. Schema matches what the framework
 # emits on other platforms: {"workflows": [{name, status, duration_seconds, error}]}.
-#
-# Always prepend a synthetic 'system' workflow row so the lightbox-card
-# named 'system' picks up logs/system.log (the chronologically-merged
-# install + Apply + post-restart stream that the Collect step builds).
-_workflow_results.insert(0, {
-    'name': 'system',
-    'status': 'pass',
-    'duration_seconds': 0,
-    'error': None,
-})
+# A synthetic 'system' row is prepended by the platform YML's "Synthetic
+# system workflow" step (with hardware metadata), so we don't add one here.
 _results_path = OUT.parent / 'results.json'
 try:
     _results_path.write_text(json.dumps({'workflows': _workflow_results}, indent=2),
