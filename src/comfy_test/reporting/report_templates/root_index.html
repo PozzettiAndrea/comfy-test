@@ -128,15 +128,21 @@
     });
 
     // Forward messages between report iframe and parent (branch_index).
-    // Special case: `comfytest-platform-select` from the parent — click
-    // the tab here instead of forwarding into the report iframe.
+    // Special cases for `comfytest-platform-select` from the parent:
+    // click the tab; if there's a `workflow` field, queue a follow-up
+    // `comfytest-open` to fire once the new platform iframe is ready.
     window.addEventListener('message', function(e) {
       if (e.data && e.data.type && e.data.type.startsWith('comfytest-')) {
         if (e.source === frame.contentWindow) {
           // From report iframe -> forward to parent
           if (window !== window.top) window.parent.postMessage(e.data, '*');
         } else if (e.data.type === 'comfytest-platform-select') {
-          if (!selectPlatform(e.data.platform)) {
+          const ok = selectPlatform(e.data.platform);
+          if (ok && e.data.workflow) {
+            // Queue the workflow open until after the new platform's
+            // report iframe fires its load event.
+            pendingMessage = { type: 'comfytest-open', name: e.data.workflow };
+          } else if (!ok) {
             // Not a known platform — treat as workflow open instead.
             const fallback = { type: 'comfytest-open', name: e.data.platform };
             if (frameReady) frame.contentWindow.postMessage(fallback, '*');
