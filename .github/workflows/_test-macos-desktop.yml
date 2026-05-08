@@ -60,6 +60,9 @@ jobs:
       # the Maintenance page (Recreate → wait → Continue), capture renderer
       # frames at 5fps, ffmpeg-assemble into driver.mp4.
       - name: First boot (CDP-driven)
+        env:
+          NODE_REPO: ${{ inputs.node_repo }}
+          NODE_BRANCH: ${{ inputs.node_branch }}
         run: |
           OUT="$COMFY_TEST_LOGS_DIR/electron_inspect"
           mkdir -p "$OUT/frames"

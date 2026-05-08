@@ -107,6 +107,9 @@ jobs:
       # capture renderer frames at 5fps which ffmpeg assembles into driver.mp4.
       - name: First boot (CDP-driven)
         shell: bash
+        env:
+          NODE_REPO: ${{ inputs.node_repo }}
+          NODE_BRANCH: ${{ inputs.node_branch }}
         run: |
           APP="$LOCALAPPDATA/Programs/ComfyUI/ComfyUI.exe"
           OUT="${COMFY_TEST_LOGS_DIR//\\//}/electron_inspect"

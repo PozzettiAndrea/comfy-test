@@ -548,29 +548,69 @@ with sync_playwright() as p:
         except Exception as e:
             log(f'  ext: {NODE_PACKAGE_NAME} section click failed: {e}')
 
-        # Open the first template card under the node section.
+        # Pick the first CPU-compatible template per the node repo's
+        # comfy-test.toml [test.workflows].cpu spec. Mirrors
+        # comfy-test/src/comfy_test/common/config_file.py:resolve_workflows
+        #   - cpu = "all"            → any card
+        #   - cpu = ["a","b"]        → only "a" or "b"
+        #   - cpu = ["!a"] (any !)   → any card except those listed
         if node_section is not None:
-            log(f'  ext: opening first {NODE_PACKAGE_NAME} template')
+            cpu_mode = 'all'   # 'all' | 'include' | 'exclude'
+            cpu_items = []     # list of workflow names (without .json)
             try:
-                card_candidates = [
-                    'aside [class*="template-card"]:visible',
-                    'aside [class*="workflow-card"]:visible',
-                    'aside .cursor-pointer img:visible',
-                    'aside .cursor-pointer:visible',
-                ]
-                tpl_card = None
-                for sel in card_candidates:
-                    cards = page.locator(sel)
-                    if cards.count():
-                        tpl_card = cards.first
-                        log(f'  ext: found template via {sel}')
+                node_repo = os.environ.get('NODE_REPO', '')
+                node_branch = os.environ.get('NODE_BRANCH', 'main')
+                if node_repo:
+                    toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
+                    log(f'  ext: fetching comfy-test.toml from {toml_url}')
+                    toml_text = urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8')
+                    try:
+                        import tomllib
+                    except ImportError:
+                        import tomli as tomllib  # type: ignore
+                    data = tomllib.loads(toml_text)
+                    cpu = data.get('test', {}).get('workflows', {}).get('cpu')
+                    if cpu == 'all' or cpu is None:
+                        cpu_mode = 'all'
+                    elif isinstance(cpu, list):
+                        excludes = [f.lstrip('!') for f in cpu if isinstance(f, str) and f.startswith('!')]
+                        if excludes:
+                            cpu_mode = 'exclude'
+                            cpu_items = [e[:-5] if e.endswith('.json') else e for e in excludes]
+                        else:
+                            cpu_mode = 'include'
+                            cpu_items = [f[:-5] if f.endswith('.json') else f for f in cpu]
+                    log(f'  ext: cpu spec = {cpu_mode} {cpu_items}')
+            except Exception as e:
+                log(f'  ext: comfy-test.toml fetch/parse failed ({e}); defaulting to all')
+
+            log(f'  ext: picking first matching {NODE_PACKAGE_NAME} template')
+            picked_card = None
+            picked_name = None
+            try:
+                cards = page.locator('[data-testid^="template-workflow-"]:visible')
+                n = cards.count()
+                log(f'  ext: {n} visible cards')
+                for i in range(n):
+                    c = cards.nth(i)
+                    tid = c.get_attribute('data-testid') or ''
+                    name = tid[len('template-workflow-'):] if tid.startswith('template-workflow-') else tid
+                    if cpu_mode == 'all' or \
+                       (cpu_mode == 'include' and name in cpu_items) or \
+                       (cpu_mode == 'exclude' and name not in cpu_items):
+                        picked_card = c
+                        picked_name = name
                         break
-                if tpl_card is not None:
-                    tpl_card.scroll_into_view_if_needed()
+                    else:
+                        log(f'  ext: skipping {name} (not in CPU list)')
+                if picked_card is not None:
+                    picked_card.scroll_into_view_if_needed()
                     sleep_capturing(page, 1, fps=5)
-                    click_with_cursor(page, tpl_card)
-                    log('  ext: clicked first template')
-                    sleep_capturing(page, 4, fps=5)
+                    click_with_cursor(page, picked_card)
+                    log(f'  ext: clicked template {picked_name}')
+                    sleep_capturing(page, 5, fps=5)
+                else:
+                    log('  ext: no CPU-eligible template card found')
             except Exception as e:
                 log(f'  ext: template click failed: {e}')
 
