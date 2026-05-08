@@ -7,10 +7,23 @@ import builtins as _b
 def log(*a, **k):
     _b.print(f'[{int(time.time()-t0):4d}s]', *a, **k, flush=True)
 
-OUT = Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\', '/')) / 'electron_inspect'
+# Three roots, all default to COMFY_TEST_LOGS_DIR for back-compat with
+# the flat layout. The platform YMLs override them to mirror the cpu
+# nested structure: artifacts under <RUN_ID>/<platform>/, debug-only
+# captures (electron_inspect, frames mid-state) under <RUN_ID>/debug/.
+_LOGS_DIR = Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\', '/'))
+_RUN_DIR = Path(os.environ.get('COMFY_TEST_RUN_DIR', str(_LOGS_DIR)).replace('\\', '/'))
+_DEBUG_DIR = Path(os.environ.get('COMFY_TEST_DEBUG_DIR', str(_LOGS_DIR)).replace('\\', '/'))
+
+# OUT = where DOM snapshots, intermediate frames, and the final mp4
+# master live. Treated as debug — no part of the standard report needs
+# it. Standard outputs (results.json, videos/<workflow>/*) go under
+# _RUN_DIR.
+OUT = _DEBUG_DIR / 'electron_inspect'
 FRAMES = OUT / 'frames'
 OUT.mkdir(parents=True, exist_ok=True)
 FRAMES.mkdir(parents=True, exist_ok=True)
+_RUN_DIR.mkdir(parents=True, exist_ok=True)
 fi = [0]
 
 # Per-workflow results that get rolled up into results.json at the
@@ -896,13 +909,14 @@ with sync_playwright() as p:
     log(f'Captured {fi[0]} frames')
     browser.close()
 
-# Write results.json at the artifact root (one level above electron_inspect/).
-# comfy-test's generate_html_report() requires this to render the per-
-# platform index.html on gh-pages. Schema matches what the framework
-# emits on other platforms: {"workflows": [{name, status, duration_seconds, error}]}.
-# A synthetic 'system' row is prepended by the platform YML's "Synthetic
-# system workflow" step (with hardware metadata), so we don't add one here.
-_results_path = OUT.parent / 'results.json'
+# Write results.json at the run root (mirrors the path cpu's
+# `comfy-test run` writes to). generate_html_report() reads this to
+# build the per-platform index.html. Schema matches cpu's:
+#   {"workflows": [{name, status, duration_seconds, error}, ...]}
+# A synthetic 'system' row is prepended by the platform YML's
+# "Synthetic system workflow" step (with hardware metadata), so we
+# don't add one here.
+_results_path = _RUN_DIR / 'results.json'
 try:
     _results_path.write_text(json.dumps({'workflows': _workflow_results}, indent=2),
                              encoding='utf-8')
@@ -952,7 +966,7 @@ except Exception as e:
 try:
     if mp4.exists() and mp4.stat().st_size > 0:
         import shutil
-        videos_root = OUT.parent / 'videos'
+        videos_root = _RUN_DIR / 'videos'
         for _wf in _workflow_results:
             wf_name = _wf.get('name') or 'system'
             wf_dir = videos_root / wf_name

@@ -25,17 +25,34 @@ jobs:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
     steps:
 
-      - name: Resolve target node
+      - name: Resolve target node + run layout
         shell: bash
         env:
           INPUT_REPO: ${{ inputs.node_repo }}
         run: |
           if [ -n "$INPUT_REPO" ]; then
-            echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
+            NODE_NAME="${INPUT_REPO##*/}"
           else
-            echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
+            NODE_NAME="${{ github.event.repository.name }}"
           fi
-          mkdir -p "${COMFY_TEST_LOGS_DIR//\\//}"
+          # Mirror cpu's nesting (see _test-macos-desktop.yml comment for
+          # the full rationale). RUN_ID = "<short_name>-<HHMM>".
+          LOGS_FWD="${COMFY_TEST_LOGS_DIR//\\//}"
+          SHORT="${NODE_NAME#ComfyUI-}"
+          RUN_ID="${SHORT}-$(date -u +%H%M)"
+          PLATFORM_DIR="windows-desktop"
+          RUN_ROOT="$LOGS_FWD/$RUN_ID/$PLATFORM_DIR"
+          DEBUG_ROOT="$LOGS_FWD/$RUN_ID/debug"
+          mkdir -p "$RUN_ROOT" "$DEBUG_ROOT" \
+                   "$RUN_ROOT/logs" "$RUN_ROOT/screenshots" "$RUN_ROOT/videos"
+          : > "$RUN_ROOT/crash_dump.log"
+          {
+            echo "NODE_NAME=$NODE_NAME"
+            echo "RUN_ID=$RUN_ID"
+            echo "PLATFORM_DIR=$PLATFORM_DIR"
+            echo "RUN_ROOT=$RUN_ROOT"
+            echo "DEBUG_ROOT=$DEBUG_ROOT"
+          } >> $GITHUB_ENV
 
       # --- Download and install desktop app ---
       - name: Download ComfyUI Desktop
@@ -79,7 +96,7 @@ jobs:
       - name: Start desktop screenshot loop
         shell: bash
         run: |
-          OUT="${COMFY_TEST_LOGS_DIR//\\//}/desktop_capture"
+          OUT="$DEBUG_ROOT/desktop_capture"
           mkdir -p "$OUT"
           cat > /tmp/screencap.ps1 << 'PSEOF'
           param([string]$OutDir, [int]$Index)
@@ -110,9 +127,14 @@ jobs:
         env:
           NODE_REPO: ${{ inputs.node_repo }}
           NODE_BRANCH: ${{ inputs.node_branch }}
+          # Driver writes its standard outputs (results.json, videos/)
+          # to RUN_ROOT and its debug captures (electron_inspect/) to
+          # DEBUG_ROOT.
+          COMFY_TEST_RUN_DIR: ${{ env.RUN_ROOT }}
+          COMFY_TEST_DEBUG_DIR: ${{ env.DEBUG_ROOT }}
         run: |
           APP="$LOCALAPPDATA/Programs/ComfyUI/ComfyUI.exe"
-          OUT="${COMFY_TEST_LOGS_DIR//\\//}/electron_inspect"
+          OUT="$DEBUG_ROOT/electron_inspect"
           mkdir -p "$OUT/frames"
 
           # Drop the CDP driver to /tmp first.
@@ -143,7 +165,8 @@ jobs:
 
           if [ "$SHORT" = "cdp" ]; then
             pip install --quiet playwright imageio-ffmpeg tomli || pip install playwright imageio-ffmpeg tomli
-            python /tmp/cdp_driver.py || echo "CDP driver had errors; continuing"
+            # Tee driver stdout to RUN_ROOT/session.log to mirror cpu.
+            python /tmp/cdp_driver.py 2>&1 | tee "$RUN_ROOT/session.log" || echo "CDP driver had errors; continuing"
           fi
 
           # Surface the tail of comfyui.log inline so workflow-execution
@@ -227,15 +250,14 @@ jobs:
         shell: bash
         run: |
           kill $SCREENCAP_PID 2>/dev/null || true
-          OUT="${COMFY_TEST_LOGS_DIR//\\//}"
-          LATEST=$(ls -1t "$OUT/desktop_capture/"*.png 2>/dev/null | head -1)
+          LATEST=$(ls -1t "$DEBUG_ROOT/desktop_capture/"*.png 2>/dev/null | head -1)
           if [ -n "$LATEST" ]; then
-            mkdir -p "$OUT/screenshots"
-            cp "$LATEST" "$OUT/screenshots/system_executed.png"
+            mkdir -p "$RUN_ROOT/screenshots"
+            cp "$LATEST" "$RUN_ROOT/screenshots/system_executed.png"
           fi
           python -c "
           import json, os, pathlib
-          p = pathlib.Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\\\','/')) / 'results.json'
+          p = pathlib.Path(os.environ['RUN_ROOT'].replace('\\\\','/')) / 'results.json'
           if not p.exists():
               raise SystemExit(0)
           data = json.loads(p.read_text())
@@ -260,7 +282,7 @@ jobs:
           # %APPDATA%\ComfyUI\logs\ on Windows. comfyui.log is the server
           # stdout pipe (where Manager Install messages land); main.log is
           # the Electron main process.
-          OUT="${COMFY_TEST_LOGS_DIR//\\//}/logs"
+          OUT="$RUN_ROOT/logs"
           mkdir -p "$OUT"
           SRC="${APPDATA//\\//}/ComfyUI/logs"
           if [ -d "$SRC" ]; then
@@ -273,6 +295,26 @@ jobs:
           python /tmp/merge_logs.py "$OUT" || true
           echo "--- collected ---"
           ls -la "$OUT" || true
+
+      - name: Generate per-platform index.html
+        if: always()
+        shell: bash
+        run: |
+          VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
+          if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
+          if [ -n "$VERSION" ]; then
+            pip install --quiet "comfy-test==$VERSION" || pip install --quiet comfy-test
+          else
+            pip install --quiet comfy-test
+          fi
+          python -c "
+          import os
+          from pathlib import Path
+          from comfy_test.reporting.html_report import generate_html_report
+          generate_html_report(Path(os.environ['RUN_ROOT'].replace('\\\\','/')),
+                               repo_name=os.environ.get('NODE_REPO', os.environ.get('NODE_NAME', '')),
+                               current_platform='windows-desktop')
+          " || echo "index.html generation failed (non-fatal)"
 
       - uses: actions/upload-artifact@v4
         if: always()
