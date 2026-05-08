@@ -1,4 +1,4 @@
-import base64, json, os, subprocess, sys, time, urllib.request
+import json, os, subprocess, sys, time, urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -25,59 +25,55 @@ def snap(page, name):
     except Exception as e:
         log(f'  snap {name}: {e}')
 
-# Frame capture is push-based via CDP `Page.startScreencast`: chromium
-# streams frames to us continuously regardless of renderer state
-# (splash, maintenance, modal overlays, canvas) instead of us polling
-# `page.screenshot()` on a sleep loop. The polling approach silently
-# died after `browser.close()` + `connect_over_cdp` because the new
-# page reference was attached to a different CDP target than the one
-# screenshot() was firing against, and the bare except swallowed it.
-# With the screencast we just re-bind the subscription on the fresh
-# page after each reconnect (start_screencast() at every
-# install_cursor() call site).
-_screencast_session = [None]  # holds the current CDP session
-
-def _on_screencast_frame(params):
-    fi[0] += 1
-    try:
-        (FRAMES / f'frame_{fi[0]:06d}.jpg').write_bytes(
-            base64.b64decode(params['data'])
-        )
-    except Exception as e:
-        log(f'  frame write: {e}')
-    sess = _screencast_session[0]
-    if sess is not None:
-        try:
-            sess.send('Page.screencastFrameAck', {'sessionId': params['sessionId']})
-        except Exception:
-            pass
-
-def start_screencast(page):
-    """Subscribe to Page.screencastFrame on a fresh CDP session for
-    `page`. Must be re-called after every browser reconnect — the old
-    session is bound to the stale CDP target."""
-    try:
-        sess = page.context.new_cdp_session(page)
-        sess.on('Page.screencastFrame', _on_screencast_frame)
-        sess.send('Page.startScreencast', {
-            'format': 'jpeg',
-            'quality': 70,
-            'everyNthFrame': 6,  # ~10 fps from a 60fps renderer
-        })
-        _screencast_session[0] = sess
-        log(f'  capture: screencast started (frame index = {fi[0]})')
-    except Exception as e:
-        log(f'  capture: start_screencast failed: {e}')
-
-def sleep_capturing(page, seconds, fps=5):
-    """Backward-compatible wrapper. Frames now stream via the CDP
-    screencast subscription, so this is just a sleep — the `page` and
-    `fps` args are kept so we don't have to touch every call site."""
-    time.sleep(seconds)
+# Frame capture is polling-based: page.screenshot() called from the
+# main thread on a sleep loop. We tried CDP Page.startScreencast (push)
+# but the ack flow has to run on Playwright's dispatcher thread, which
+# is the same thread that needs to read the ack response — chromium's
+# send buffer fills (~318 frames) and screencast quietly stalls.
+#
+# Polling on the main thread doesn't have that problem (screenshot is
+# a sync RPC issued by the same thread that's running the rest of the
+# driver flow). The one failure mode polling had — page.screenshot()
+# silently failing post-relaunch because the page reference was bound
+# to a stale CDP target — is fixed by re-resolving the page from the
+# current browser if a screenshot raises.
+_browser_ref = [None]  # set whenever connect_over_cdp gives us a browser
+_capture_warned = [False]
 
 def frame(page):
-    """No-op shim. Frame writes happen inside _on_screencast_frame."""
-    pass
+    fi[0] += 1
+    path = str(FRAMES / f'frame_{fi[0]:06d}.png')
+    try:
+        page.screenshot(path=path)
+        return
+    except Exception as e:
+        # Page is probably detached after browser.close()+reconnect.
+        # Re-resolve from the live browser and try once more.
+        br = _browser_ref[0]
+        if br is None:
+            if not _capture_warned[0]:
+                log(f'  frame: capture skipped (no browser ref): {e}')
+                _capture_warned[0] = True
+            return
+        try:
+            fresh = main_page(br)
+            if fresh is None:
+                if not _capture_warned[0]:
+                    log(f'  frame: capture skipped (no page): {e}')
+                    _capture_warned[0] = True
+                return
+            fresh.screenshot(path=path)
+        except Exception as e2:
+            if not _capture_warned[0]:
+                log(f'  frame: capture failed: {e2}')
+                _capture_warned[0] = True
+
+def sleep_capturing(page, seconds, fps=5):
+    interval = 1.0 / fps
+    end = time.time() + seconds
+    while time.time() < end:
+        frame(page)
+        time.sleep(interval)
 
 def buttons(page):
     try:
@@ -177,13 +173,13 @@ def fill_with_cursor(page, sel, text):
 
 with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp('http://localhost:9222')
+    _browser_ref[0] = browser
     page = main_page(browser)
     if not page:
         log('No usable page')
         sys.exit(0)
     log(f'Main page: {page.url} | {page.title()}')
     install_cursor(page)
-    start_screencast(page)
     snap(page, 'initial')
     btns = buttons(page)
     (OUT / 'initial_buttons.json').write_text(json.dumps(btns, indent=2))
@@ -550,17 +546,19 @@ with sync_playwright() as p:
 
         log('  app: reconnecting Playwright')
         browser = p.chromium.connect_over_cdp('http://localhost:9222')
+        _browser_ref[0] = browser
+        _capture_warned[0] = False  # let frame() warn again post-relaunch
         page = main_page(browser)
         if page is None:
             log('  app: no page after relaunch, bailing')
         else:
             install_cursor(page)
-            start_screencast(page)
             log(f'  app: attached to {page.url}')
             for i in range(180):
                 if server_up():
                     log(f'  app: server ready after {i+1}s')
                     break
+                frame(page)
                 time.sleep(1)
                 time.sleep(1)
             # Server is up but the renderer might still be on a splash
@@ -920,23 +918,11 @@ except Exception as e:
     log(f'imageio-ffmpeg unavailable ({e}); falling back to PATH ffmpeg')
     ffmpeg_exe = 'ffmpeg'
 
-# Stop the screencast cleanly so chromium isn't still streaming when
-# we encode (also flushes any final pending frames into FRAMES/).
-try:
-    sess = _screencast_session[0]
-    if sess is not None:
-        sess.send('Page.stopScreencast')
-        log('  capture: screencast stopped')
-except Exception as e:
-    log(f'  capture: stopScreencast failed: {e}')
-
-# Frames are JPEGs from CDP screencast (everyNthFrame=6 ≈ 10 fps).
-# Encode at the matching frame rate.
 mp4 = OUT / 'driver.mp4'
 try:
     subprocess.run([
-        ffmpeg_exe, '-y', '-framerate', '10',
-        '-i', str(FRAMES / 'frame_%06d.jpg'),
+        ffmpeg_exe, '-y', '-framerate', '5',
+        '-i', str(FRAMES / 'frame_%06d.png'),
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
         '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
         str(mp4),
@@ -947,7 +933,7 @@ except Exception as e:
 
 # Drop the per-frame PNGs once the mp4 is encoded — they're only the
 # raw input to ffmpeg and bloat both the artifact and gh-pages
-# (1000+ frame_*.jpg files per platform). Keep frames/ on ffmpeg failure
+# (1000+ frame_*.png files per platform). Keep frames/ on ffmpeg failure
 # so the run is still debuggable.
 try:
     if mp4.exists() and mp4.stat().st_size > 0:
