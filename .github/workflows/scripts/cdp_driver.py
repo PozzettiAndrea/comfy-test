@@ -411,9 +411,13 @@ with sync_playwright() as p:
         # "To apply changes, please restart ComfyUI" with an
         # "Apply Changes" button. Clicking it restarts the
         # backend so the newly-extracted node loads.
+        # Wait long enough for nodes whose install.py runs `pixi install
+        # --all` over several isolation envs (CADabra, GeometryPack) to
+        # finish before the toast appears. Killing during pixi install
+        # leaves partial envs that crash the next boot's metadata scan.
         log('  ext: waiting for "Apply Changes" toast')
         applied = False
-        deadline = time.time() + 20
+        deadline = time.time() + 600
         while time.time() < deadline:
             try:
                 ac = page.locator('button:has-text("Apply Changes"):visible').first
@@ -431,23 +435,31 @@ with sync_playwright() as p:
         # do a hard close-and-reopen of the whole Electron app — the
         # Templates panel caches its node-pack list at app startup
         # and won't pick up newly-installed packs without a full
-        # relaunch.
+        # relaunch. Only force-kill when we never saw Apply Changes:
+        # if it was clicked, the in-app restart already happened, and
+        # killing now would race the freshly-relaunched python server.
         sleep_capturing(page, 5, fps=5)
 
-        log('  app: killing ComfyUI to force full relaunch')
-        try: browser.close()
-        except Exception: pass
         IS_WIN = sys.platform == 'win32'
-        try:
-            if IS_WIN:
-                subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
-                               capture_output=True, timeout=10)
-            else:
-                subprocess.run(['pkill', '-f', 'ComfyUI'],
-                               capture_output=True, timeout=10)
-        except Exception as e:
-            log(f'  app: kill error: {e}')
-        time.sleep(5)
+        if not applied:
+            log('  app: killing ComfyUI to force full relaunch')
+            try: browser.close()
+            except Exception: pass
+            try:
+                if IS_WIN:
+                    subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
+                                   capture_output=True, timeout=10)
+                else:
+                    subprocess.run(['pkill', '-f', 'ComfyUI'],
+                                   capture_output=True, timeout=10)
+            except Exception as e:
+                log(f'  app: kill error: {e}')
+            time.sleep(5)
+        else:
+            log('  app: Apply Changes already triggered in-app restart, skipping pkill')
+            try: browser.close()
+            except Exception: pass
+            time.sleep(5)
 
         log('  app: relaunching with CDP')
         # Send app stdout/stderr to /dev/null on relaunch; same reason as
@@ -805,6 +817,16 @@ with sync_playwright() as p:
 # comfy-test's generate_html_report() requires this to render the per-
 # platform index.html on gh-pages. Schema matches what the framework
 # emits on other platforms: {"workflows": [{name, status, duration_seconds, error}]}.
+#
+# Always prepend a synthetic 'system' workflow row so the lightbox-card
+# named 'system' picks up logs/system.log (the chronologically-merged
+# install + Apply + post-restart stream that the Collect step builds).
+_workflow_results.insert(0, {
+    'name': 'system',
+    'status': 'pass',
+    'duration_seconds': 0,
+    'error': None,
+})
 _results_path = OUT.parent / 'results.json'
 try:
     _results_path.write_text(json.dumps({'workflows': _workflow_results}, indent=2),
