@@ -76,16 +76,13 @@ jobs:
               echo "Updating platform: $PLATFORM_ID"
               rm -rf "$DEST"
               mkdir -p "$DEST"
-              # comfy-test framework writes nested run_id/platform_dir/...
-              # — files are 3 levels deep. Desktop driver writes flat
-              # (comfy_logs/, electron_inspect/) — 2 levels. Try the
-              # deep glob first; if it matched nothing, fall back to
-              # copying the artifact's top-level entries directly.
-              if compgen -G "$dir/*/*/*" > /dev/null 2>&1; then
-                cp -r "$dir"/*/*/* "$DEST/" 2>/dev/null || true
-              else
-                cp -r "$dir"/* "$DEST/" 2>/dev/null || true
-              fi
+              # Copy each top-level entry of the artifact preserving
+              # structure. Earlier glob `*/*/*` was depth-sensitive: it
+              # matched all 3-level descendants individually instead of
+              # whole subdirs, dropping anything at a different depth.
+              # `dir/*` walks each top-level subdir/file and `cp -r`
+              # recurses, so any tree shape lands cleanly.
+              cp -r "$dir"/* "$DEST/" 2>/dev/null || true
             fi
           done
           touch gh-pages/.nojekyll
