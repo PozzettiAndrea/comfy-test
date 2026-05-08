@@ -91,8 +91,15 @@ jobs:
           if [ "$SHORT" = "cdp" ]; then
             # macOS Homebrew Python is PEP 668 externally-managed; --break-system-packages
             # is fine in CI since the runner is thrown away after the job.
-            pip3 install --break-system-packages --quiet playwright imageio-ffmpeg
+            pip3 install --break-system-packages --quiet playwright imageio-ffmpeg tomli
             python3 /tmp/cdp_driver.py || echo "CDP driver had errors; continuing"
+          fi
+
+          LOG_DIR="$HOME/Library/Logs/ComfyUI"
+          if [ -f "$LOG_DIR/comfyui.log" ]; then
+            echo "----- last 200 lines of comfyui.log -----"
+            tail -200 "$LOG_DIR/comfyui.log" || true
+            echo "----- /comfyui.log tail -----"
           fi
 
           echo "Polling /system_stats up to 15min..."

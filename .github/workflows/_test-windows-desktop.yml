@@ -142,8 +142,18 @@ jobs:
           echo "Phase 1 outcome: ${SHORT:-neither}"
 
           if [ "$SHORT" = "cdp" ]; then
-            pip install --quiet playwright imageio-ffmpeg || pip install playwright imageio-ffmpeg
+            pip install --quiet playwright imageio-ffmpeg tomli || pip install playwright imageio-ffmpeg tomli
             python /tmp/cdp_driver.py || echo "CDP driver had errors; continuing"
+          fi
+
+          # Surface the tail of comfyui.log inline so workflow-execution
+          # stdout (Manager Install, node imports, prompt errors) is
+          # readable in the GH Actions log without unzipping the artifact.
+          LOG_DIR="${APPDATA//\\//}/ComfyUI/logs"
+          if [ -f "$LOG_DIR/comfyui.log" ]; then
+            echo "----- last 200 lines of comfyui.log -----"
+            tail -200 "$LOG_DIR/comfyui.log" || true
+            echo "----- /comfyui.log tail -----"
           fi
 
           # Phase 2: long-wait for /system_stats

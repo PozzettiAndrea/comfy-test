@@ -450,15 +450,33 @@ with sync_playwright() as p:
         else:
             install_cursor(page)
             log(f'  app: attached to {page.url}')
-            # Wait for /system_stats again (may already be up since
-            # config is now installed).
             for i in range(180):
                 if server_up():
                     log(f'  app: server ready after {i+1}s')
                     break
                 frame(page)
                 time.sleep(1)
-            sleep_capturing(page, 8, fps=5)
+            # Server is up but the renderer might still be on the splash
+            # (#/desktop-start, #/server-start). Wait until the main canvas
+            # is loaded (window.app.graph defined) — same gate comfy-test
+            # uses — before any post-restart clicks. Windows in particular
+            # sits on #/desktop-start until the canvas mounts.
+            log('  app: waiting for main canvas (window.app.graph)')
+            for i in range(180):
+                try:
+                    ready = page.evaluate(
+                        "typeof window.app !== 'undefined' "
+                        "&& window.app.graph !== undefined")
+                    if ready:
+                        log(f'  app: canvas ready after {i+1}s ({page.url})')
+                        break
+                except Exception:
+                    pass
+                frame(page)
+                time.sleep(1)
+            else:
+                log(f'  app: canvas never became ready (still at {page.url})')
+            sleep_capturing(page, 5, fps=5)
 
         # Post-restart: close Nodes Manager (may not exist), open Templates sidebar.
         log('  ext: closing Nodes Manager dialog')
@@ -614,7 +632,45 @@ with sync_playwright() as p:
             except Exception as e:
                 log(f'  ext: template click failed: {e}')
 
-            # Run the workflow.
+            # Hook the page's existing WebSocket BEFORE clicking Run.
+            # Same approach as comfy-test/src/comfy_test/reporting/screenshot.py:
+            # intercept window.app.api.socket.onmessage; flag completion on
+            # execution_success / execution_error / execution_interrupted.
+            log('  ext: installing WS execution listener')
+            try:
+                page.evaluate(r"""
+                    window._executionComplete = false;
+                    window._executionError = null;
+                    window._executionEvents = [];
+                    if (window.app && window.app.api && window.app.api.socket) {
+                        const origOnMessage = window.app.api.socket.onmessage;
+                        window.app.api.socket.onmessage = function(event) {
+                            if (origOnMessage) {
+                                try { origOnMessage.call(this, event); } catch(e) {}
+                            }
+                            if (event && typeof event.data === 'string') {
+                                try {
+                                    const msg = JSON.parse(event.data);
+                                    window._executionEvents.push({type: msg.type, ts: Date.now()});
+                                    if (msg && msg.type === 'execution_success') {
+                                        window._executionComplete = true;
+                                    } else if (msg && msg.type === 'execution_error') {
+                                        window._executionError = msg.data;
+                                        window._executionComplete = true;
+                                    } else if (msg && msg.type === 'execution_interrupted') {
+                                        window._executionError = msg.data || 'Execution interrupted';
+                                        window._executionComplete = true;
+                                    }
+                                } catch (e) {}
+                            }
+                        };
+                    } else {
+                        window._executionError = 'window.app.api.socket not available';
+                    }
+                """)
+            except Exception as e:
+                log(f'  ext: WS listener install failed: {e}')
+
             log('  ext: clicking Run')
             try:
                 run_btn = page.locator(
@@ -624,11 +680,46 @@ with sync_playwright() as p:
                 if run_btn.count():
                     click_with_cursor(page, run_btn)
                     log('  ext: clicked Run')
-                    sleep_capturing(page, 30, fps=5)
                 else:
                     log('  ext: Run button not found')
             except Exception as e:
                 log(f'  ext: Run click failed: {e}')
+
+            # Wait for execution_success / execution_error from the WS.
+            log('  ext: waiting for execution_success / execution_error')
+            run_deadline = time.time() + 600
+            run_start = time.time()
+            while time.time() < run_deadline:
+                frame(page)
+                try:
+                    complete = page.evaluate('window._executionComplete')
+                except Exception:
+                    complete = False
+                if complete:
+                    break
+                time.sleep(0.5)
+            elapsed = int(time.time() - run_start)
+            try:
+                events = page.evaluate('window._executionEvents') or []
+                err = page.evaluate('window._executionError')
+            except Exception:
+                events, err = [], None
+            log(f'  ext: WS events={len(events)} elapsed={elapsed}s')
+            for ev in events[-15:]:
+                log(f'    ws: {ev}')
+            if err:
+                # err is the raw msg.data from execution_error — typically
+                # has node_type, exception_type, exception_message, traceback.
+                try:
+                    log('  ext: execution_error data:')
+                    log(json.dumps(err, indent=2, default=str))
+                except Exception:
+                    log(f'  ext: execution_error (non-serializable): {err!r}')
+            elif elapsed >= 600:
+                log('  ext: WORKFLOW TIMEOUT (no execution_success/error in 10min)')
+            else:
+                log(f'  ext: execution_success after {elapsed}s')
+            sleep_capturing(page, 5, fps=5)
 
     snap(page, 'final')
     log(f'Captured {fi[0]} frames')
