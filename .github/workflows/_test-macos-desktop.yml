@@ -53,17 +53,7 @@ jobs:
       # that CDP can't click. The Electron renderer frames captured by the
       # CDP driver give us the wizard view we actually need.
 
-      # Cache the venv across runs. ~2 GB of Python + torch + 80 other
-      # packages — the slowest part of a fresh wizard install (~6-8 min).
-      # If the wizard's validator accepts a pre-existing .venv, we skip the
-      # heavy reinstall entirely. If it rejects it, our CDP driver will
-      # walk through the maintenance "Recreate" flow (which the keyed-on-OS
-      # cache doesn't help with, but at least we tried).
-      - name: Cache ComfyUI Desktop venv
-        uses: actions/cache@v4
-        with:
-          path: ~/Documents/ComfyUI/.venv
-          key: comfyui-desktop-venv-${{ runner.os }}-v2
+      # .venv caching disabled — see windows workflow comment.
 
       # --- First boot: launch app + drive maintenance UI via CDP if needed ---
       # Same idea as windows-desktop: attach Playwright via CDP, click through

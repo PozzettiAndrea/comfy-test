@@ -62,15 +62,13 @@ jobs:
             exit 1
           }
 
-      # Cache the venv so subsequent runs skip the ~6-8 min Python + 80
-      # package install. Keyed on OS only — on a stale cache vs a new
-      # ComfyUI Desktop release, the wizard's validator will reject and
-      # the CDP driver falls back to the Recreate maintenance flow.
-      - name: Cache ComfyUI Desktop venv
-        uses: actions/cache@v4
-        with:
-          path: ~/Documents/ComfyUI/.venv
-          key: comfyui-desktop-venv-${{ runner.os }}-v2
+      # .venv caching disabled. The .venv's python.exe is a symlink to
+      # uv's managed-python store at %APPDATA%\uv\python\..., which isn't
+      # restored alongside .venv — the restored venv ends up pointing
+      # at a missing python and the wizard fails with
+      # "Failed to get packages: Exit code 2". Re-enable later by also
+      # caching the uv store (~/AppData/Roaming/uv on Windows,
+      # ~/Library/Application Support/uv on macOS).
 
       # --- Background desktop screenshot loop (every 5s) ---
       # Started BEFORE first boot so we capture any maintenance UI / install
