@@ -437,7 +437,7 @@ jobs:
                   # auto-scrolls the right panel's overflow-y container.
                   log('  ext: scrolling to + opening version selector')
                   try:
-                      vt = page.locator('div[role="button"][aria-haspopup="true"]:visible').first
+                      vt = page.locator('div[role="button"][aria-haspopup="true"].bg-dialog-surface:visible').first
                       if vt.count():
                           vt.scroll_into_view_if_needed()
                           sleep_capturing(page, 1, fps=5)
