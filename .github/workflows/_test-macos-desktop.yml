@@ -186,6 +186,27 @@ jobs:
                   pass
               loc.click(timeout=3000)
 
+          def fill_with_cursor(page, sel, text):
+              loc = page.locator(sel).first
+              if not loc.count() or not loc.is_visible():
+                  return False
+              try:
+                  box = loc.bounding_box()
+                  if box:
+                      cx = box['x'] + box['width']/2
+                      cy = box['y'] + box['height']/2
+                      page.evaluate(f'window.__moveCursor && window.__moveCursor({cx}, {cy})')
+                      time.sleep(0.4)
+              except Exception:
+                  pass
+              try:
+                  loc.click(timeout=3000)
+                  loc.fill('')
+                  loc.type(text, delay=80)
+                  return True
+              except Exception:
+                  return False
+
           with sync_playwright() as p:
               browser = p.chromium.connect_over_cdp('http://localhost:9222')
               page = main_page(browser)
@@ -303,7 +324,55 @@ jobs:
                               sleep_capturing(page, 2, fps=5)
                           except Exception:
                               pass
-              sleep_capturing(page, 5, fps=5)
+
+              NODE_DISPLAY_NAME = 'SAM3'
+              PUBLISHER = 'pznodes'
+              sleep_capturing(page, 3, fps=5)
+              log(f'  ext: searching "{NODE_DISPLAY_NAME}"')
+              fill_with_cursor(page, 'input[placeholder="Search"]:visible', NODE_DISPLAY_NAME)
+              sleep_capturing(page, 2, fps=5)
+
+              log(f'  ext: clicking {PUBLISHER} tile')
+              tile_sel = f'div.bg-modal-card-background.cursor-pointer:has-text("{PUBLISHER}"):visible'
+              deadline = time.time() + 8
+              clicked_tile = False
+              while time.time() < deadline:
+                  try:
+                      tile = page.locator(tile_sel).first
+                      if tile.count() and tile.is_visible():
+                          click_with_cursor(page, tile)
+                          clicked_tile = True
+                          break
+                  except Exception:
+                      pass
+                  sleep_capturing(page, 0.5, fps=5)
+              if not clicked_tile:
+                  log('  ext: tile not found, ending capture')
+              else:
+                  sleep_capturing(page, 2, fps=5)
+                  log('  ext: opening version dropdown')
+                  try:
+                      dd = page.locator('button[aria-label="Single-select dropdown"]:visible').first
+                      if dd.count():
+                          click_with_cursor(page, dd)
+                          sleep_capturing(page, 1, fps=5)
+                          latest = page.locator('[role="option"]:has-text("Latest"):visible').first
+                          if latest.count():
+                              click_with_cursor(page, latest)
+                              log('  ext: selected Latest')
+                              sleep_capturing(page, 1, fps=5)
+                  except Exception as e:
+                      log(f'  ext: version dropdown failed: {e}')
+
+                  log('  ext: clicking Install')
+                  try:
+                      btn = page.locator('button[is-installing="false"]:visible').first
+                      if btn.count():
+                          click_with_cursor(page, btn)
+                          log('  ext: clicked Install')
+                  except Exception as e:
+                      log(f'  ext: install click failed: {e}')
+                  sleep_capturing(page, 8, fps=5)
 
               snap(page, 'final')
               log(f'Captured {fi[0]} frames')
