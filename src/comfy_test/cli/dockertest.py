@@ -362,7 +362,27 @@ def _patch_null_commit_hash(node_path: Path, logs_dir: Path) -> None:
 
 
 def cmd_dockertest(args) -> int:
-    """Clone a node from a URL (or local path) and run comfy-test in Docker."""
+    """Clone a node from a URL (or local path) and run comfy-test in Docker.
+
+    With --desktop_mac / --desktop_windows / --desktop_windows_gpu, bypass
+    the Docker path entirely and drive ComfyUI Desktop on the local host
+    via cdp_driver.py. That mode mirrors what the
+    `_test-{macos,windows}-desktop.yml` workflows do on a GHA runner —
+    used to iterate on cdp_driver behavior without round-tripping CI.
+    """
+    desktop_mode = getattr(args, "desktop_mode", None)
+    if desktop_mode:
+        # Reject conflicting flags: desktop modes are local-Electron, not
+        # docker. --gpu is implied by --desktop_windows_gpu; --platform /
+        # --portable have no meaning here.
+        for flag in ("portable", "platform"):
+            if getattr(args, flag, None):
+                print(f"[dockertest] --{flag} conflicts with --desktop_{desktop_mode}",
+                      file=sys.stderr)
+                return 1
+        from comfy_test.cli._desktop_runner import run_desktop  # local: keep optional dep cost low
+        return run_desktop(args, desktop_mode)
+
     # --portable is a shorthand for --platform windows-portable; reject mixing both.
     if args.portable and args.platform and args.platform != "windows-portable":
         print(f"[dockertest] --portable conflicts with --platform={args.platform}", file=sys.stderr)
@@ -483,4 +503,21 @@ def add_dockertest_parser(subparsers):
                    help="Bind-mount the workspace to the host so ComfyUI install, "
                         ".venv, and pixi envs survive after the container exits. "
                         "Saved to ~/comfy-test-workspaces/<node>-<HHMM>/. Implies --keep-clone.")
-    p.set_defaults(func=cmd_dockertest)
+
+    # Local-Electron Desktop modes: mutually exclusive with each other and
+    # with the docker flags. Each picks a host-platform-specific path:
+    # macOS opens /Applications/ComfyUI.app, Windows runs the NSIS setup
+    # under %LOCALAPPDATA%\Programs\ComfyUI. The runner mirrors the
+    # `_test-{macos,windows}-desktop.yml` workflows on the local host so
+    # we can iterate on cdp_driver.py without dispatching CI.
+    desktop_group = p.add_mutually_exclusive_group()
+    desktop_group.add_argument("--desktop_mac", action="store_const",
+                               const="mac", dest="desktop_mode",
+                               help="Drive ComfyUI Desktop locally on macOS (no docker)")
+    desktop_group.add_argument("--desktop_windows", action="store_const",
+                               const="windows", dest="desktop_mode",
+                               help="Drive ComfyUI Desktop locally on Windows CPU (no docker)")
+    desktop_group.add_argument("--desktop_windows_gpu", action="store_const",
+                               const="windows_gpu", dest="desktop_mode",
+                               help="Drive ComfyUI Desktop locally on Windows with GPU (no docker)")
+    p.set_defaults(func=cmd_dockertest, desktop_mode=None)
