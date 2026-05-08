@@ -510,10 +510,57 @@ jobs:
                       sleep_capturing(page, 1, fps=5)
                   if not applied:
                       log('  ext: Apply Changes toast not seen, skipping')
-                  # Capture the restart so the video shows the splash + reload.
-                  sleep_capturing(page, 20, fps=5)
+                  # Capture the in-app backend restart for a few seconds, then
+                  # do a hard close-and-reopen of the whole Electron app — the
+                  # Templates panel caches its node-pack list at app startup
+                  # and won't pick up newly-installed packs without a full
+                  # relaunch.
+                  sleep_capturing(page, 5, fps=5)
 
-                  # Post-restart: close Nodes Manager, open Templates sidebar.
+                  log('  app: killing ComfyUI to force full relaunch')
+                  try: browser.close()
+                  except Exception: pass
+                  try:
+                      subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
+                                     capture_output=True, timeout=10)
+                  except Exception as e:
+                      log(f'  app: taskkill error: {e}')
+                  time.sleep(5)
+
+                  log('  app: relaunching with CDP')
+                  app_exe = os.path.join(os.environ['LOCALAPPDATA'],
+                                         'Programs', 'ComfyUI', 'ComfyUI.exe')
+                  subprocess.Popen([app_exe, '--remote-debugging-port=9222'],
+                                   creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
+
+                  log('  app: waiting for CDP')
+                  for i in range(120):
+                      try:
+                          urllib.request.urlopen('http://localhost:9222/json/version', timeout=1)
+                          log(f'  app: CDP up after {i+1}s')
+                          break
+                      except Exception:
+                          time.sleep(1)
+
+                  log('  app: reconnecting Playwright')
+                  browser = p.chromium.connect_over_cdp('http://localhost:9222')
+                  page = main_page(browser)
+                  if page is None:
+                      log('  app: no page after relaunch, bailing')
+                  else:
+                      install_cursor(page)
+                      log(f'  app: attached to {page.url}')
+                      # Wait for /system_stats again (may already be up since
+                      # config is now installed).
+                      for i in range(180):
+                          if server_up():
+                              log(f'  app: server ready after {i+1}s')
+                              break
+                          frame(page)
+                          time.sleep(1)
+                      sleep_capturing(page, 8, fps=5)
+
+                  # Post-restart: close Nodes Manager (may not exist), open Templates sidebar.
                   log('  ext: closing Nodes Manager dialog')
                   try:
                       cd = page.locator('button[aria-label="Close dialog"]:visible').first

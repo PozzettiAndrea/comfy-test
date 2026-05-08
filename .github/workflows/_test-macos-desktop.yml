@@ -405,7 +405,47 @@ jobs:
                       sleep_capturing(page, 1, fps=5)
                   if not applied:
                       log('  ext: Apply Changes toast not seen, skipping')
-                  sleep_capturing(page, 20, fps=5)
+                  sleep_capturing(page, 5, fps=5)
+
+                  log('  app: killing ComfyUI to force full relaunch')
+                  try: browser.close()
+                  except Exception: pass
+                  try:
+                      subprocess.run(['pkill', '-f', 'ComfyUI'],
+                                     capture_output=True, timeout=10)
+                  except Exception as e:
+                      log(f'  app: pkill error: {e}')
+                  time.sleep(5)
+
+                  log('  app: relaunching with CDP')
+                  ws = os.environ.get('GITHUB_WORKSPACE', '')
+                  app_path = os.path.join(ws, 'ComfyUI.app')
+                  subprocess.Popen(['open', app_path, '--args', '--remote-debugging-port=9222'])
+
+                  log('  app: waiting for CDP')
+                  for i in range(120):
+                      try:
+                          urllib.request.urlopen('http://localhost:9222/json/version', timeout=1)
+                          log(f'  app: CDP up after {i+1}s')
+                          break
+                      except Exception:
+                          time.sleep(1)
+
+                  log('  app: reconnecting Playwright')
+                  browser = p.chromium.connect_over_cdp('http://localhost:9222')
+                  page = main_page(browser)
+                  if page is None:
+                      log('  app: no page after relaunch, bailing')
+                  else:
+                      install_cursor(page)
+                      log(f'  app: attached to {page.url}')
+                      for i in range(180):
+                          if server_up():
+                              log(f'  app: server ready after {i+1}s')
+                              break
+                          frame(page)
+                          time.sleep(1)
+                      sleep_capturing(page, 8, fps=5)
 
                   log('  ext: closing Nodes Manager dialog')
                   try:
