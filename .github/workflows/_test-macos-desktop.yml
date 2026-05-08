@@ -351,13 +351,14 @@ jobs:
                           sleep_capturing(page, 1, fps=5)
                           click_with_cursor(page, vt)
                           sleep_capturing(page, 1, fps=5)
-                          latest = page.locator('[role="option"]:has-text("Latest"):visible, [role="menuitem"]:has-text("Latest"):visible, li:has-text("Latest"):visible').first
-                          if latest.count():
-                              click_with_cursor(page, latest)
-                              log('  ext: selected Latest')
+                          NODE_VERSION = '0.1.10'
+                          opt = page.locator(f'[role="option"]:has-text("{NODE_VERSION}"):visible, [role="menuitem"]:has-text("{NODE_VERSION}"):visible, li:has-text("{NODE_VERSION}"):visible').first
+                          if opt.count():
+                              click_with_cursor(page, opt)
+                              log(f'  ext: selected {NODE_VERSION}')
                               sleep_capturing(page, 1, fps=5)
                           else:
-                              log('  ext: Latest option not found, dismissing')
+                              log(f'  ext: {NODE_VERSION} option not found, dismissing')
                               try: page.keyboard.press('Escape')
                               except Exception: pass
                   except Exception as e:
