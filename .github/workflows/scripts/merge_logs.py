@@ -51,6 +51,20 @@ def merge(logs_dir: Path) -> Path | None:
             continue
         if f.name == 'system.log':
             continue
+        # Skip Electron main-process log: it's overwhelmingly directory-
+        # creation enumeration, IPC chatter, renderer-ready, and
+        # PowerShell prompt ANSI rendering. None of it is signal for
+        # comfy-env / pixi / metadata-scan triage. Kill/restart events
+        # the driver itself logs go to GHA stdout instead.
+        if _normalize_stem(f.name) == 'main':
+            continue
+        # Skip rotated session logs (main.log_<ts>.log,
+        # comfyui.log_<ts>.log, *.prev*.log) — Electron rotates main.log
+        # on each session boundary, so on a CI-driven Apply Changes restart
+        # we'd otherwise slurp BOTH the prior session's rotated log AND
+        # the current session's fresh log.
+        if re.search(r'\.log_\d{4}-', f.name) or '.prev' in f.name:
+            continue
         stem = _normalize_stem(f.name)
         tag = SRC_TAG.get(stem, stem[:3].upper().ljust(3))
         try:
