@@ -524,6 +524,21 @@ jobs:
                   except Exception as e:
                       log(f'  ext: Close dialog failed: {e}')
 
+                  # Restart pops a "What's New" release-notes overlay (Vue
+                  # component .whats-new-popup) sitting right over the
+                  # Templates sidebar button. Dismiss it first.
+                  log("  ext: dismissing What's New popup")
+                  try:
+                      wn = page.locator('.whats-new-popup button[aria-label="Close"]:visible, .whats-new-popup button.close-button:visible').first
+                      if wn.count():
+                          click_with_cursor(page, wn)
+                          log("  ext: closed What's New popup")
+                          sleep_capturing(page, 2, fps=5)
+                      else:
+                          log("  ext: What's New popup not present")
+                  except Exception as e:
+                      log(f"  ext: What's New close failed: {e}")
+
                   log('  ext: opening Templates sidebar')
                   try:
                       tpl = page.locator('button[aria-label="Templates"]:visible').first
