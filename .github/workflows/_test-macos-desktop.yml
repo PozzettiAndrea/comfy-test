@@ -349,27 +349,40 @@ jobs:
               if not clicked_tile:
                   log('  ext: tile not found, ending capture')
               else:
-                  sleep_capturing(page, 2, fps=5)
-                  log('  ext: opening version dropdown')
+                  sleep_capturing(page, 3, fps=5)
+
+                  log('  ext: scrolling to + opening version selector')
                   try:
-                      dd = page.locator('button[aria-label="Single-select dropdown"]:visible').first
-                      if dd.count():
-                          click_with_cursor(page, dd)
+                      vt = page.locator('div[role="button"][aria-haspopup="true"]:visible').first
+                      if vt.count():
+                          vt.scroll_into_view_if_needed()
                           sleep_capturing(page, 1, fps=5)
-                          latest = page.locator('[role="option"]:has-text("Latest"):visible').first
+                          click_with_cursor(page, vt)
+                          sleep_capturing(page, 1, fps=5)
+                          latest = page.locator('[role="option"]:has-text("Latest"):visible, [role="menuitem"]:has-text("Latest"):visible, li:has-text("Latest"):visible').first
                           if latest.count():
                               click_with_cursor(page, latest)
                               log('  ext: selected Latest')
                               sleep_capturing(page, 1, fps=5)
+                          else:
+                              log('  ext: Latest option not found, dismissing')
+                              try: page.keyboard.press('Escape')
+                              except Exception: pass
                   except Exception as e:
-                      log(f'  ext: version dropdown failed: {e}')
+                      log(f'  ext: version selector failed: {e}')
 
-                  log('  ext: clicking Install')
+                  log('  ext: clicking right-panel Install')
                   try:
-                      btn = page.locator('button[is-installing="false"]:visible').first
-                      if btn.count():
+                      btns = page.locator('button:has-text("Install"):visible')
+                      n = btns.count()
+                      if n:
+                          btn = btns.nth(n - 1)
+                          btn.scroll_into_view_if_needed()
+                          sleep_capturing(page, 1, fps=5)
                           click_with_cursor(page, btn)
-                          log('  ext: clicked Install')
+                          log(f'  ext: clicked Install (last of {n} visible)')
+                      else:
+                          log('  ext: no visible Install button')
                   except Exception as e:
                       log(f'  ext: install click failed: {e}')
                   sleep_capturing(page, 8, fps=5)
