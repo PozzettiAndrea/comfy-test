@@ -76,13 +76,24 @@ jobs:
               echo "Updating platform: $PLATFORM_ID"
               rm -rf "$DEST"
               mkdir -p "$DEST"
-              # Copy each top-level entry of the artifact preserving
-              # structure. Earlier glob `*/*/*` was depth-sensitive: it
-              # matched all 3-level descendants individually instead of
-              # whole subdirs, dropping anything at a different depth.
-              # `dir/*` walks each top-level subdir/file and `cp -r`
-              # recurses, so any tree shape lands cleanly.
-              cp -r "$dir"/* "$DEST/" 2>/dev/null || true
+              # Flatten on copy so every platform lands the same shape
+              # on gh-pages: dev/<platform>/{results.json, logs/, ...}.
+              # cpu's `comfy-test run` writes nested
+              # <RunId>/<platform>/results.json; locate the dir that
+              # contains results.json and copy ITS contents into $DEST.
+              # For already-flat artifacts (linux-gpu via
+              # `comfy-test publish`, desktop) the find still resolves
+              # to $dir itself.
+              RESULTS_JSON=$(find "$dir" -name results.json -type f | head -1)
+              if [ -n "$RESULTS_JSON" ]; then
+                SRC=$(dirname "$RESULTS_JSON")
+              else
+                SRC="$dir"
+              fi
+              # `dir/.` copies contents (incl. dotfiles) without the
+              # extra leading-dir; safer than `dir/*` which misses
+              # hidden files and is shell-glob-dependent.
+              cp -r "$SRC"/. "$DEST/" 2>/dev/null || true
             fi
           done
           touch gh-pages/.nojekyll

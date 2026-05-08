@@ -35,23 +35,15 @@ jobs:
           else
             NODE_NAME="${{ github.event.repository.name }}"
           fi
-          # Mirror cpu's nesting (see _test-macos-desktop.yml comment for
-          # the full rationale). RUN_ID = "<short_name>-<HHMM>".
+          # Flat layout matching linux-gpu's gh-pages shape. See
+          # _test-macos-desktop.yml's equivalent step for full comment.
           LOGS_FWD="${COMFY_TEST_LOGS_DIR//\\//}"
-          SHORT="${NODE_NAME#ComfyUI-}"
-          RUN_ID="${SHORT}-$(date -u +%H%M)"
-          PLATFORM_DIR="windows-desktop"
-          RUN_ROOT="$LOGS_FWD/$RUN_ID/$PLATFORM_DIR"
-          DEBUG_ROOT="$LOGS_FWD/$RUN_ID/debug"
-          mkdir -p "$RUN_ROOT" "$DEBUG_ROOT" \
-                   "$RUN_ROOT/logs" "$RUN_ROOT/screenshots" "$RUN_ROOT/videos"
-          : > "$RUN_ROOT/crash_dump.log"
+          mkdir -p "$LOGS_FWD/debug" "$LOGS_FWD/logs" \
+                   "$LOGS_FWD/screenshots" "$LOGS_FWD/videos"
+          : > "$LOGS_FWD/crash_dump.log"
           {
             echo "NODE_NAME=$NODE_NAME"
-            echo "RUN_ID=$RUN_ID"
-            echo "PLATFORM_DIR=$PLATFORM_DIR"
-            echo "RUN_ROOT=$RUN_ROOT"
-            echo "DEBUG_ROOT=$DEBUG_ROOT"
+            echo "DEBUG_ROOT=$LOGS_FWD/debug"
           } >> $GITHUB_ENV
 
       # --- Download and install desktop app ---
@@ -127,10 +119,8 @@ jobs:
         env:
           NODE_REPO: ${{ inputs.node_repo }}
           NODE_BRANCH: ${{ inputs.node_branch }}
-          # Driver writes its standard outputs (results.json, videos/)
-          # to RUN_ROOT and its debug captures (electron_inspect/) to
-          # DEBUG_ROOT.
-          COMFY_TEST_RUN_DIR: ${{ env.RUN_ROOT }}
+          # Driver writes results.json + videos/ to COMFY_TEST_LOGS_DIR
+          # (default), electron_inspect/ to DEBUG_ROOT.
           COMFY_TEST_DEBUG_DIR: ${{ env.DEBUG_ROOT }}
         run: |
           APP="$LOCALAPPDATA/Programs/ComfyUI/ComfyUI.exe"
@@ -165,8 +155,8 @@ jobs:
 
           if [ "$SHORT" = "cdp" ]; then
             pip install --quiet playwright imageio-ffmpeg tomli || pip install playwright imageio-ffmpeg tomli
-            # Tee driver stdout to RUN_ROOT/session.log to mirror cpu.
-            python /tmp/cdp_driver.py 2>&1 | tee "$RUN_ROOT/session.log" || echo "CDP driver had errors; continuing"
+            # Tee driver stdout to session.log to mirror gpu.
+            python /tmp/cdp_driver.py 2>&1 | tee "${COMFY_TEST_LOGS_DIR//\\//}/session.log" || echo "CDP driver had errors; continuing"
           fi
 
           # Surface the tail of comfyui.log inline so workflow-execution
@@ -250,14 +240,15 @@ jobs:
         shell: bash
         run: |
           kill $SCREENCAP_PID 2>/dev/null || true
+          LOGS_FWD="${COMFY_TEST_LOGS_DIR//\\//}"
           LATEST=$(ls -1t "$DEBUG_ROOT/desktop_capture/"*.png 2>/dev/null | head -1)
           if [ -n "$LATEST" ]; then
-            mkdir -p "$RUN_ROOT/screenshots"
-            cp "$LATEST" "$RUN_ROOT/screenshots/system_executed.png"
+            mkdir -p "$LOGS_FWD/screenshots"
+            cp "$LATEST" "$LOGS_FWD/screenshots/system_executed.png"
           fi
           python -c "
           import json, os, pathlib
-          p = pathlib.Path(os.environ['RUN_ROOT'].replace('\\\\','/')) / 'results.json'
+          p = pathlib.Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\\\','/')) / 'results.json'
           if not p.exists():
               raise SystemExit(0)
           data = json.loads(p.read_text())
@@ -282,7 +273,7 @@ jobs:
           # %APPDATA%\ComfyUI\logs\ on Windows. comfyui.log is the server
           # stdout pipe (where Manager Install messages land); main.log is
           # the Electron main process.
-          OUT="$RUN_ROOT/logs"
+          OUT="${COMFY_TEST_LOGS_DIR//\\//}/logs"
           mkdir -p "$OUT"
           SRC="${APPDATA//\\//}/ComfyUI/logs"
           if [ -d "$SRC" ]; then
@@ -311,7 +302,7 @@ jobs:
           import os
           from pathlib import Path
           from comfy_test.reporting.html_report import generate_html_report
-          generate_html_report(Path(os.environ['RUN_ROOT'].replace('\\\\','/')),
+          generate_html_report(Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\\\','/')),
                                repo_name=os.environ.get('NODE_REPO', os.environ.get('NODE_NAME', '')),
                                current_platform='windows-desktop')
           " || echo "index.html generation failed (non-fatal)"

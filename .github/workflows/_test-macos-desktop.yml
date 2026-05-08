@@ -34,28 +34,25 @@ jobs:
           else
             NODE_NAME="${{ github.event.repository.name }}"
           fi
-          # Mirror cpu's nesting: comfy-test/cli/run.py builds
-          # output_dir = logs_dir / "<short_name>-<HHMM>" / <platform-gpu>
-          # Example: comfy-test-logs/CADabra-1123/macos-desktop
-          # We don't run `comfy-test run` here, so reproduce the same
-          # path shape so the gh-pages tree looks identical to cpu.
-          SHORT="${NODE_NAME#ComfyUI-}"
-          RUN_ID="${SHORT}-$(date -u +%H%M)"
-          PLATFORM_DIR="macos-desktop"
-          RUN_ROOT="$COMFY_TEST_LOGS_DIR/$RUN_ID/$PLATFORM_DIR"
-          DEBUG_ROOT="$COMFY_TEST_LOGS_DIR/$RUN_ID/debug"
-          mkdir -p "$RUN_ROOT" "$DEBUG_ROOT" \
-                   "$RUN_ROOT/logs" "$RUN_ROOT/screenshots" "$RUN_ROOT/videos"
-          # crash_dump.log + session.log: cpu always emits these (even
-          # empty), so other tooling that scans the run dir doesn't
+          # Flat layout matching linux-gpu's gh-pages shape:
+          # dev/<platform>/{results.json, logs/, screenshots/, videos/, debug/}.
+          # The publish workflow's flatten step locates results.json
+          # and copies its parent dir contents into gh-pages, so any
+          # nesting we add here would just get stripped anyway.
+          # Desktop-only debug captures (electron_inspect/, frames/) go
+          # under a `debug/` subdir to keep the top level uniform with
+          # cpu/gpu.
+          mkdir -p "$COMFY_TEST_LOGS_DIR/debug" \
+                   "$COMFY_TEST_LOGS_DIR/logs" \
+                   "$COMFY_TEST_LOGS_DIR/screenshots" \
+                   "$COMFY_TEST_LOGS_DIR/videos"
+          # crash_dump.log + session.log: gpu always emits these (even
+          # empty), so other tooling that scans the dir doesn't
           # special-case desktop's absence.
-          : > "$RUN_ROOT/crash_dump.log"
+          : > "$COMFY_TEST_LOGS_DIR/crash_dump.log"
           {
             echo "NODE_NAME=$NODE_NAME"
-            echo "RUN_ID=$RUN_ID"
-            echo "PLATFORM_DIR=$PLATFORM_DIR"
-            echo "RUN_ROOT=$RUN_ROOT"
-            echo "DEBUG_ROOT=$DEBUG_ROOT"
+            echo "DEBUG_ROOT=$COMFY_TEST_LOGS_DIR/debug"
           } >> $GITHUB_ENV
 
       # --- Download and install desktop app ---
@@ -86,9 +83,8 @@ jobs:
           NODE_REPO: ${{ inputs.node_repo }}
           NODE_BRANCH: ${{ inputs.node_branch }}
           # Driver writes its standard outputs (results.json, videos/)
-          # to RUN_ROOT and its debug captures (electron_inspect/) to
-          # DEBUG_ROOT.
-          COMFY_TEST_RUN_DIR: ${{ env.RUN_ROOT }}
+          # to COMFY_TEST_LOGS_DIR (default) and electron_inspect/ to
+          # DEBUG_ROOT under that.
           COMFY_TEST_DEBUG_DIR: ${{ env.DEBUG_ROOT }}
         run: |
           OUT="$DEBUG_ROOT/electron_inspect"
@@ -119,9 +115,8 @@ jobs:
             # macOS Homebrew Python is PEP 668 externally-managed; --break-system-packages
             # is fine in CI since the runner is thrown away after the job.
             pip3 install --break-system-packages --quiet playwright imageio-ffmpeg tomli
-            # Tee driver stdout to RUN_ROOT/session.log so the run dir
-            # mirrors cpu's session.log + driver output stays inline.
-            python3 /tmp/cdp_driver.py 2>&1 | tee "$RUN_ROOT/session.log" || echo "CDP driver had errors; continuing"
+            # Tee driver stdout to session.log so the dir mirrors gpu's.
+            python3 /tmp/cdp_driver.py 2>&1 | tee "$COMFY_TEST_LOGS_DIR/session.log" || echo "CDP driver had errors; continuing"
           fi
 
           LOG_DIR="$HOME/Library/Logs/ComfyUI"
@@ -209,16 +204,16 @@ jobs:
         run: |
           # System-card thumbnail comes from the last renderer frame the
           # CDP driver captured. _render_workflow_cards looks up
-          # screenshots/{stem}_executed.png under RUN_ROOT.
+          # screenshots/{stem}_executed.png at the artifact root.
           LATEST=$(ls -1t "$DEBUG_ROOT/electron_inspect/frames/"*.png 2>/dev/null | head -1)
           if [ -n "$LATEST" ]; then
-            mkdir -p "$RUN_ROOT/screenshots"
-            cp "$LATEST" "$RUN_ROOT/screenshots/system_executed.png"
+            mkdir -p "$COMFY_TEST_LOGS_DIR/screenshots"
+            cp "$LATEST" "$COMFY_TEST_LOGS_DIR/screenshots/system_executed.png"
           fi
           # Synthetic "system" workflow so the HTML report renders a card.
           python3 - <<'PY' || true
           import json, os, pathlib
-          p = pathlib.Path(os.environ["RUN_ROOT"]) / "results.json"
+          p = pathlib.Path(os.environ["COMFY_TEST_LOGS_DIR"]) / "results.json"
           if not p.exists():
               raise SystemExit(0)
           data = json.loads(p.read_text())
@@ -239,8 +234,8 @@ jobs:
         run: |
           # Electron splits logs across Documents/ComfyUI/user/ (server stdout)
           # and ~/Library/Logs/ComfyUI/ (main/renderer process). Grab them all
-          # under RUN_ROOT/logs — we want the Install-button stdout in particular.
-          DEST="$RUN_ROOT/logs"
+          # under logs/ — we want the Install-button stdout in particular.
+          DEST="$COMFY_TEST_LOGS_DIR/logs"
           mkdir -p "$DEST"
           for d in \
             "$HOME/Documents/ComfyUI/user" \
@@ -261,8 +256,8 @@ jobs:
       - name: Generate per-platform index.html
         if: always()
         run: |
-          # Mirror cpu: the run dir gets its own rendered index.html so
-          # the report is self-contained at <RUN_ID>/<platform>/.
+          # Match gpu: the artifact dir gets its own rendered index.html
+          # so the report is self-contained even before publish flatten.
           VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
           if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
           if [ -n "$VERSION" ]; then
@@ -274,7 +269,7 @@ jobs:
           import os
           from pathlib import Path
           from comfy_test.reporting.html_report import generate_html_report
-          generate_html_report(Path(os.environ['RUN_ROOT']),
+          generate_html_report(Path(os.environ['COMFY_TEST_LOGS_DIR']),
                                repo_name=os.environ.get('NODE_REPO', os.environ.get('NODE_NAME', '')),
                                current_platform='macos-desktop')
           " || echo "index.html generation failed (non-fatal)"
