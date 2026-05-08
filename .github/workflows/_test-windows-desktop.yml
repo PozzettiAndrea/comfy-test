@@ -117,8 +117,13 @@ jobs:
 
           curl -L -o /tmp/cdp_driver.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/.github/workflows/scripts/cdp_driver.py
 
-          "$APP" --remote-debugging-port=9222 &
-          echo "App launched with CDP on :9222"
+          # Redirect app stdout/stderr to a file. Without this the wizard's
+          # uv progress bar (re-prints every ~50ms because there's no TTY)
+          # floods the GitHub Actions step log with thousands of useless
+          # lines. The same content lands in %APPDATA%\ComfyUI\logs\comfyui.log
+          # which we collect into the artifact.
+          "$APP" --remote-debugging-port=9222 > "$OUT/electron_stdout.log" 2>&1 &
+          echo "App launched with CDP on :9222 (stdout -> electron_stdout.log)"
 
           # Phase 1: short wait — either /system_stats (pre-seed worked) or CDP
           SHORT=""

@@ -417,15 +417,21 @@ with sync_playwright() as p:
         time.sleep(5)
 
         log('  app: relaunching with CDP')
+        # Send app stdout/stderr to /dev/null on relaunch; same reason as
+        # the bash launch — uv's progress dumps tons of noise.
         if IS_WIN:
             app_exe = os.path.join(os.environ['LOCALAPPDATA'],
                                    'Programs', 'ComfyUI', 'ComfyUI.exe')
             subprocess.Popen([app_exe, '--remote-debugging-port=9222'],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
                              creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
         else:
             ws = os.environ.get('GITHUB_WORKSPACE', '')
             app_path = os.path.join(ws, 'ComfyUI.app')
-            subprocess.Popen(['open', app_path, '--args', '--remote-debugging-port=9222'])
+            subprocess.Popen(['open', app_path, '--args', '--remote-debugging-port=9222'],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
 
         log('  app: waiting for CDP')
         for i in range(120):
