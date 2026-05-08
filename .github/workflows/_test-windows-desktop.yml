@@ -252,7 +252,7 @@ jobs:
         shell: bash
         run: taskkill //F //IM ComfyUI.exe 2>/dev/null || true
 
-      - name: Collect ComfyUI app log
+      - name: Collect + merge ComfyUI app logs
         if: always()
         shell: bash
         run: |
@@ -260,12 +260,17 @@ jobs:
           # %APPDATA%\ComfyUI\logs\ on Windows. comfyui.log is the server
           # stdout pipe (where Manager Install messages land); main.log is
           # the Electron main process.
-          OUT="${COMFY_TEST_LOGS_DIR//\\//}/comfy_logs"
+          OUT="${COMFY_TEST_LOGS_DIR//\\//}/logs"
           mkdir -p "$OUT"
           SRC="${APPDATA//\\//}/ComfyUI/logs"
           if [ -d "$SRC" ]; then
             find "$SRC" -maxdepth 2 -type f -name "*.log" -exec cp -v {} "$OUT/" \; 2>/dev/null || true
           fi
+          # Merge chronologically — html_report serves logs/<name>.log
+          # under each workflow card, so logs/system.log shows up under
+          # the 'system' card on the per-platform page.
+          curl -L -o /tmp/merge_logs.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/.github/workflows/scripts/merge_logs.py
+          python /tmp/merge_logs.py "$OUT" || true
           echo "--- collected ---"
           ls -la "$OUT" || true
 

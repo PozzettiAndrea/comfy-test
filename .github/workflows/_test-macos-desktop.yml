@@ -204,13 +204,13 @@ jobs:
         if: always()
         run: pkill -f "ComfyUI" || true
 
-      - name: Collect ComfyUI app log
+      - name: Collect + merge ComfyUI app logs
         if: always()
         run: |
           # Electron splits logs across Documents/ComfyUI/user/ (server stdout)
           # and ~/Library/Logs/ComfyUI/ (main/renderer process). Grab them all
-          # under comfy_logs/ — we want the Install-button stdout in particular.
-          DEST="$COMFY_TEST_LOGS_DIR/comfy_logs"
+          # under logs/ — we want the Install-button stdout in particular.
+          DEST="$COMFY_TEST_LOGS_DIR/logs"
           mkdir -p "$DEST"
           for d in \
             "$HOME/Documents/ComfyUI/user" \
@@ -220,6 +220,11 @@ jobs:
               find "$d" -maxdepth 2 -type f -name "*.log" -exec cp -v {} "$DEST/" \; 2>/dev/null || true
             fi
           done
+          # Merge chronologically — html_report serves logs/<name>.log
+          # under each workflow card, so logs/system.log shows up under
+          # the 'system' card on the per-platform page.
+          curl -L -o /tmp/merge_logs.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/.github/workflows/scripts/merge_logs.py
+          python3 /tmp/merge_logs.py "$DEST" || true
           echo "--- collected ---"
           ls -la "$DEST" || true
 
