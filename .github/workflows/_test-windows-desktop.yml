@@ -557,26 +557,47 @@ jobs:
                   NODE_PACKAGE_NAME = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
                   log(f'  ext: locating "{NODE_PACKAGE_NAME}" section in Templates panel')
                   node_section = None
-                  try:
-                      candidates = [
-                          f'aside [role="button"]:has-text("{NODE_PACKAGE_NAME}"):visible',
-                          f'aside button:has-text("{NODE_PACKAGE_NAME}"):visible',
-                          f'aside h2:has-text("{NODE_PACKAGE_NAME}"):visible',
-                          f'aside h3:has-text("{NODE_PACKAGE_NAME}"):visible',
-                          f'aside [class*="accordion"]:has-text("{NODE_PACKAGE_NAME}"):visible',
-                      ]
+                  # The Templates panel virtualizes — sections that aren't on
+                  # screen aren't in the DOM. Incrementally scroll the panel
+                  # and probe for the node section after each scroll.
+                  candidates = [
+                      f'aside [role="button"]:has-text("{NODE_PACKAGE_NAME}")',
+                      f'aside button:has-text("{NODE_PACKAGE_NAME}")',
+                      f'aside h2:has-text("{NODE_PACKAGE_NAME}")',
+                      f'aside h3:has-text("{NODE_PACKAGE_NAME}")',
+                      f'aside [class*="accordion"]:has-text("{NODE_PACKAGE_NAME}")',
+                  ]
+                  def find_node_section():
                       for sel in candidates:
                           loc = page.locator(sel).first
                           if loc.count():
-                              loc.scroll_into_view_if_needed()
-                              sleep_capturing(page, 1, fps=5)
-                              click_with_cursor(page, loc)
-                              log(f'  ext: clicked {NODE_PACKAGE_NAME} section ({sel})')
-                              node_section = loc
-                              sleep_capturing(page, 2, fps=5)
-                              break
+                              return loc, sel
+                      return None, None
+                  try:
+                      node_section, hit_sel = find_node_section()
                       if node_section is None:
-                          log(f'  ext: {NODE_PACKAGE_NAME} section not found in Templates panel')
+                          panel = page.locator('aside [class*="overflow-y-auto"]:visible, aside .scrollbar-custom:visible').first
+                          for i in range(20):
+                              try:
+                                  if panel.count():
+                                      panel.evaluate('el => el.scrollBy(0, el.clientHeight * 0.7)')
+                                  else:
+                                      page.keyboard.press('PageDown')
+                              except Exception:
+                                  page.keyboard.press('PageDown')
+                              sleep_capturing(page, 1, fps=5)
+                              node_section, hit_sel = find_node_section()
+                              if node_section is not None:
+                                  log(f'  ext: scrolled {i+1}x to {NODE_PACKAGE_NAME} ({hit_sel})')
+                                  break
+                      if node_section is not None:
+                          node_section.scroll_into_view_if_needed()
+                          sleep_capturing(page, 1, fps=5)
+                          click_with_cursor(page, node_section)
+                          log(f'  ext: clicked {NODE_PACKAGE_NAME} section')
+                          sleep_capturing(page, 2, fps=5)
+                      else:
+                          log(f'  ext: {NODE_PACKAGE_NAME} section not found after scrolling')
                   except Exception as e:
                       log(f'  ext: {NODE_PACKAGE_NAME} section click failed: {e}')
 
