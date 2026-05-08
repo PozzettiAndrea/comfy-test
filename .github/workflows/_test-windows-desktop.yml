@@ -545,11 +545,82 @@ jobs:
                       if tpl.count():
                           click_with_cursor(page, tpl)
                           log('  ext: clicked Templates')
-                          sleep_capturing(page, 6, fps=5)
+                          sleep_capturing(page, 4, fps=5)
                       else:
                           log('  ext: Templates sidebar button not found')
                   except Exception as e:
                       log(f'  ext: Templates click failed: {e}')
+
+                  # Templates panel sections are keyed off the lowercase
+                  # package name (e.g. "comfyui-sam3"), matching the
+                  # custom_nodes/ directory the install creates.
+                  NODE_PACKAGE_NAME = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
+                  log(f'  ext: locating "{NODE_PACKAGE_NAME}" section in Templates panel')
+                  node_section = None
+                  try:
+                      candidates = [
+                          f'aside [role="button"]:has-text("{NODE_PACKAGE_NAME}"):visible',
+                          f'aside button:has-text("{NODE_PACKAGE_NAME}"):visible',
+                          f'aside h2:has-text("{NODE_PACKAGE_NAME}"):visible',
+                          f'aside h3:has-text("{NODE_PACKAGE_NAME}"):visible',
+                          f'aside [class*="accordion"]:has-text("{NODE_PACKAGE_NAME}"):visible',
+                      ]
+                      for sel in candidates:
+                          loc = page.locator(sel).first
+                          if loc.count():
+                              loc.scroll_into_view_if_needed()
+                              sleep_capturing(page, 1, fps=5)
+                              click_with_cursor(page, loc)
+                              log(f'  ext: clicked {NODE_PACKAGE_NAME} section ({sel})')
+                              node_section = loc
+                              sleep_capturing(page, 2, fps=5)
+                              break
+                      if node_section is None:
+                          log(f'  ext: {NODE_PACKAGE_NAME} section not found in Templates panel')
+                  except Exception as e:
+                      log(f'  ext: {NODE_PACKAGE_NAME} section click failed: {e}')
+
+                  # Open the first template card under the node section.
+                  if node_section is not None:
+                      log(f'  ext: opening first {NODE_PACKAGE_NAME} template')
+                      try:
+                          card_candidates = [
+                              'aside [class*="template-card"]:visible',
+                              'aside [class*="workflow-card"]:visible',
+                              'aside .cursor-pointer img:visible',
+                              'aside .cursor-pointer:visible',
+                          ]
+                          tpl_card = None
+                          for sel in card_candidates:
+                              cards = page.locator(sel)
+                              if cards.count():
+                                  tpl_card = cards.first
+                                  log(f'  ext: found template via {sel}')
+                                  break
+                          if tpl_card is not None:
+                              tpl_card.scroll_into_view_if_needed()
+                              sleep_capturing(page, 1, fps=5)
+                              click_with_cursor(page, tpl_card)
+                              log('  ext: clicked first template')
+                              sleep_capturing(page, 4, fps=5)
+                      except Exception as e:
+                          log(f'  ext: template click failed: {e}')
+
+                      # Run the workflow.
+                      log('  ext: clicking Run')
+                      try:
+                          run_btn = page.locator(
+                              'button[aria-label="Run"]:visible, '
+                              'button:has-text("Run"):visible'
+                          ).first
+                          if run_btn.count():
+                              click_with_cursor(page, run_btn)
+                              log('  ext: clicked Run')
+                              sleep_capturing(page, 30, fps=5)
+                          else:
+                              log('  ext: Run button not found')
+                      except Exception as e:
+                          log(f'  ext: Run click failed: {e}')
 
               snap(page, 'final')
               log(f'Captured {fi[0]} frames')
