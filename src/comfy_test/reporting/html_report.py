@@ -27,6 +27,9 @@ PLATFORMS = [
     {'id': 'windows-portable-cpu', 'label': 'Win Portable CPU'},
     {'id': 'windows-portable-gpu', 'label': 'Win Portable GPU'},
     {'id': 'macos-cpu', 'label': 'macOS CPU'},
+    {'id': 'macos-desktop', 'label': 'macOS Desktop'},
+    {'id': 'windows-desktop', 'label': 'Windows Desktop'},
+    {'id': 'windows-desktop-gpu', 'label': 'Windows Desktop GPU'},
 ]
 
 
