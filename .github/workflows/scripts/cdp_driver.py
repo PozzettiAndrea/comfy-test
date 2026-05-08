@@ -101,7 +101,7 @@ def install_cursor(page):
     except Exception as e:
         log(f'  cursor inject failed: {e}')
 
-def click_with_cursor(page, loc):
+def click_with_cursor(page, loc, timeout=3000):
     try:
         box = loc.bounding_box()
         if box:
@@ -112,7 +112,7 @@ def click_with_cursor(page, loc):
             page.evaluate('window.__clickFlash && window.__clickFlash()')
     except Exception:
         pass
-    loc.click(timeout=3000)
+    loc.click(timeout=timeout)
 
 def fill_with_cursor(page, sel, text):
     loc = page.locator(sel).first
@@ -595,11 +595,34 @@ with sync_playwright() as p:
         except Exception as e:
             log(f"  ext: What's New close failed: {e}")
 
+        # On post-install relaunch, ComfyUI Desktop sometimes shows
+        # "Node Pack Issues Detected!" — a Vue modal warning about
+        # extension conflicts with the new ComfyUI version. It sits over
+        # the canvas and intercepts clicks on the Templates sidebar
+        # button. Dismiss before opening Templates.
+        log("  ext: dismissing Node Pack Issues modal (if present)")
+        try:
+            np_modal = page.locator(
+                'div[role="dialog"]:has-text("Node Pack Issues") button[aria-label="Close"]:visible, '
+                'div[role="dialog"]:has-text("Node Pack Issues") button[aria-label="Close dialog"]:visible'
+            ).first
+            if np_modal.count():
+                click_with_cursor(page, np_modal)
+                log("  ext: closed Node Pack Issues modal")
+                sleep_capturing(page, 2, fps=5)
+            else:
+                log("  ext: Node Pack Issues modal not present")
+        except Exception as e:
+            log(f"  ext: Node Pack Issues close failed: {e}")
+
         log('  ext: opening Templates sidebar')
         try:
             tpl = page.locator('button[aria-label="Templates"]:visible').first
             if tpl.count():
-                click_with_cursor(page, tpl)
+                # Bump click timeout above the default 3s; in some
+                # post-restart states the button settles into its
+                # final hit area only after a brief layout pass.
+                click_with_cursor(page, tpl, timeout=10000)
                 log('  ext: clicked Templates')
                 sleep_capturing(page, 4, fps=5)
             else:
