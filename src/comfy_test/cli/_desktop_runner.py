@@ -24,11 +24,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+
+def _download(url: str, dest: Path) -> None:
+    """Download via curl. urllib's default User-Agent gets 403'd by the
+    download.comfy.org → dl.todesktop.com CDN; curl with -L --retry 3
+    matches what the YMLs do and works."""
+    print(f"[desktop] downloading {url} -> {dest}")
+    subprocess.run(
+        ["curl", "-L", "--retry", "3", "--fail", "-A", "Mozilla/5.0",
+         "-o", str(dest), url],
+        check=True,
+    )
+
 # `desktop_mode` -> dict of platform-specific settings.
 # Repo paths are absolute so this works regardless of cwd.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CDP_DRIVER = _REPO_ROOT / ".github" / "workflows" / "scripts" / "cdp_driver.py"
 _MERGE_LOGS = _REPO_ROOT / ".github" / "workflows" / "scripts" / "merge_logs.py"
+
+# All host-side state lives under here so a `dockertest --desktop_*` run
+# leaves nothing behind on the host outside this dir (other than the
+# ComfyUI Desktop's own runtime data dir at ~/Documents/ComfyUI which is
+# managed by the app itself, not by us).
+_CACHE_DIR = Path.home() / ".comfy-test-cache" / "desktop"
+_APP_DIR = _CACHE_DIR / "ComfyUI.app"          # mac
+_APP_EXE = _CACHE_DIR / "ComfyUI" / "ComfyUI.exe"  # windows portable-ish layout
+_VENV_DIR = _CACHE_DIR / "venv"
 
 _DESKTOP_DOWNLOAD_URLS = {
     "mac":         "https://download.comfy.org/mac/dmg/arm64",
@@ -53,37 +74,37 @@ def _validate_host(desktop_mode: str) -> Optional[str]:
         return f"--desktop_mac requires a macOS host, got {host}"
     if desktop_mode in ("windows", "windows_gpu") and host != "windows":
         return f"--{desktop_mode.replace('_', '-')} requires a Windows host, got {host}"
+    # On macOS, GUI apps can only launch in the user's `gui/<uid>` launchd
+    # session. Running this command from an SSH session puts us in a
+    # `Background` session where ComfyUI Desktop silently zombies (32-KB
+    # RSS, no children, no ports, no stdout — nothing). Detect and bail
+    # with a clear explanation rather than the 60s CDP-poll timeout.
+    if desktop_mode == "mac" and os.environ.get("SSH_CONNECTION"):
+        return (
+            "--desktop_mac doesn't work from an SSH session — macOS GUI apps\n"
+            "  can't launch in the Background launchd session that SSH gives you.\n"
+            "  Run from Terminal.app on the physical Mac console, OR re-run with\n"
+            "  `sudo launchctl asuser <uid> python -m comfy_test dockertest ... --desktop_mac`.\n"
+            f"  Detected SSH_CONNECTION={os.environ['SSH_CONNECTION']!r}."
+        )
     return None
 
 
-def _macos_app_path() -> Path:
-    """Resolve ComfyUI.app on macOS. Prefers /Applications, falls back to ~/Applications."""
-    candidates = [
-        Path("/Applications/ComfyUI.app"),
-        Path.home() / "Applications" / "ComfyUI.app",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    return candidates[0]
-
-
-def _windows_app_path() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA",
-                               str(Path.home() / "AppData" / "Local"))) / "Programs" / "ComfyUI" / "ComfyUI.exe"
-
-
 def _ensure_desktop_app(desktop_mode: str) -> Path:
-    """Make sure ComfyUI Desktop is installed and return the launchable path.
-    Returns the .app dir on macOS, the .exe path on Windows."""
+    """Cache ComfyUI Desktop into our private dir and return the launchable
+    path. Never touches /Applications or %LOCALAPPDATA%\\Programs — the
+    whole point of `dockertest` is isolation, so the host stays clean.
+    A subsequent run reuses the cached copy unless --refresh-app is passed.
+
+    Returns the .app dir on macOS, the .exe path on Windows.
+    """
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if desktop_mode == "mac":
-        app = _macos_app_path()
-        if app.exists():
-            print(f"[desktop] using existing ComfyUI.app at {app}")
-            return app
-        print(f"[desktop] downloading ComfyUI.dmg from {_DESKTOP_DOWNLOAD_URLS['mac']}")
-        dmg = Path("/tmp/comfyui-desktop.dmg")
-        urllib.request.urlretrieve(_DESKTOP_DOWNLOAD_URLS["mac"], str(dmg))
+        if _APP_DIR.exists():
+            print(f"[desktop] reusing cached app at {_APP_DIR}")
+            return _APP_DIR
+        dmg = _CACHE_DIR / "comfyui-desktop.dmg"
+        _download(_DESKTOP_DOWNLOAD_URLS["mac"], dmg)
         # Mount, copy app, detach. The DMG mount path includes a versioned
         # suffix (e.g. "ComfyUI 0.8.36-arm64") that varies per release; glob to find it.
         subprocess.run(["hdiutil", "attach", "-nobrowse", str(dmg)], check=True)
@@ -92,29 +113,73 @@ def _ensure_desktop_app(desktop_mode: str) -> Path:
             if not mounts:
                 raise RuntimeError("ComfyUI mount not found under /Volumes after hdiutil attach")
             src = mounts[0] / "ComfyUI.app"
-            print(f"[desktop] copying {src} -> {app}")
-            shutil.copytree(src, app)
+            print(f"[desktop] copying {src} -> {_APP_DIR}")
+            # cp -R preserves the framework symlinks
+            # (Versions/Current -> A, top-level binary -> Versions/Current/Foo).
+            # shutil.copytree defaults to symlinks=False which dereferences
+            # them, materializing every framework Version as a full copy
+            # and producing a bundle Gatekeeper rejects with
+            # "bundle format is ambiguous (could be app or framework)".
+            subprocess.run(["cp", "-R", str(src), str(_APP_DIR)], check=True)
         finally:
             for m in Path("/Volumes").glob("ComfyUI*"):
                 subprocess.run(["hdiutil", "detach", str(m)], capture_output=True)
         dmg.unlink(missing_ok=True)
-        return app
+        # Strip the quarantine xattr that Gatekeeper sets on downloaded
+        # apps; otherwise first launch pops a "open anyway?" dialog the
+        # CDP driver can't dismiss.
+        subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(_APP_DIR)],
+                       capture_output=True)
+        return _APP_DIR
 
     # windows / windows_gpu
-    exe = _windows_app_path()
-    if exe.exists():
-        print(f"[desktop] using existing ComfyUI.exe at {exe}")
-        return exe
-    print(f"[desktop] downloading ComfyUI-Setup.exe from {_DESKTOP_DOWNLOAD_URLS['windows']}")
-    setup = Path(os.environ.get("TEMP", "C:\\Windows\\Temp")) / "ComfyUI-Setup.exe"
-    urllib.request.urlretrieve(_DESKTOP_DOWNLOAD_URLS["windows"], str(setup))
-    # Silent install. NSIS may fork and return immediately, so poll for the .exe.
-    subprocess.run([str(setup), "/S"], check=True)
+    if _APP_EXE.exists():
+        print(f"[desktop] reusing cached app at {_APP_EXE}")
+        return _APP_EXE
+    setup = _CACHE_DIR / "ComfyUI-Setup.exe"
+    _download(_DESKTOP_DOWNLOAD_URLS["windows"], setup)
+    # NSIS supports /D for install dir. Use our cache root so the install
+    # doesn't pollute %LOCALAPPDATA%\Programs\ComfyUI on the host.
+    install_dir = _CACHE_DIR / "ComfyUI"
+    subprocess.run([str(setup), "/S", f"/D={install_dir}"], check=True)
     for _ in range(180):
-        if exe.exists():
-            return exe
+        if _APP_EXE.exists():
+            return _APP_EXE
         time.sleep(1)
-    raise RuntimeError(f"ComfyUI.exe not present at {exe} after silent install")
+    raise RuntimeError(f"ComfyUI.exe not present at {_APP_EXE} after silent install")
+
+
+def _ensure_venv() -> Path:
+    """Create a private venv with playwright + imageio-ffmpeg + tomli +
+    chromium browser. Reuses on subsequent runs.
+
+    Returns the path to the venv's python executable.
+    """
+    if sys.platform == "win32":
+        venv_python = _VENV_DIR / "Scripts" / "python.exe"
+    else:
+        venv_python = _VENV_DIR / "bin" / "python"
+
+    if venv_python.exists():
+        # Verify deps are still importable; fast path.
+        ok = subprocess.run(
+            [str(venv_python), "-c",
+             "import playwright, imageio_ffmpeg, tomli; print('ok')"],
+            capture_output=True, text=True,
+        )
+        if ok.returncode == 0:
+            print(f"[desktop] reusing venv at {_VENV_DIR}")
+            return venv_python
+
+    print(f"[desktop] creating venv at {_VENV_DIR}")
+    import venv as _venv  # stdlib
+    _venv.EnvBuilder(with_pip=True, clear=True).create(str(_VENV_DIR))
+    subprocess.run([str(venv_python), "-m", "pip", "install", "--quiet",
+                    "playwright", "imageio-ffmpeg", "tomli"], check=True)
+    print("[desktop] installing chromium for playwright (~150 MB)...")
+    subprocess.run([str(venv_python), "-m", "playwright", "install", "chromium"],
+                   check=True)
+    return venv_python
 
 
 def _kill_existing(desktop_mode: str) -> None:
@@ -230,6 +295,10 @@ def run_desktop(args, desktop_mode: str) -> int:
     (logs_dir / "crash_dump.log").touch()
     print(f"[desktop] logs: {logs_dir}")
 
+    # Bootstrap an isolated venv with playwright + chromium + ffmpeg so the
+    # host's system Python (or homebrew python) doesn't get touched.
+    venv_python = _ensure_venv()
+
     # Bootstrap Desktop install + launch.
     app_path = _ensure_desktop_app(desktop_mode)
     _kill_existing(desktop_mode)
@@ -239,7 +308,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     if not _wait_for_cdp(60):
         print("[desktop] CDP didn't come up within 60s", file=sys.stderr)
         return 1
-    print("[desktop] CDP up; running cdp_driver.py")
+    print("[desktop] CDP up; running cdp_driver.py via cached venv")
 
     # Drive the app via cdp_driver. Env vars match what the YMLs set.
     env = os.environ.copy()
@@ -255,7 +324,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     session_log = open(logs_dir / "session.log", "w", encoding="utf-8")
     try:
         rc = subprocess.call(
-            [sys.executable, str(_CDP_DRIVER)],
+            [str(venv_python), str(_CDP_DRIVER)],
             env=env, stdout=session_log, stderr=subprocess.STDOUT,
         )
     finally:
