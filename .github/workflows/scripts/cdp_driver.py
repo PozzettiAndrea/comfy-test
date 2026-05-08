@@ -707,21 +707,103 @@ with sync_playwright() as p:
         try:
             node_section, hit_sel = find_node_section()
             if node_section is None:
-                panel = page.locator('nav .scrollbar-hide.overflow-y-auto:visible, nav .overflow-y-auto:visible').first
-                for i in range(25):
-                    try:
-                        if panel.count():
-                            panel.evaluate('el => el.scrollBy(0, el.clientHeight * 0.7)')
-                        else:
-                            page.keyboard.press('PageDown')
-                    except Exception:
+                # Earlier this loop scrolled `nav .scrollbar-hide.overflow-y-auto:visible`
+                # via .first + el.scrollBy(...). Frames from a recent run
+                # (CADabra-1248 macos-desktop) showed the panel state was
+                # IDENTICAL across 33 seconds of scroll iterations — the
+                # scroll was a no-op. Two reasons it failed:
+                #   1. .first arbitrarily picked one match among several
+                #      overflow-y-auto divs in the dialog (the right-panel
+                #      template grid scrolls too); could be wrong element.
+                #   2. We never verified scrollTop actually changed, so a
+                #      no-op scrollBy looked the same as a successful one.
+                # Fix: pick the actual scrollable left-sidebar by max
+                # (scrollHeight - clientHeight), keep scrolling while
+                # scrollTop is still moving (= we haven't hit the floor),
+                # and continue regardless of whether the section is found.
+                # That way a virtualized list that lazy-renders below the
+                # current viewport still gets fully traversed.
+                find_panel_js = """
+                () => {
+                  const dialogs = Array.from(document.querySelectorAll(
+                    'div[role="dialog"], aside, nav'
+                  ));
+                  const scrollables = [];
+                  dialogs.forEach(d => {
+                    d.querySelectorAll('*').forEach(el => {
+                      const cs = getComputedStyle(el);
+                      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll')
+                          && el.scrollHeight > el.clientHeight + 4) {
+                        scrollables.push(el);
+                      }
+                    });
+                  });
+                  // Prefer the candidate inside a <nav> (left sidebar) over
+                  // ones inside the right-panel grid. Fall back to the one
+                  // with the largest scroll range.
+                  const nav_first = scrollables.find(el => el.closest('nav'));
+                  const chosen = nav_first || scrollables.sort(
+                    (a,b) => (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+                  )[0];
+                  if (!chosen) return null;
+                  chosen.setAttribute('data-driver-scroll', '1');
+                  return {
+                    scrollHeight: chosen.scrollHeight,
+                    clientHeight: chosen.clientHeight,
+                    scrollTop: chosen.scrollTop,
+                  };
+                }
+                """
+                info = page.evaluate(find_panel_js)
+                if info:
+                    log(f'  ext: scroll target found (scrollHeight={info["scrollHeight"]} '
+                        f'clientHeight={info["clientHeight"]})')
+                else:
+                    log('  ext: no scrollable panel found, falling back to PageDown')
+
+                step_js = """
+                () => {
+                  const el = document.querySelector('[data-driver-scroll="1"]');
+                  if (!el) return null;
+                  const before = el.scrollTop;
+                  el.scrollBy(0, Math.max(40, el.clientHeight * 0.7));
+                  return {
+                    before,
+                    after: el.scrollTop,
+                    max: el.scrollHeight - el.clientHeight,
+                  };
+                }
+                """
+                stuck = 0
+                last_top = -1
+                MAX_ITERS = 60
+                for i in range(MAX_ITERS):
+                    res = page.evaluate(step_js) if info else None
+                    if res is None:
                         try: page.keyboard.press('PageDown')
                         except Exception: pass
-                    sleep_capturing(page, 1, fps=5)
+                    else:
+                        if res['after'] == res['before']:
+                            stuck += 1
+                        else:
+                            stuck = 0
+                        last_top = res['after']
+                        # Hit the floor: scrollTop didn't move 2 iterations
+                        # in a row AND we're at scrollHeight - clientHeight.
+                        at_floor = (res['after'] >= res['max'] - 2 and stuck >= 2)
+                        if at_floor:
+                            log(f'  ext: reached scroll floor at iter {i+1} '
+                                f'(scrollTop={res["after"]} max={res["max"]})')
+                            sleep_capturing(page, 1, fps=5)
+                            node_section, hit_sel = find_node_section()
+                            break
+                    sleep_capturing(page, 0.7, fps=5)
                     node_section, hit_sel = find_node_section()
                     if node_section is not None:
-                        log(f'  ext: scrolled {i+1}x to {NODE_PACKAGE_NAME} ({hit_sel})')
+                        log(f'  ext: scrolled {i+1}x to {NODE_PACKAGE_NAME} ({hit_sel}, scrollTop={last_top})')
                         break
+                else:
+                    log(f'  ext: ran {MAX_ITERS} scroll iters, last scrollTop={last_top}')
             if node_section is not None:
                 node_section.scroll_into_view_if_needed()
                 sleep_capturing(page, 1, fps=5)
