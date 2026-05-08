@@ -76,8 +76,16 @@ jobs:
               echo "Updating platform: $PLATFORM_ID"
               rm -rf "$DEST"
               mkdir -p "$DEST"
-              # Results are 2 levels deep: run_id/platform_dir/
-              cp -r "$dir"/*/*/* "$DEST/" 2>/dev/null || true
+              # comfy-test framework writes nested run_id/platform_dir/...
+              # — files are 3 levels deep. Desktop driver writes flat
+              # (comfy_logs/, electron_inspect/) — 2 levels. Try the
+              # deep glob first; if it matched nothing, fall back to
+              # copying the artifact's top-level entries directly.
+              if compgen -G "$dir/*/*/*" > /dev/null 2>&1; then
+                cp -r "$dir"/*/*/* "$DEST/" 2>/dev/null || true
+              else
+                cp -r "$dir"/* "$DEST/" 2>/dev/null || true
+              fi
             fi
           done
           touch gh-pages/.nojekyll
