@@ -504,15 +504,14 @@ with sync_playwright() as p:
         NODE_PACKAGE_NAME = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
         log(f'  ext: locating "{NODE_PACKAGE_NAME}" section in Templates panel')
         node_section = None
-        # The Templates panel virtualizes — sections that aren't on
-        # screen aren't in the DOM. Incrementally scroll the panel
-        # and probe for the node section after each scroll.
+        # The Templates panel left sidebar is a <nav> with an inner
+        # `div.scrollbar-hide.overflow-y-auto` that holds the category
+        # list. Each category is a `<div role="button">`. We scroll
+        # THAT inner div, not the aside/dialog wrapper.
         candidates = [
-            f'aside [role="button"]:has-text("{NODE_PACKAGE_NAME}")',
-            f'aside button:has-text("{NODE_PACKAGE_NAME}")',
-            f'aside h2:has-text("{NODE_PACKAGE_NAME}")',
-            f'aside h3:has-text("{NODE_PACKAGE_NAME}")',
-            f'aside [class*="accordion"]:has-text("{NODE_PACKAGE_NAME}")',
+            f'nav [role="button"]:has-text("{NODE_PACKAGE_NAME}")',
+            f'nav span:has-text("{NODE_PACKAGE_NAME}")',
+            f'nav button:has-text("{NODE_PACKAGE_NAME}")',
         ]
         def find_node_section():
             for sel in candidates:
@@ -523,15 +522,16 @@ with sync_playwright() as p:
         try:
             node_section, hit_sel = find_node_section()
             if node_section is None:
-                panel = page.locator('aside [class*="overflow-y-auto"]:visible, aside .scrollbar-custom:visible').first
-                for i in range(20):
+                panel = page.locator('nav .scrollbar-hide.overflow-y-auto:visible, nav .overflow-y-auto:visible').first
+                for i in range(25):
                     try:
                         if panel.count():
                             panel.evaluate('el => el.scrollBy(0, el.clientHeight * 0.7)')
                         else:
                             page.keyboard.press('PageDown')
                     except Exception:
-                        page.keyboard.press('PageDown')
+                        try: page.keyboard.press('PageDown')
+                        except Exception: pass
                     sleep_capturing(page, 1, fps=5)
                     node_section, hit_sel = find_node_section()
                     if node_section is not None:
