@@ -485,10 +485,10 @@ with sync_playwright() as p:
                 frame(page)
                 time.sleep(1)
             # Server is up but the renderer might still be on the splash
-            # (#/desktop-start, #/server-start). Wait until the main canvas
-            # is loaded (window.app.graph defined) — same gate comfy-test
-            # uses — before any post-restart clicks. Windows in particular
-            # sits on #/desktop-start until the canvas mounts.
+            # (#/desktop-start, #/server-start) or — on Windows runners
+            # without a GPU — the #/not-supported screen that needs a
+            # Continue click before the canvas mounts. Wait for
+            # window.app.graph; meanwhile dismiss anything blocking.
             log('  app: waiting for main canvas (window.app.graph)')
             for i in range(180):
                 try:
@@ -500,6 +500,19 @@ with sync_playwright() as p:
                         break
                 except Exception:
                     pass
+                # Every ~5s, try clicking past splash-blocking screens.
+                if i % 5 == 0:
+                    for label in ('Continue', 'Get Started', 'Next', 'OK'):
+                        try:
+                            b = page.locator(
+                                f'button:not(.hardware-option):text-is("{label}"):visible'
+                            ).first
+                            if b.count() and b.is_visible() and not b.is_disabled():
+                                click_with_cursor(page, b)
+                                log(f'  app: clicked [{label}] to dismiss splash ({page.url})')
+                                break
+                        except Exception:
+                            pass
                 frame(page)
                 time.sleep(1)
             else:
