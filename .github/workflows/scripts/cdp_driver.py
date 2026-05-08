@@ -13,6 +13,11 @@ OUT.mkdir(parents=True, exist_ok=True)
 FRAMES.mkdir(parents=True, exist_ok=True)
 fi = [0]
 
+# Per-workflow results that get rolled up into results.json at the
+# artifact root. comfy-test's generate_html_report() reads this file
+# to build the per-platform index.html on gh-pages.
+_workflow_results = []
+
 def snap(page, name):
     try:
         page.screenshot(path=str(OUT / f'{name}.png'), full_page=True)
@@ -773,11 +778,40 @@ with sync_playwright() as p:
                 log('  ext: WORKFLOW TIMEOUT (no execution_success/error in 10min)')
             else:
                 log(f'  ext: execution_success after {elapsed}s')
+
+            # Record this workflow's outcome for results.json.
+            if err:
+                _status = 'fail'
+                _err_str = json.dumps(err, default=str) if err else None
+            elif elapsed >= 600:
+                _status = 'timeout'
+                _err_str = 'no execution_success/error in 10min'
+            else:
+                _status = 'pass'
+                _err_str = None
+            _workflow_results.append({
+                'name': picked_name or 'unknown_template',
+                'status': _status,
+                'duration_seconds': elapsed,
+                'error': _err_str,
+            })
             sleep_capturing(page, 5, fps=5)
 
     snap(page, 'final')
     log(f'Captured {fi[0]} frames')
     browser.close()
+
+# Write results.json at the artifact root (one level above electron_inspect/).
+# comfy-test's generate_html_report() requires this to render the per-
+# platform index.html on gh-pages. Schema matches what the framework
+# emits on other platforms: {"workflows": [{name, status, duration_seconds, error}]}.
+_results_path = OUT.parent / 'results.json'
+try:
+    _results_path.write_text(json.dumps({'workflows': _workflow_results}, indent=2),
+                             encoding='utf-8')
+    log(f'Wrote {_results_path} ({len(_workflow_results)} workflow(s))')
+except Exception as e:
+    log(f'results.json write failed: {e}')
 
 # imageio-ffmpeg ships a static ffmpeg binary so we don't need a system install.
 try:
