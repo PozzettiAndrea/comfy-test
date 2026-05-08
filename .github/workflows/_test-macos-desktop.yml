@@ -322,8 +322,10 @@ jobs:
               fill_with_cursor(page, 'input[placeholder="Search"]:visible', NODE_DISPLAY_NAME)
               sleep_capturing(page, 2, fps=5)
 
-              log(f'  ext: clicking {PUBLISHER} tile')
-              tile_sel = f'div.bg-modal-card-background.cursor-pointer:has-text("{PUBLISHER}"):visible'
+              log(f'  ext: clicking {NODE_DISPLAY_NAME} by {PUBLISHER} tile')
+              tile_sel = (f'div.bg-modal-card-background.cursor-pointer'
+                          f':has-text("{NODE_DISPLAY_NAME}")'
+                          f':has-text("{PUBLISHER}"):visible')
               deadline = time.time() + 8
               clicked_tile = False
               while time.time() < deadline:
