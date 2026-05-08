@@ -351,14 +351,23 @@ jobs:
                           sleep_capturing(page, 1, fps=5)
                           click_with_cursor(page, vt)
                           sleep_capturing(page, 1, fps=5)
-                          NODE_VERSION = '0.1.10'
-                          opt = page.locator(f'[role="option"]:has-text("{NODE_VERSION}"):visible, [role="menuitem"]:has-text("{NODE_VERSION}"):visible, li:has-text("{NODE_VERSION}"):visible').first
-                          if opt.count():
-                              click_with_cursor(page, opt)
-                              log(f'  ext: selected {NODE_VERSION}')
-                              sleep_capturing(page, 1, fps=5)
-                          else:
-                              log(f'  ext: {NODE_VERSION} option not found, dismissing')
+                          picked = False
+                          for label in ('0.1.10', 'Latest', 'Nightly'):
+                              try:
+                                  opt = page.locator(
+                                      f'[role="option"]:has-text("{label}"):visible, '
+                                      f'[role="menuitem"]:has-text("{label}"):visible, '
+                                      f'li:has-text("{label}"):visible').first
+                                  if opt.count():
+                                      click_with_cursor(page, opt)
+                                      log(f'  ext: selected {label}')
+                                      sleep_capturing(page, 1, fps=5)
+                                      picked = True
+                                      break
+                              except Exception:
+                                  pass
+                          if not picked:
+                              log('  ext: no version option matched, dismissing')
                               try: page.keyboard.press('Escape')
                               except Exception: pass
                   except Exception as e:
