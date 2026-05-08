@@ -300,10 +300,11 @@ jobs:
                           except Exception:
                               pass
                   # Hardware-tile fallback: GPU picker disables the bottom Install
-                  # button until a tile is clicked. Prefer CPU (Windows runners
-                  # have no GPU; cu130 torch crashes at startup with an access
-                  # violation if NVIDIA is selected). Fall back to first tile.
-                  PREFERRED = ['CPU', 'Apple Silicon', 'MPS', 'M1', 'M2', 'M3', 'M4']
+                  # button until a tile is clicked. Order matters: macOS-friendly
+                  # tiles first so Apple Silicon wins on macOS; Windows runners
+                  # have no GPU and fall through to CPU (NVIDIA-default would
+                  # install cu130 torch which crashes at startup on a CPU box).
+                  PREFERRED = ['Apple Silicon', 'MPS', 'M1', 'M2', 'M3', 'M4', 'CPU']
                   for pref in PREFERRED:
                       try:
                           tile = page.locator(f'button.hardware-option:has-text("{pref}")').first
