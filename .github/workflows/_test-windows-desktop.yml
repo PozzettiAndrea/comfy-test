@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/Documents/ComfyUI/.venv
-          key: comfyui-desktop-venv-${{ runner.os }}-v1
+          key: comfyui-desktop-venv-${{ runner.os }}-v2
 
       # --- Background desktop screenshot loop (every 5s) ---
       # Started BEFORE first boot so we capture any maintenance UI / install

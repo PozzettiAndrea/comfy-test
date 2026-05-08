@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/Documents/ComfyUI/.venv
-          key: comfyui-desktop-venv-${{ runner.os }}-v1
+          key: comfyui-desktop-venv-${{ runner.os }}-v2
 
       # --- First boot: launch app + drive maintenance UI via CDP if needed ---
       # Same idea as windows-desktop: attach Playwright via CDP, click through
