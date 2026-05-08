@@ -597,8 +597,18 @@ jobs:
         if: always()
         shell: bash
         run: |
-          OUT="${COMFY_TEST_LOGS_DIR//\\//}"
-          cp "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" "$OUT/" 2>/dev/null || true
+          # ComfyUI Desktop's Electron `app.getPath('logs')` resolves to
+          # %APPDATA%\ComfyUI\logs\ on Windows. comfyui.log is the server
+          # stdout pipe (where Manager Install messages land); main.log is
+          # the Electron main process.
+          OUT="${COMFY_TEST_LOGS_DIR//\\//}/comfy_logs"
+          mkdir -p "$OUT"
+          SRC="${APPDATA//\\//}/ComfyUI/logs"
+          if [ -d "$SRC" ]; then
+            find "$SRC" -maxdepth 2 -type f -name "*.log" -exec cp -v {} "$OUT/" \; 2>/dev/null || true
+          fi
+          echo "--- collected ---"
+          ls -la "$OUT" || true
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -527,8 +527,21 @@ jobs:
       - name: Collect ComfyUI app log
         if: always()
         run: |
-          cp "$HOME/Documents/ComfyUI/user/comfyui.log" \
-             "$COMFY_TEST_LOGS_DIR/" 2>/dev/null || true
+          # Electron splits logs across Documents/ComfyUI/user/ (server stdout)
+          # and ~/Library/Logs/ComfyUI/ (main/renderer process). Grab them all
+          # under comfy_logs/ — we want the Install-button stdout in particular.
+          DEST="$COMFY_TEST_LOGS_DIR/comfy_logs"
+          mkdir -p "$DEST"
+          for d in \
+            "$HOME/Documents/ComfyUI/user" \
+            "$HOME/Library/Logs/ComfyUI" \
+            "$HOME/Library/Application Support/ComfyUI/logs"; do
+            if [ -d "$d" ]; then
+              find "$d" -maxdepth 2 -type f -name "*.log" -exec cp -v {} "$DEST/" \; 2>/dev/null || true
+            fi
+          done
+          echo "--- collected ---"
+          ls -la "$DEST" || true
 
       - uses: actions/upload-artifact@v4
         if: always()
