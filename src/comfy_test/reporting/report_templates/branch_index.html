@@ -46,12 +46,13 @@
       const { branch: hashBranch, test: hashTest } = parseHash();
       pendingTest = hashTest;
 
-      // When the inner iframe finishes loading, send the pending test name
+      // When the inner iframe finishes loading, send the pending segment
+      // as a platform-select (root_index decides if it's a platform or
+      // falls back to opening as a workflow name).
       frame.addEventListener('load', function() {
         if (pendingTest) {
-          // Small delay to let nested iframes initialize
           setTimeout(function() {
-            frame.contentWindow.postMessage({ type: 'comfytest-open', name: pendingTest }, '*');
+            frame.contentWindow.postMessage({ type: 'comfytest-platform-select', platform: pendingTest }, '*');
             pendingTest = null;
           }, 500);
         }
@@ -84,12 +85,15 @@
       }
     };
 
-    // Listen for test open/close from inner iframes to update hash
+    // Listen for test open/close + platform changes from inner iframes
+    // and reflect them in the URL hash.
     window.addEventListener('message', function(e) {
-      if (!e.data || !e.data.type) return;
-      if (e.data.type === 'comfytest-open' && activeTab) {
+      if (!e.data || !e.data.type || !activeTab) return;
+      if (e.data.type === 'comfytest-platform-changed') {
+        history.replaceState(null, '', '#' + activeTab + '/' + e.data.platform);
+      } else if (e.data.type === 'comfytest-open') {
         history.replaceState(null, '', '#' + activeTab + '/' + encodeURIComponent(e.data.name));
-      } else if (e.data.type === 'comfytest-close' && activeTab) {
+      } else if (e.data.type === 'comfytest-close') {
         history.replaceState(null, '', '#' + activeTab);
       }
     });

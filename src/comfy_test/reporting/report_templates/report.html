@@ -965,6 +965,7 @@
         <button class="lightbox-nav lightbox-nav-right" onclick="navigateLightbox(1)">&#8250;</button>
         <div class="lightbox-content">
             <img id="lightbox-img" src="" alt="">
+            <video id="lightbox-video" controls preload="metadata" style="display:none; max-width:90vw; max-height:80vh; background:#000;"></video>
             <div class="video-player" id="video-player">
                 <div class="video-slider-container">
                     <div id="video-slider"></div>
@@ -1055,15 +1056,27 @@
 
             const data = videoData[title];
             const videoPlayer = document.getElementById('video-player');
+            const lightboxImg = document.getElementById('lightbox-img');
+            const lightboxVideo = document.getElementById('lightbox-video');
 
-            if (data && data.frames && data.frames.length > 1) {
+            // Reset both modes; the branch below activates one.
+            videoPlayer.classList.remove('active');
+            lightboxVideo.style.display = 'none';
+            lightboxVideo.removeAttribute('src');
+            lightboxImg.style.display = '';
+
+            if (data && data.mp4) {
+                // Playable mp4 (desktop runs). Show <video>, hide the
+                // frame-slideshow img + slider.
+                lightboxVideo.src = 'videos/' + encodeURIComponent(title) + '/' + data.mp4;
+                lightboxVideo.style.display = '';
+                lightboxImg.style.display = 'none';
+            } else if (data && data.frames && data.frames.length > 1) {
                 currentFrames = data.frames;
                 currentTotalTime = data.total_time || data.frames[data.frames.length - 1].time;
                 setupVideoSlider(data.frames, currentTotalTime);
                 updateVideoFrameByIndex(title, data.frames.length - 1);
                 videoPlayer.classList.add('active');
-            } else {
-                videoPlayer.classList.remove('active');
             }
 
             loadResourceGraph(title);

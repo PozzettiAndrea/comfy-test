@@ -845,3 +845,37 @@ try:
         log(f'  removed {FRAMES} after successful encode')
 except Exception as e:
     log(f'  frames cleanup failed: {e}')
+
+# Place a copy of the mp4 under videos/<workflow_name>/driver.mp4 with
+# a sidecar metadata.json so the html report's existing video-discovery
+# loop (html_report.generate_html_report) renders it as a playable
+# video on the per-platform index. Use the picked template name for
+# now; when the per-workflow loop ships, this will be one entry per
+# workflow plus a 'system' entry for the wizard/install phase.
+try:
+    if mp4.exists() and mp4.stat().st_size > 0:
+        import shutil
+        videos_root = OUT.parent / 'videos'
+        for _wf in _workflow_results:
+            wf_name = _wf.get('name') or 'system'
+            wf_dir = videos_root / wf_name
+            wf_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(str(mp4), str(wf_dir / 'driver.mp4'))
+            (wf_dir / 'metadata.json').write_text(json.dumps({
+                'mp4': 'driver.mp4',
+                'duration_seconds': _wf.get('duration_seconds') or 0,
+                'status': _wf.get('status') or 'unknown',
+            }, indent=2), encoding='utf-8')
+            log(f'  videos/{wf_name}/driver.mp4 placed')
+        # Always also make a 'system' entry pointing at the same mp4
+        # so the wizard/install run is browsable even if no workflow ran.
+        if not _workflow_results:
+            sys_dir = videos_root / 'system'
+            sys_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(str(mp4), str(sys_dir / 'driver.mp4'))
+            (sys_dir / 'metadata.json').write_text(json.dumps({
+                'mp4': 'driver.mp4', 'duration_seconds': 0, 'status': 'pass',
+            }, indent=2), encoding='utf-8')
+            log('  videos/system/driver.mp4 placed (no workflows ran)')
+except Exception as e:
+    log(f'  videos/ placement failed: {e}')
