@@ -484,13 +484,19 @@ with sync_playwright() as p:
                     break
                 frame(page)
                 time.sleep(1)
-            # Server is up but the renderer might still be on the splash
-            # (#/desktop-start, #/server-start) or — on Windows runners
-            # without a GPU — the #/not-supported screen that needs a
-            # Continue click before the canvas mounts. Wait for
-            # window.app.graph; meanwhile dismiss anything blocking.
+            # Server is up but the renderer might still be on a splash
+            # (#/desktop-start, #/server-start) or — on Windows when
+            # there's no GPU — #/not-supported. Worse, custom-node
+            # install scripts (e.g. SAM3) restart the python server,
+            # which leaves the renderer stuck on the splash because the
+            # IPC channel got reset while the renderer was waiting.
+            #
+            # Plan: wait for window.app.graph; every ~5s try clicking
+            # past splash buttons; at 60s force a page.reload to recover
+            # from the post-install python-restart state.
             log('  app: waiting for main canvas (window.app.graph)')
-            for i in range(180):
+            reloaded_once = False
+            for i in range(240):
                 try:
                     ready = page.evaluate(
                         "typeof window.app !== 'undefined' "
@@ -500,7 +506,6 @@ with sync_playwright() as p:
                         break
                 except Exception:
                     pass
-                # Every ~5s, try clicking past splash-blocking screens.
                 if i % 5 == 0:
                     for label in ('Continue', 'Get Started', 'Next', 'OK'):
                         try:
@@ -513,6 +518,14 @@ with sync_playwright() as p:
                                 break
                         except Exception:
                             pass
+                if i == 60 and not reloaded_once:
+                    reloaded_once = True
+                    log('  app: canvas not ready in 60s, reloading page')
+                    try:
+                        page.reload(wait_until='load', timeout=30000)
+                        install_cursor(page)
+                    except Exception as e:
+                        log(f'  app: reload failed: {e}')
                 frame(page)
                 time.sleep(1)
             else:
