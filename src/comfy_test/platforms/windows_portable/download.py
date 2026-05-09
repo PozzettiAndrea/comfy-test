@@ -28,7 +28,7 @@ def get_cache_dir() -> Path:
 def get_latest_release_tag(log: Callable[[str], None]) -> str:
     """Get the latest release tag from GitHub API.
 
-    Always unauthenticated — the comfyanonymous/ComfyUI releases endpoint is public,
+    Always unauthenticated -- the comfyanonymous/ComfyUI releases endpoint is public,
     and a stale GITHUB_TOKEN in the caller's env would cause 401s for no reason.
     """
     log("Fetching latest release version...")

@@ -165,10 +165,10 @@ class TestPlatform(ABC):
         Run a command with logging.
 
         By default, the subprocess's stdout is captured silently; only the
-        `Running: …` header and any error output (on non-zero exit) are
+        `Running: ...` header and any error output (on non-zero exit) are
         logged. Set `COMFY_TEST_VERBOSE=1` (or `COMFY_ENV_DEBUG=1`) in the
         environment, or pass `verbose=True` per-call, to stream every stdout
-        line live — useful for `install.py` runs (which print structured
+        line live -- useful for `install.py` runs (which print structured
         progress) and for debugging slow pip installs.
 
         Args:

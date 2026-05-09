@@ -285,7 +285,7 @@ def run(ctx: LevelContext) -> LevelContext:
     failed_count = sum(1 for r in results if r["status"] == "fail")
 
     # Resolve commit hash of the node being tested.
-    # Only read if .git exists directly in node_dir — don't let git walk
+    # Only read if .git exists directly in node_dir -- don't let git walk
     # up to a parent repo (e.g., ComfyUI) and return the wrong hash.
     commit_hash = None
     if (ctx.node_dir / ".git").exists():

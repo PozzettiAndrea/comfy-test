@@ -1,4 +1,4 @@
-"""`comfy-test docker test` — clone a node from a git URL and run comfy-test
+"""`comfy-test docker test` -- clone a node from a git URL and run comfy-test
 against it inside an isolated Docker container with GPU passthrough.
 
 Supports both Windows hosts (process-isolated Windows containers) and Linux hosts
@@ -36,7 +36,7 @@ def _detect_host_platform() -> str:
 
 
 def _find_docker() -> Optional[str]:
-    """Locate docker — PATH first, then the Windows default install dir."""
+    """Locate docker -- PATH first, then the Windows default install dir."""
     exe = shutil.which("docker")
     if exe:
         return exe
@@ -115,14 +115,14 @@ def _expand_nodelink(nodelink: str) -> str:
     if not owner or not repo:
         return nodelink
     url = f"https://github.com/{owner}/{repo}.git"
-    print(f"[docker run] Expanding {nodelink} → {url}")
+    print(f"[docker run] Expanding {nodelink} -> {url}")
     return url
 
 
 def _is_url_nodelink(nodelink: str) -> bool:
     """True if nodelink is a remote URL (or owner/repo shorthand), not a local dir.
 
-    URL-mode skips host cloning entirely — the container clones inside its
+    URL-mode skips host cloning entirely -- the container clones inside its
     writable layer via the entrypoint. Only local paths bind-mount their
     contents into the container.
     """
@@ -140,7 +140,7 @@ def _node_name_from_url(nodelink: str) -> str:
 def _copy_local_node(nodelink: str, dest: Path) -> str:
     """Copy a local node directory into dest. Returns the node folder name.
 
-    URL handling lives in `_is_url_nodelink` + the container's entrypoint —
+    URL handling lives in `_is_url_nodelink` + the container's entrypoint --
     this function intentionally only handles the local-path case.
     """
     nodelink = _expand_nodelink(nodelink)
@@ -154,7 +154,7 @@ def _copy_local_node(nodelink: str, dest: Path) -> str:
     target = dest / node_name
     if target.exists():
         shutil.rmtree(target)
-    print(f"[docker run] LOCAL PATH → copying {src_path} to {target}")
+    print(f"[docker run] LOCAL PATH -> copying {src_path} to {target}")
     shutil.copytree(src_path, target, symlinks=False,
                     ignore=shutil.ignore_patterns(".venv", "venv", ".git",
                                                   "__pycache__", ".comfy-test"))
@@ -216,7 +216,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
             workspace_mount_src.mkdir(parents=True, exist_ok=True)
         if env_cache_dir is not None:
             env_cache_mount_src = stage_root / "env_cache"
-            # NOT wiped — env cache is the whole point of caching across runs.
+            # NOT wiped -- env cache is the whole point of caching across runs.
             env_cache_mount_src.mkdir(parents=True, exist_ok=True)
         print(f"[docker run] Dev Drive filters not attached; staging to {stage_root}")
         if not url_mode:
@@ -281,7 +281,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
     docker_cmd += [
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
     ]
-    # Propagate Python pin (if set on host — usually picked by the YAML dispatcher).
+    # Propagate Python pin (if set on host -- usually picked by the YAML dispatcher).
     py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
     if py_pin:
         docker_cmd += ["-e", f"COMFY_TEST_PYTHON_VERSION={py_pin}"]
@@ -418,7 +418,7 @@ def cmd_docker_run(args) -> int:
     With --desktop_mac / --desktop_windows / --desktop_windows_gpu, bypass
     the Docker path entirely and drive ComfyUI Desktop on the local host
     via cdp_driver.py. That mode mirrors what the
-    `_test-{macos,windows}-desktop.yml` workflows do on a GHA runner —
+    `_test-{macos,windows}-desktop.yml` workflows do on a GHA runner --
     used to iterate on cdp_driver behavior without round-tripping CI.
     """
     if sys.platform == "win32":
@@ -434,10 +434,10 @@ def cmd_docker_run(args) -> int:
         from comfy_test.cli._desktop_runner import run_desktop  # local: keep optional dep cost low
         return run_desktop(args, desktop_mode)
 
-    # Platform is always derived from the host OS — no cross-platform tests.
+    # Platform is always derived from the host OS -- no cross-platform tests.
     host_platform = _detect_host_platform()
     if host_platform == "macos":
-        print("[docker run] Docker mode is not supported on macOS — use `comfy-test run` "
+        print("[docker run] Docker mode is not supported on macOS -- use `comfy-test run` "
               "for native macOS testing.", file=sys.stderr)
         return 1
     if args.portable and host_platform != "windows":
@@ -483,7 +483,7 @@ def cmd_docker_run(args) -> int:
             return 1
         node_path = work_root / node_name
 
-    # Logs dir — base directory bind-mounted into the container as /logs (or C:\logs).
+    # Logs dir -- base directory bind-mounted into the container as /logs (or C:\logs).
     # The container's `comfy-test run` creates its own <short_name>-<timestamp>/<branch>/<platform>
     # subtree under it (see run.py). Don't pre-create a per-run dir here, or the host ends up
     # with doubled levels like ~/comfy-test-logs/ComfyUI-Foo-HHMM/Foo-HHMM/...
@@ -517,7 +517,7 @@ def cmd_docker_run(args) -> int:
     _patch_null_commit_hash(node_path, run_dir)
 
     # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
-    # In URL mode work_root is None — container did the cloning, nothing to clean here.
+    # In URL mode work_root is None -- container did the cloning, nothing to clean here.
     if work_root is not None and not args.keep_clone:
         shutil.rmtree(work_root, ignore_errors=True)
     print(f"[docker run] Logs: {run_dir}")

@@ -14,7 +14,7 @@ def cmd_generate_index(args) -> int:
     """Generate branch index with platform tabs.
 
     Also generates per-platform index.html for any platform subdir
-    that has a results.json — needed for desktop runs whose output
+    that has a results.json -- needed for desktop runs whose output
     is just dropped into the gh-pages tree by the publish workflow.
     """
     output_dir = Path(args.output_dir)

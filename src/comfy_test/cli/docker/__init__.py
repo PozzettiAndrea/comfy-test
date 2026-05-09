@@ -1,11 +1,11 @@
 """`comfy-test docker` subcommand group.
 
 Subcommands:
-    list   — Show known images, whether loaded locally, and SMB artifact paths.
+    list   -- Show known images, whether loaded locally, and SMB artifact paths.
              Also the default action when `comfy-test docker` is run with no
              subcommand.
-    build  — Build the comfy-test Linux/Windows GPU image. Auto-detects host OS.
-    run    — Clone a node and run comfy-test inside the container (mirror of
+    build  -- Build the comfy-test Linux/Windows GPU image. Auto-detects host OS.
+    run    -- Clone a node and run comfy-test inside the container (mirror of
              top-level `comfy-test run`, just dispatching via Docker).
 """
 

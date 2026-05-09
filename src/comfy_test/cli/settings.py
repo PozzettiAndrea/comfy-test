@@ -235,7 +235,7 @@ def _settings_tui(curses, tabs, initial_tab, path_values=None, path_file=None):
                 if cursor < bool_count:
                     cur_sel()[cursor] = not cur_sel()[cursor]
                 elif active_tab == paths_tab_idx and cursor < bool_count + len(PATH_SETTINGS):
-                    # Path setting — open inline editor
+                    # Path setting -- open inline editor
                     path_idx = cursor - bool_count
                     var, label, default = PATH_SETTINGS[path_idx]
                     new_val = _edit_path(stdscr, var, label, h, w)

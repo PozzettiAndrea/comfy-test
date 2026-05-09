@@ -230,7 +230,7 @@ def cmd_publish(args) -> int:
             return 1
         platforms = [(branch, platform, results_dir)]
     else:
-        # Parent dir — search for results inside
+        # Parent dir -- search for results inside
         result_dirs = _find_result_dirs(results_dir)
         if not result_dirs:
             print(f"No results.json found in {results_dir}", file=sys.stderr)
@@ -257,7 +257,7 @@ def add_publish_parser(subparsers):
     )
     publish_parser.add_argument(
         "results_dir",
-        help="Results directory — either a platform dir (logs/SAM3/dev/macos-cpu) "
+        help="Results directory -- either a platform dir (logs/SAM3/dev/macos-cpu) "
              "or parent dir (logs/SAM3, finds all platforms inside)",
     )
     publish_parser.add_argument(

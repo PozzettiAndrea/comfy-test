@@ -173,7 +173,7 @@ class WorkflowValidation:
                 return f"'{input_name}': '{value}' not in allowed values {input_type}"
             return None
 
-        # INT validation — match ComfyUI runtime which coerces numeric strings.
+        # INT validation -- match ComfyUI runtime which coerces numeric strings.
         # ComfyUI's frontend sometimes serializes numeric widget values as
         # strings (e.g. after manual editing); the API runtime accepts them
         # via int(value), so this validator should too.
@@ -192,7 +192,7 @@ class WorkflowValidation:
             if max_val is not None and value > max_val:
                 return f"'{input_name}': {value} > maximum {max_val}"
 
-        # FLOAT validation — same coercion as INT above.
+        # FLOAT validation -- same coercion as INT above.
         elif input_type == "FLOAT":
             if isinstance(value, str):
                 try:

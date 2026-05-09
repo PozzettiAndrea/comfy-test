@@ -191,7 +191,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     timeout = 600  # Fixed timeout for setup operations
 
     # Parse levels - default to all levels, supports "all" or list.
-    # Accept hyphens as well as underscores (e.g. "execution-light" → "execution_light").
+    # Accept hyphens as well as underscores (e.g. "execution-light" -> "execution_light").
     levels_raw = test_section.get("levels", ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"])
     if levels_raw == "all":
         levels_raw = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution_light", "execution"]

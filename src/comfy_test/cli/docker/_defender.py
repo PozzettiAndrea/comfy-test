@@ -4,7 +4,7 @@ Process-isolated Windows containers store their writable layer at
 C:\\ProgramData\\Docker\\windowsfilter\\<id>\\, on the host's NTFS volume.
 Defender's WdFilter scans every IO unless the path is excluded. We can't
 relocate the writable layer (Moby requires NTFS for windowsfilter), so the
-fix is exclusion via the GPO policy registry channel — which works even
+fix is exclusion via the GPO policy registry channel -- which works even
 under Tamper Protection.
 
 This module reads both exclusion channels (cmdlet and GPO) and reports

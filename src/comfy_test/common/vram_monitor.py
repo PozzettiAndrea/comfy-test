@@ -160,7 +160,7 @@ class VramMonitor:
             tree_mib = sum(vram_map.get(p, 0) for p in tree_pids)
             num_procs = sum(1 for p in tree_pids if p in vram_map)
         else:
-            # No root pid — sum all GPU processes
+            # No root pid -- sum all GPU processes
             tree_mib = sum(vram_map.values())
             num_procs = len(vram_map)
 

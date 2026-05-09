@@ -1,4 +1,4 @@
-"""Local desktop test runner — same flow as
+"""Local desktop test runner -- same flow as
 `.github/workflows/_test-{macos,windows}-desktop.yml` but executed on the
 host rather than a GHA runner. Used by `comfy-test dockertest --desktop_*`
 to iterate on cdp_driver.py without round-tripping through CI.
@@ -27,7 +27,7 @@ from typing import Optional
 
 def _download(url: str, dest: Path) -> None:
     """Download via curl. urllib's default User-Agent gets 403'd by the
-    download.comfy.org → dl.todesktop.com CDN; curl with -L --retry 3
+    download.comfy.org -> dl.todesktop.com CDN; curl with -L --retry 3
     matches what the YMLs do and works."""
     print(f"[desktop] downloading {url} -> {dest}")
     subprocess.run(
@@ -77,11 +77,11 @@ def _validate_host(desktop_mode: str) -> Optional[str]:
     # On macOS, GUI apps can only launch in the user's `gui/<uid>` launchd
     # session. Running this command from an SSH session puts us in a
     # `Background` session where ComfyUI Desktop silently zombies (32-KB
-    # RSS, no children, no ports, no stdout — nothing). Detect and bail
+    # RSS, no children, no ports, no stdout -- nothing). Detect and bail
     # with a clear explanation rather than the 60s CDP-poll timeout.
     if desktop_mode == "mac" and os.environ.get("SSH_CONNECTION"):
         return (
-            "--desktop_mac doesn't work from an SSH session — macOS GUI apps\n"
+            "--desktop_mac doesn't work from an SSH session -- macOS GUI apps\n"
             "  can't launch in the Background launchd session that SSH gives you.\n"
             "  Run from Terminal.app on the physical Mac console, OR re-run with\n"
             "  `sudo launchctl asuser <uid> python -m comfy_test dockertest ... --desktop_mac`.\n"
@@ -92,7 +92,7 @@ def _validate_host(desktop_mode: str) -> Optional[str]:
 
 def _ensure_desktop_app(desktop_mode: str) -> Path:
     """Cache ComfyUI Desktop into our private dir and return the launchable
-    path. Never touches /Applications or %LOCALAPPDATA%\\Programs — the
+    path. Never touches /Applications or %LOCALAPPDATA%\\Programs -- the
     whole point of `dockertest` is isolation, so the host stays clean.
     A subsequent run reuses the cached copy unless --refresh-app is passed.
 
@@ -345,15 +345,15 @@ _LIVE_HTML = """<!doctype html>
 </style></head><body>
 <div id="wrap">
   <img id="img" alt="">
-  <div id="meta">starting…</div>
+  <div id="meta">starting...</div>
   <div id="bottom">
     <div id="pwpane" class="pane">
-      <div class="label"><span>▸ playwright (session.log)</span>
+      <div class="label"><span>> playwright (session.log)</span>
         <button class="copybtn" data-src="/session.log">copy</button></div>
       <pre id="pwlog" class="pre">(waiting for session.log)</pre>
     </div>
     <div id="comfypane" class="pane">
-      <div class="label"><span>▸ comfy (comfyui.log)</span>
+      <div class="label"><span>> comfy (comfyui.log)</span>
         <button class="copybtn" data-src="/comfy.log">copy</button></div>
       <pre id="comfylog" class="pre">(waiting for comfyui.log)</pre>
     </div>
@@ -396,7 +396,7 @@ async function tick(){
         img.src=FRAMES+"frame_"+String(m).padStart(6,"0")+".png?t="+Date.now();
         last=m;
       }
-      meta.textContent=`frame ${m<0?"—":m} · ${new Date().toLocaleTimeString()}`;
+      meta.textContent=`frame ${m<0?"--":m} * ${new Date().toLocaleTimeString()}`;
     }else{
       meta.textContent="frames dir not yet available (HTTP "+r.status+")";
     }
@@ -409,15 +409,15 @@ tick(); setInterval(tick,500);
 document.querySelectorAll(".copybtn").forEach(b=>{
   b.addEventListener("click", async ()=>{
     const url=b.dataset.src, prev=b.textContent;
-    b.textContent="…";
+    b.textContent="...";
     try{
       const r=await fetch(url+"?t="+Date.now(),{cache:"no-store"});
       if(!r.ok) throw new Error("HTTP "+r.status);
       const txt=await r.text();
       await navigator.clipboard.writeText(txt);
-      b.textContent="✓ copied"; b.classList.add("ok");
+      b.textContent="OK copied"; b.classList.add("ok");
     }catch(e){
-      b.textContent="✗ "+(e.name||e.message||"error");
+      b.textContent="FAIL "+(e.name||e.message||"error");
     }
     setTimeout(()=>{ b.textContent=prev; b.classList.remove("ok"); }, 1200);
   });
@@ -539,7 +539,7 @@ def _start_monitor_server(port: int, logs_dir: Path) -> None:
     try:
         srv = socketserver.ThreadingTCPServer(("0.0.0.0", port), handler)
     except OSError as e:
-        print(f"[desktop] monitor: skip — port {port} unavailable ({e})",
+        print(f"[desktop] monitor: skip -- port {port} unavailable ({e})",
               file=sys.stderr)
         return
     srv.daemon_threads = True
@@ -565,7 +565,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     _kill_existing(desktop_mode)
     _wipe_comfy_state()
 
-    # Clone the target node — same helper dockertest uses.
+    # Clone the target node -- same helper dockertest uses.
     from comfy_test.cli.dockertest import _clone_node, _expand_nodelink  # local import: avoids cycles
 
     work_root = Path.home() / ".comfy-test-cache" / "desktop-runs"

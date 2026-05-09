@@ -74,7 +74,7 @@ def run(ctx: LevelContext) -> LevelContext:
     )
 
     # Get CUDA packages from comfy-env.toml. Whether we mock them depends on
-    # whether the per-node pixi env actually has them installed — not on the
+    # whether the per-node pixi env actually has them installed -- not on the
     # `--gpu` flag. comfy-env now inlines cuda-wheel URLs into pixi.toml when a
     # GPU is detected and a combo resolves, so on those runs the wheels live
     # in `<comfyui>/.ce/.pixi/envs/<env>/Lib/site-packages/<pkg>/`. On no-GPU
@@ -159,7 +159,7 @@ def _cuda_wheel_present(comfyui_dir: Path, pkg: str) -> bool:
     Looks under `<comfyui_dir>/.ce/.pixi/envs/*/Lib/site-packages/` (Windows)
     and the equivalent `lib/python*/site-packages/` (Linux/macOS). Tolerates
     both `pkg/` (package dir) and `pkg.dist-info/` (metadata-only) layouts.
-    Underscores and hyphens are normalized — e.g. `flash-attn` and `flash_attn`
+    Underscores and hyphens are normalized -- e.g. `flash-attn` and `flash_attn`
     both match a `flash_attn/` site-packages dir.
     """
     if not comfyui_dir:

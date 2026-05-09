@@ -2,9 +2,9 @@
 and `comfy-test docker test`.
 
 Resolution rules:
-- `owner/repo`              → expanded to `https://github.com/owner/repo.git`
-- existing local directory  → used as-is (no clone)
-- anything else             → treated as a remote URL (cloned shallowly)
+- `owner/repo`              -> expanded to `https://github.com/owner/repo.git`
+- existing local directory  -> used as-is (no clone)
+- anything else             -> treated as a remote URL (cloned shallowly)
 """
 
 import shutil
@@ -46,7 +46,7 @@ def clone_node(nodelink: str, branch: Optional[str], dest: Path,
     if target.exists():
         shutil.rmtree(target)
     branch_desc = f"branch={branch}" if branch else "default branch"
-    print(f"{log_prefix} clone {expanded} ({branch_desc}) → {target}")
+    print(f"{log_prefix} clone {expanded} ({branch_desc}) -> {target}")
     cmd = ["git", "clone", "--depth", "1"]
     if branch:
         cmd.extend(["--branch", branch])
@@ -79,7 +79,7 @@ def copy_local_node(nodelink: str, dest: Path,
     target = dest / name
     if target.exists():
         shutil.rmtree(target)
-    print(f"{log_prefix} LOCAL PATH → copying {src_path} to {target}")
+    print(f"{log_prefix} LOCAL PATH -> copying {src_path} to {target}")
     shutil.copytree(src_path, target, symlinks=False,
                     ignore=shutil.ignore_patterns(".venv", "venv", ".git",
                                                   "__pycache__", ".comfy-test"))

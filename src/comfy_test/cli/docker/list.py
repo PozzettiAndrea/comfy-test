@@ -1,4 +1,4 @@
-"""`comfy-test docker` (with no subcommand) and `comfy-test docker list` —
+"""`comfy-test docker` (with no subcommand) and `comfy-test docker list` --
 print known image tags, whether they're loaded locally, and where they live.
 
 Layout:
@@ -106,7 +106,7 @@ def cmd_docker_list(args=None) -> int:
     source_label = {
         "env": "set via $COMFY_TEST_DOCKER_ROOT",
         "devdrv": "Dev Drive auto-detected",
-        "fallback": "fallback — no Dev Drive >=50GB free found",
+        "fallback": "fallback -- no Dev Drive >=50GB free found",
     }.get(source, source)
     print("Docker root")
     print("-" * 70)

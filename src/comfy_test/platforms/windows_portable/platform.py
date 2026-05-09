@@ -204,7 +204,7 @@ class WindowsPortablePlatform(TestPlatform):
         else:
             self._log(f"Using cached extraction: {cached_extract_dir}")
 
-        # Copy from cache into the per-run workspace — alongside where the non-portable
+        # Copy from cache into the per-run workspace -- alongside where the non-portable
         # platform would put ComfyUI. Avoids the old Desktop dumping ground, which broke
         # Docker (no Desktop inside containers) and polluted the host filesystem outside
         # the workspace. rmtree if a previous attempt left remnants in the workspace.

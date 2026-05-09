@@ -350,7 +350,7 @@ def ensure_dependencies(
             capture_output=True, text=True,
         )
         if result.returncode != 0:
-            # uv failed — try pip directly
+            # uv failed -- try pip directly
             log(f"  uv install failed, trying pip...")
             result = subprocess.run(
                 [python, "-m", "pip", "install", "--break-system-packages"] + packages,
@@ -454,7 +454,7 @@ class WorkflowScreenshot:
         has_vulkan = _ensure_vulkan_linux(self._log) if has_gpu else False
 
         if has_gpu and has_vulkan:
-            self._log("  GPU + Vulkan detected — using ANGLE/Vulkan rendering")
+            self._log("  GPU + Vulkan detected -- using ANGLE/Vulkan rendering")
             chrome_args = [
                 "--use-gl=angle",
                 "--use-angle=vulkan",
@@ -464,35 +464,35 @@ class WorkflowScreenshot:
                 "--enable-unsafe-swiftshader",  # fallback if Vulkan fails
             ]
         elif has_gpu:
-            self._log("  GPU detected (no Vulkan) — using ANGLE/OpenGL rendering")
+            self._log("  GPU detected (no Vulkan) -- using ANGLE/OpenGL rendering")
             chrome_args = [
                 "--use-gl=angle",
                 "--ignore-gpu-blocklist",
                 "--enable-unsafe-swiftshader",  # fallback if HW accel fails
             ]
         elif platform.system() == "Linux" and _ensure_mesa_linux(self._log):
-            self._log("  Using Mesa llvmpipe (EGL) — multithreaded CPU rendering")
+            self._log("  Using Mesa llvmpipe (EGL) -- multithreaded CPU rendering")
             chrome_args = ["--use-gl=egl", "--ignore-gpu-blocklist"]
         elif platform.system() == "Windows":
             # Get Chromium dir from Playwright to drop Mesa DLLs next to it
             chromium_path = Path(self._playwright.chromium.executable_path)
             chromium_dir = chromium_path.parent
             if _ensure_mesa_windows(chromium_dir, self._log):
-                self._log("  Using Mesa llvmpipe (desktop GL) — multithreaded CPU rendering")
+                self._log("  Using Mesa llvmpipe (desktop GL) -- multithreaded CPU rendering")
                 chrome_args = ["--use-gl=desktop"]
             else:
-                self._log("  Mesa unavailable — falling back to SwiftShader")
+                self._log("  Mesa unavailable -- falling back to SwiftShader")
                 chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
         elif platform.system() == "Darwin":
             # Apple Silicon macos-latest runners are real M1/M2 hardware with a
             # working GPU. SwiftShader's WebGL is disabled on ARM (Chromium
             # docs), so forcing it deadlocks the renderer at 100% CPU until the
-            # GPU process watchdog kills the browser — pipe close, JSON parse
+            # GPU process watchdog kills the browser -- pipe close, JSON parse
             # crash in pipeTransport.js. Use Apple's Metal GPU via ANGLE.
-            self._log("  macOS — using Apple Metal GPU via ANGLE")
+            self._log("  macOS -- using Apple Metal GPU via ANGLE")
             chrome_args = ["--enable-gpu", "--use-angle=metal", "--ignore-gpu-blocklist"]
         else:
-            self._log("  No GPU, no Mesa — using SwiftShader software rendering")
+            self._log("  No GPU, no Mesa -- using SwiftShader software rendering")
             chrome_args = ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"]
 
         self._browser = self._playwright.chromium.launch(
@@ -645,7 +645,7 @@ class WorkflowScreenshot:
         try:
             self._page.evaluate("""
                 document.querySelectorAll('span').forEach(el => {
-                    if (el.textContent.trim() === '•') el.style.display = 'none';
+                    if (el.textContent.trim() === '*') el.style.display = 'none';
                 });
             """)
         except Exception:
@@ -658,7 +658,7 @@ class WorkflowScreenshot:
         We find all such nodes and dispatch mouseenter on their DOM widgets
         to set STATUS_MOUSE_ON_SCENE = true.
 
-        Does NOT unfreeze rAF — 3D viewers already rendered during execution
+        Does NOT unfreeze rAF -- 3D viewers already rendered during execution
         and their canvases retain the last frame.  Unfreezing would restart
         heavy SwiftShader renders (e.g. 1.18M gaussians) causing 55s+ stalls.
         """
@@ -720,7 +720,7 @@ class WorkflowScreenshot:
                     // Freeze iframes too (3D viewers run in iframes)
                     // Unlike the main window, we capture callbacks instead of
                     // discarding them so the render loop can be restarted on
-                    // unfreeze.  We also skip cancelAnimationFrame — letting
+                    // unfreeze.  We also skip cancelAnimationFrame -- letting
                     // the one already-queued callback fire ensures it calls
                     // our replacement rAF, which saves the loop function.
                     document.querySelectorAll('iframe').forEach(iframe => {
@@ -1402,7 +1402,7 @@ class WorkflowScreenshot:
                         gif_ws_disconnected_since = time.time()
                         self._log(f"  [gif-loop] WebSocket disconnected (readyState={gif_ws_state})")
                     elif time.time() - gif_ws_disconnected_since > GIF_WS_DEAD_TIMEOUT:
-                        self._log(f"  [gif-loop] Server appears dead — WebSocket disconnected for {GIF_WS_DEAD_TIMEOUT}s")
+                        self._log(f"  [gif-loop] Server appears dead -- WebSocket disconnected for {GIF_WS_DEAD_TIMEOUT}s")
                         raise WorkflowError(
                             f"ComfyUI server crashed during execution (WebSocket closed for {GIF_WS_DEAD_TIMEOUT}s)",
                             workflow_file=str(workflow_path),
@@ -1652,7 +1652,7 @@ class WorkflowScreenshot:
             return True
 
         # Quick rAF freeze/unfreeze for periodic captures (no sleep).
-        # IMPORTANT: iframe callbacks must be SAVED, not discarded — otherwise
+        # IMPORTANT: iframe callbacks must be SAVED, not discarded -- otherwise
         # render loops (e.g. gaussian splat viewer) die permanently.
         _QUICK_FREEZE_JS = """(() => {
             window._origRAF = window._origRAF || window.requestAnimationFrame;
@@ -1704,7 +1704,7 @@ class WorkflowScreenshot:
             self._log("  Queuing workflow for execution...")
             self._page.evaluate("window.app.queuePrompt(0)")
 
-            # Capture loop — screenshot on node events + periodic every 2s
+            # Capture loop -- screenshot on node events + periodic every 2s
             last_executed_count = 0
             last_screenshot_time = time.time()
             PERIODIC_INTERVAL = 2.0
@@ -1737,7 +1737,7 @@ class WorkflowScreenshot:
                         ws_disconnected_since = time.time()
                         self._log(f"  [capture-loop] WebSocket disconnected (readyState={ws_state})")
                     elif time.time() - ws_disconnected_since > WS_DEAD_TIMEOUT:
-                        self._log(f"  [capture-loop] Server appears dead — WebSocket disconnected for {WS_DEAD_TIMEOUT}s")
+                        self._log(f"  [capture-loop] Server appears dead -- WebSocket disconnected for {WS_DEAD_TIMEOUT}s")
                         raise WorkflowError(
                             f"ComfyUI server crashed during execution (WebSocket closed for {WS_DEAD_TIMEOUT}s)",
                             workflow_file=str(workflow_path),
@@ -1857,7 +1857,7 @@ class WorkflowScreenshot:
                                     )
                                     self._log(f"  [3d-wait] Got 'Loaded successfully' after {time.time()-t1:.1f}s")
                                 # Unfreeze rAF and let the viewer render freely for 5s.
-                                # Use CDP to halt JS execution afterwards — this operates
+                                # Use CDP to halt JS execution afterwards -- this operates
                                 # at the V8 engine level (not through the JS main thread),
                                 # so it works even when rAF is starving the main thread.
                                 t1 = time.time()
@@ -1927,7 +1927,7 @@ class WorkflowScreenshot:
 
                     // Search for ANY node overlay elements (Vue renders these on top of canvas)
                     d.canvasElements = document.querySelectorAll('canvas').length;
-                    // The Vue overlay wraps nodes — check for litegraph node overlay container
+                    // The Vue overlay wraps nodes -- check for litegraph node overlay container
                     const graphCanvas = document.querySelector('.graph-canvas-container, .litegraph, [class*="graph"], #graph-canvas');
                     d.graphContainerTag = graphCanvas?.tagName;
                     d.graphContainerClass = graphCanvas?.className?.substring?.(0, 100);
@@ -1978,7 +1978,7 @@ class WorkflowScreenshot:
                 })()"""
 
                 diag = self._page.evaluate(_DIAG_JS)
-                # [diag] output silenced — uncomment to debug preview rendering issues:
+                # [diag] output silenced -- uncomment to debug preview rendering issues:
                 # self._log(f"  [diag] API executed: {diag.get('apiExecutedCount')}, executing: {diag.get('apiExecutingCount')}")
                 # self._log(f"  [diag] WS outputs: {diag.get('wsOutputNodes')}")
                 # self._log(f"  [diag] app.nodeOutputs: {diag.get('appNodeOutputKeys')}")

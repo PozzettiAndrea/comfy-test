@@ -36,7 +36,7 @@ def get_current_platform() -> str:
 def cmd_run(args) -> int:
     """Run tests in a fresh ComfyUI environment.
 
-    1. Resolve <nodelink> positional (URL → clone, local path → cd, empty → cwd)
+    1. Resolve <nodelink> positional (URL -> clone, local path -> cd, empty -> cwd)
     2. Create workspace in configured workspace dir
     3. Clone ComfyUI and create venv
     4. Copy node into custom_nodes/
@@ -47,9 +47,9 @@ def cmd_run(args) -> int:
     from ..orchestration.manager import TestManager
 
     # Resolve <nodelink> positional. Three modes:
-    #   empty            → cwd is the node dir (legacy behavior)
-    #   local path       → chdir into it
-    #   URL / owner/repo → shallow-clone to a temp dir, chdir into it
+    #   empty            -> cwd is the node dir (legacy behavior)
+    #   local path       -> chdir into it
+    #   URL / owner/repo -> shallow-clone to a temp dir, chdir into it
     _clone_tmpdir = None
     nodelink = getattr(args, "nodelink", None)
     if nodelink:
@@ -74,7 +74,7 @@ def cmd_run(args) -> int:
 
     print(f"[comfy-test] Testing: {node_dir.name}")
 
-    # Validate flag combos against host OS — we never run cross-platform tests
+    # Validate flag combos against host OS -- we never run cross-platform tests
     host = sys.platform
     if args.gpu and host == "darwin":
         print("[comfy-test] --gpu is not supported on macOS (no NVIDIA on Apple Silicon)",
@@ -90,7 +90,7 @@ def cmd_run(args) -> int:
         if args.portable:
             print("[comfy-test] --desktop conflicts with --portable", file=sys.stderr)
             return 1
-        # Route to ComfyUI Desktop driver — bypasses the ComfyUI server flow.
+        # Route to ComfyUI Desktop driver -- bypasses the ComfyUI server flow.
         from comfy_test.cli._desktop_runner import run_desktop
         if host == "darwin":
             mode = "mac"
@@ -132,7 +132,7 @@ def cmd_run(args) -> int:
         logs_dir = get_logs_dir()
         logs_dir.mkdir(exist_ok=True)
 
-        # Platform is always derived from the host OS — we never run cross-platform.
+        # Platform is always derived from the host OS -- we never run cross-platform.
         platform = get_current_platform()
         if args.portable:
             platform = "windows_portable"

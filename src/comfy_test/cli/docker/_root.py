@@ -1,12 +1,12 @@
 """Pick a single root directory for all `comfy-test docker` host artifacts.
 
 Layout (under <root>):
-    <root>/logs        — `docker test` results (default --logs-dir)
-    <root>/stage       — robocopy staging fallback (Windows-only)
-    <root>/installers  — auto-downloaded driver/git installers cache (Windows)
-    <root>/workspaces  — --persist ComfyUI workspace mount
-    <root>/env-cache   — --persist pixi env cache
-    <root>/artifacts   — `docker build --save` .tar.zst output
+    <root>/logs        -- `docker test` results (default --logs-dir)
+    <root>/stage       -- robocopy staging fallback (Windows-only)
+    <root>/installers  -- auto-downloaded driver/git installers cache (Windows)
+    <root>/workspaces  -- --persist ComfyUI workspace mount
+    <root>/env-cache   -- --persist pixi env cache
+    <root>/artifacts   -- `docker build --save` .tar.zst output
 
 Selection priority:
     1. $COMFY_TEST_DOCKER_ROOT (explicit override)
@@ -16,7 +16,7 @@ Selection priority:
     4. Non-Windows: ~/.comfy-test/docker.
 
 Per-component env vars (COMFY_TEST_LOGS_DIR, etc.) still override the
-auto-derived defaults — callers should consult those first.
+auto-derived defaults -- callers should consult those first.
 """
 
 import os
@@ -30,12 +30,12 @@ from typing import Optional, Tuple
 MIN_FREE_GB = 50
 
 _root_cache: Optional[Path] = None
-_root_source_cache: Optional[str] = None  # "env" | "devdrv" | "fallback" — for diagnostics
+_root_source_cache: Optional[str] = None  # "env" | "devdrv" | "fallback" -- for diagnostics
 
 
 def _is_trusted_dev_drive(drive: str) -> bool:
     """`fsutil devdrv query <drive>` returns 'This is a trusted developer volume.'
-    when the volume is one. Cheap probe — single subprocess call per letter."""
+    when the volume is one. Cheap probe -- single subprocess call per letter."""
     try:
         r = subprocess.run(
             ["fsutil", "devdrv", "query", drive],
@@ -57,7 +57,7 @@ def _enum_dev_drives_windows() -> list:
     if sys.platform != "win32":
         return []
     drives = []
-    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":  # skip A,B,C — A/B legacy floppy, C never a dev drive
+    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":  # skip A,B,C -- A/B legacy floppy, C never a dev drive
         drive = f"{letter}:\\"
         try:
             if not Path(drive).exists():
@@ -73,7 +73,7 @@ def _enum_dev_drives_windows() -> list:
 
 
 def _pick_dev_drive() -> Optional[Path]:
-    """Return <drive>:\\ for the Trusted Dev Drive with the most free space ≥ MIN_FREE_GB."""
+    """Return <drive>:\\ for the Trusted Dev Drive with the most free space >= MIN_FREE_GB."""
     drives = [(d, f) for d, f in _enum_dev_drives_windows() if f >= MIN_FREE_GB]
     if not drives:
         return None
@@ -107,7 +107,7 @@ def get_docker_root() -> Path:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         print(f"[docker root] could not create {root}: {e}", file=sys.stderr)
-        # don't crash callers — return the path anyway, they can decide
+        # don't crash callers -- return the path anyway, they can decide
     _root_cache = root
     _root_source_cache = source
     return root

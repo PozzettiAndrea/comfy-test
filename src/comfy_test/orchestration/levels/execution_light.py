@@ -108,7 +108,7 @@ def run(ctx: LevelContext) -> LevelContext:
     def capture_log(msg):
         current_workflow_log.append(msg)
 
-    # WorkflowRunner does Python-side WebSocket polling — browser stays idle.
+    # WorkflowRunner does Python-side WebSocket polling -- browser stays idle.
     runner = WorkflowRunner(ctx.api, log_callback=capture_log)
 
     # Initialize Playwright for the single end-of-workflow screenshot.

@@ -1,4 +1,4 @@
-"""`comfy-test docker build` — build the comfy-test GPU image.
+"""`comfy-test docker build` -- build the comfy-test GPU image.
 
 OS-agnostic Python orchestrator. Replaces the platform-specific
 `docker/{linux,windows}-gpu/build.{sh,ps1}` shell scripts.
@@ -41,12 +41,12 @@ DOCKER_GPU_DEVICE = "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599"
 
 # Repo-relative path to the docker build context (Dockerfile + entrypoint).
 # Resolved from this file's location: src/comfy_test/cli/docker/build.py
-# → ../../../../../docker/<linux|windows>-gpu
+# -> ../../../../../docker/<linux|windows>-gpu
 _DOCKER_DIR = Path(__file__).resolve().parents[4] / "docker"
 
 
 def _find_docker() -> str:
-    """Locate `docker` — PATH first, then the Windows default install dir."""
+    """Locate `docker` -- PATH first, then the Windows default install dir."""
     exe = shutil.which("docker")
     if exe:
         return exe
@@ -88,7 +88,7 @@ def _confirm_overwrite(tag: str, info: dict, force: bool) -> bool:
     print(f"  Created: {created}")
     print(f"  Size:    {size}")
     if force:
-        print("--force / -y passed — overwriting.")
+        print("--force / -y passed -- overwriting.")
         return True
     if not sys.stdin.isatty():
         print("stdin is not a TTY; pass -y to overwrite non-interactively. Skipping.", file=sys.stderr)
@@ -280,7 +280,7 @@ def _build_windows(args, docker_exe: str) -> int:
         print(f"Build context not found at {src}", file=sys.stderr)
         return 2
 
-    # Overwrite prompt FIRST — before downloading 1+ GB of installers,
+    # Overwrite prompt FIRST -- before downloading 1+ GB of installers,
     # confirm the user actually wants to rebuild.
     info = _image_info(docker_exe, tag)
     if info and not _confirm_overwrite(tag, info, args.force):
@@ -295,7 +295,7 @@ def _build_windows(args, docker_exe: str) -> int:
                   "Install the driver on the host or pass --nvidia-exe.", file=sys.stderr)
             return 2
         nvidia_exe = f"nvidia-driver-{host_drv}.exe"
-        print(f"[docker build] host driver: {host_drv} → expecting {nvidia_exe}")
+        print(f"[docker build] host driver: {host_drv} -> expecting {nvidia_exe}")
         host_drv_for_url = host_drv
     else:
         # Best-effort: extract version from filename for URL lookup
@@ -341,7 +341,7 @@ def _build_windows(args, docker_exe: str) -> int:
     for src_file, name in ((nv_src, nvidia_exe), (git_src, git_exe)):
         dst = stage_dir / name
         if not dst.is_file():
-            print(f"[docker build] copy {name} → {stage_dir}")
+            print(f"[docker build] copy {name} -> {stage_dir}")
             shutil.copy(src_file, dst)
         else:
             print(f"[docker build] {name} already staged")
@@ -387,7 +387,7 @@ def _build_windows(args, docker_exe: str) -> int:
             tag, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cuda_check,
         ]).returncode
         if rc != 0:
-            print(f"\nCUDA smoke test failed (exit {rc}) — host/container driver mismatch?",
+            print(f"\nCUDA smoke test failed (exit {rc}) -- host/container driver mismatch?",
                   file=sys.stderr)
             return rc
 
@@ -420,7 +420,7 @@ def _save_image(docker_exe: str, tag: str, args) -> int:
         artifact = str(_root.subdir("artifacts") / f"{safe}.tar.zst")
     artifact_path = Path(artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[docker build] saving {tag} → {artifact_path}")
+    print(f"[docker build] saving {tag} -> {artifact_path}")
     if not shutil.which("zstd"):
         print("zstd not found on PATH; install zstd and retry.", file=sys.stderr)
         return 5
