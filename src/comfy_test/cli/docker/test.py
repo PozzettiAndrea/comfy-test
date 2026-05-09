@@ -118,54 +118,58 @@ def _expand_nodelink(nodelink: str) -> str:
     return url
 
 
-def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
-    """Clone nodelink (git URL, owner/repo shorthand, or local path) into dest.
+def _is_url_nodelink(nodelink: str) -> bool:
+    """True if nodelink is a remote URL (or owner/repo shorthand), not a local dir.
 
-    Returns the node folder name.
+    URL-mode skips host cloning entirely — the container clones inside its
+    writable layer via the entrypoint. Only local paths bind-mount their
+    contents into the container.
+    """
+    expanded = _expand_nodelink(nodelink)
+    p = Path(expanded)
+    return not (p.exists() and p.is_dir())
+
+
+def _node_name_from_url(nodelink: str) -> str:
+    """Derive the node directory name from a URL (or owner/repo shorthand)."""
+    expanded = _expand_nodelink(nodelink)
+    return expanded.rstrip("/").split("/")[-1].removesuffix(".git")
+
+
+def _copy_local_node(nodelink: str, dest: Path) -> str:
+    """Copy a local node directory into dest. Returns the node folder name.
+
+    URL handling lives in `_is_url_nodelink` + the container's entrypoint —
+    this function intentionally only handles the local-path case.
     """
     nodelink = _expand_nodelink(nodelink)
-    src_path = Path(nodelink) if Path(nodelink).exists() else None
-    if src_path and src_path.is_dir():
-        node_name = src_path.name
-        dest.mkdir(parents=True, exist_ok=True)
-        target = dest / node_name
-        if target.exists():
-            shutil.rmtree(target)
-        print(f"[docker test] LOCAL PATH → copying {src_path} to {target}")
-        shutil.copytree(src_path, target, symlinks=False,
-                        ignore=shutil.ignore_patterns(".venv", "venv", ".git",
-                                                      "__pycache__", ".comfy-test"))
-        return node_name
-    # Treat as git URL; derive node name from URL
-    node_name = nodelink.rstrip("/").split("/")[-1].removesuffix(".git")
+    src_path = Path(nodelink)
+    if not src_path.exists():
+        raise RuntimeError(f"Local path not found: {nodelink}")
+    if not src_path.is_dir():
+        raise RuntimeError(f"Local path is not a directory: {nodelink}")
+    node_name = src_path.name
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / node_name
     if target.exists():
         shutil.rmtree(target)
-    branch_desc = f"branch={branch}" if branch else "default branch"
-    print(f"[docker test] URL CLONE → git clone {nodelink} ({branch_desc}) → {target}")
-    cmd = ["git", "clone", "--depth", "1"]
-    if branch:
-        cmd.extend(["--branch", branch])
-    cmd.extend([nodelink, str(target)])
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"git clone failed:\n{r.stderr}")
-    # Surface the resolved commit so user can verify what was pulled
-    sha = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"],
-                         capture_output=True, text=True)
-    if sha.returncode == 0:
-        short = sha.stdout.strip()[:12]
-        msg = subprocess.run(["git", "-C", str(target), "log", "-1", "--format=%s (%ci)"],
-                             capture_output=True, text=True)
-        subj = msg.stdout.strip() if msg.returncode == 0 else ""
-        print(f"[docker test] cloned {node_name} @ {short}  {subj}")
+    print(f"[docker test] LOCAL PATH → copying {src_path} to {target}")
+    shutil.copytree(src_path, target, symlinks=False,
+                    ignore=shutil.ignore_patterns(".venv", "venv", ".git",
+                                                  "__pycache__", ".comfy-test"))
     return node_name
 
 
 def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
-                 node_path: Path, node_name: str, logs_dir: Path, timestamp: str) -> int:
-    """Run dockertest on a Windows host with process-isolated Windows containers."""
+                 node_path: Optional[Path], node_name: str, logs_dir: Path,
+                 timestamp: str) -> int:
+    """Run docker test on a Windows host with process-isolated Windows containers.
+
+    URL mode (`node_path is None`): no node bind-mount; container clones from
+    `args.nodelink` via the entrypoint. Local mode: bind-mount node_path.
+    """
+    url_mode = node_path is None
+
     # --persist: bind-mount the full workspace AND the comfy-env cache (C:\ce, where pixi
     # isolation envs live) to the host. Without the C:\ce mount, the broken pixi env dies
     # with --rm and we can't dumpbin /dependents on its DLLs from outside the container.
@@ -180,26 +184,27 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         env_cache_dir.mkdir(parents=True, exist_ok=True)
         args.keep_clone = True
 
-    # Stage on C:\ if any source is a Dev Drive without both wcifs+bindflt
-    stage = _needs_stage(str(node_path)) or _needs_stage(str(logs_dir))
+    # Stage on C:\ if any source is a Dev Drive without both wcifs+bindflt.
+    # URL mode has no node_path to stage; only logs (and persist dirs) matter.
+    stage = _needs_stage(str(logs_dir))
+    if not url_mode:
+        stage = stage or _needs_stage(str(node_path))
     if workspace_dir is not None:
         stage = stage or _needs_stage(str(workspace_dir))
     if env_cache_dir is not None:
         stage = stage or _needs_stage(str(env_cache_dir))
     workspace_mount_src = None
     env_cache_mount_src = None
+    node_mount_src = None
     if stage:
         DOCKER_STAGE_ROOT.mkdir(parents=True, exist_ok=True)
-        node_mount_src = DOCKER_STAGE_ROOT / "node" / node_name
         logs_mount_src = DOCKER_STAGE_ROOT / "logs"
-        # Stage root persists across runs on self-hosted Windows runners. Wipe
-        # the per-run subtrees before staging so we don't drag a previous
-        # node's results.json into this run's robocopy-back step (which would
-        # then publish the wrong repo's results to gh-pages).
         shutil.rmtree(logs_mount_src, ignore_errors=True)
-        shutil.rmtree(node_mount_src, ignore_errors=True)
         logs_mount_src.mkdir(parents=True, exist_ok=True)
-        node_mount_src.parent.mkdir(parents=True, exist_ok=True)
+        if not url_mode:
+            node_mount_src = DOCKER_STAGE_ROOT / "node" / node_name
+            shutil.rmtree(node_mount_src, ignore_errors=True)
+            node_mount_src.parent.mkdir(parents=True, exist_ok=True)
         if workspace_dir is not None:
             workspace_mount_src = DOCKER_STAGE_ROOT / "workspace"
             shutil.rmtree(workspace_mount_src, ignore_errors=True)
@@ -209,21 +214,23 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
             # NOT wiped — env cache is the whole point of caching across runs.
             env_cache_mount_src.mkdir(parents=True, exist_ok=True)
         print(f"[docker test] Dev Drive filters not attached; staging to {DOCKER_STAGE_ROOT}")
-        rc = subprocess.run(
-            ["robocopy", str(node_path), str(node_mount_src),
-             "/MIR", "/XJ", "/R:1", "/W:1",
-             "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
-             "/XD", ".venv", "venv", "__pycache__", ".pytest_cache",
-             ".comfy-test", "node_modules"],
-            capture_output=True, text=True,
-        )
-        if rc.returncode >= 8:
-            print(f"[docker test] robocopy failed (exit {rc.returncode})\n{rc.stdout}\n{rc.stderr}",
-                  file=sys.stderr)
-            return 1
+        if not url_mode:
+            rc = subprocess.run(
+                ["robocopy", str(node_path), str(node_mount_src),
+                 "/MIR", "/XJ", "/R:1", "/W:1",
+                 "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
+                 "/XD", ".venv", "venv", "__pycache__", ".pytest_cache",
+                 ".comfy-test", "node_modules"],
+                capture_output=True, text=True,
+            )
+            if rc.returncode >= 8:
+                print(f"[docker test] robocopy failed (exit {rc.returncode})\n{rc.stdout}\n{rc.stderr}",
+                      file=sys.stderr)
+                return 1
     else:
-        node_mount_src = node_path
         logs_mount_src = logs_dir
+        if not url_mode:
+            node_mount_src = node_path
         if workspace_dir is not None:
             workspace_mount_src = workspace_dir
         if env_cache_dir is not None:
@@ -243,15 +250,26 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         docker_exe, "run", "--rm",
         "--isolation=process",
         "--device", DOCKER_GPU_DEVICE,
-        "-v", f"{node_mount_src}:{container_node_path}",
         "-v", f"{logs_mount_src}:C:\\logs",
     ]
+    if not url_mode:
+        # Local mode: bind-mount the copied source dir + set workdir to it.
+        docker_cmd += ["-v", f"{node_mount_src}:{container_node_path}"]
     if workspace_mount_src is not None:
         docker_cmd += ["-v", f"{workspace_mount_src}:C:\\workspaces"]
     if env_cache_mount_src is not None:
         docker_cmd += ["-v", f"{env_cache_mount_src}:C:\\ce"]
+    if not url_mode:
+        docker_cmd += ["-w", container_node_path]
+    else:
+        # URL mode: entrypoint clones to C:\<node_name> and cd's into it.
+        docker_cmd += [
+            "-e", f"COMFY_TEST_NODE_URL={_expand_nodelink(args.nodelink)}",
+            "-e", f"COMFY_TEST_NODE_NAME={node_name}",
+        ]
+        if args.branch:
+            docker_cmd += ["-e", f"COMFY_TEST_NODE_BRANCH={args.branch}"]
     docker_cmd += [
-        "-w", container_node_path,
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
         DOCKER_IMAGE_WINDOWS,
     ] + ct_args
@@ -295,8 +313,14 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
 
 
 def _run_linux(args, docker_exe: str, gpu: bool,
-               node_path: Path, node_name: str, logs_dir: Path, timestamp: str) -> int:
-    """Run dockertest on a Linux host with NVIDIA Container Toolkit."""
+               node_path: Optional[Path], node_name: str, logs_dir: Path, timestamp: str) -> int:
+    """Run docker test on a Linux host with NVIDIA Container Toolkit.
+
+    URL mode (`node_path is None`): no node bind-mount; container clones via
+    the entrypoint. Local mode: bind-mount node_path.
+    """
+    url_mode = node_path is None
+
     workspace_dir = None
     if args.persist:
         workspace_dir = Path.home() / "comfy-test-workspaces" / f"{node_name}-{timestamp}"
@@ -317,13 +341,22 @@ def _run_linux(args, docker_exe: str, gpu: bool,
         docker_exe, "run", "--rm",
         "--gpus", "all",
         "--shm-size=8g",
-        "-v", f"{node_path}:{container_node_path}",
         "-v", f"{logs_dir}:/logs",
     ]
+    if not url_mode:
+        docker_cmd += ["-v", f"{node_path}:{container_node_path}"]
     if workspace_dir is not None:
         docker_cmd += ["-v", f"{workspace_dir}:/workspaces"]
+    if not url_mode:
+        docker_cmd += ["-w", container_node_path]
+    else:
+        docker_cmd += [
+            "-e", f"COMFY_TEST_NODE_URL={_expand_nodelink(args.nodelink)}",
+            "-e", f"COMFY_TEST_NODE_NAME={node_name}",
+        ]
+        if args.branch:
+            docker_cmd += ["-e", f"COMFY_TEST_NODE_BRANCH={args.branch}"]
     docker_cmd += [
-        "-w", container_node_path,
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
         DOCKER_IMAGE_LINUX,
     ] + ct_args
@@ -370,6 +403,9 @@ def cmd_docker_test(args) -> int:
     `_test-{macos,windows}-desktop.yml` workflows do on a GHA runner —
     used to iterate on cdp_driver behavior without round-tripping CI.
     """
+    if sys.platform == "win32":
+        from . import _defender
+        _defender.warn_if_needed(args)
     desktop_mode = getattr(args, "desktop_mode", None)
     if desktop_mode:
         # Reject conflicting flags: desktop modes are local-Electron, not
@@ -430,16 +466,26 @@ def cmd_docker_test(args) -> int:
         print(f"[docker test] {err}", file=sys.stderr)
         return 1
 
-    # Clone or copy node
-    work_root = Path(tempfile.mkdtemp(prefix="comfy-test-dockertest-"))
-    print(f"[docker test] Working dir: {work_root}")
-    try:
-        node_name = _clone_node(args.nodelink, args.branch, work_root)
-    except Exception as e:
-        print(f"[docker test] {e}", file=sys.stderr)
-        shutil.rmtree(work_root, ignore_errors=True)
-        return 1
-    node_path = work_root / node_name
+    # URL inputs are cloned by the container itself (no host work_root, no
+    # bind-mount of source). Local paths are copied to a host work_root and
+    # bind-mounted in.
+    nodelink_expanded = _expand_nodelink(args.nodelink)
+    if _is_url_nodelink(args.nodelink):
+        work_root = None
+        node_name = _node_name_from_url(args.nodelink)
+        node_path = None  # signals URL mode to _run_{windows,linux}
+        branch_desc = f"branch={args.branch}" if args.branch else "default branch"
+        print(f"[docker test] URL mode: container will clone {nodelink_expanded} ({branch_desc})")
+    else:
+        work_root = Path(tempfile.mkdtemp(prefix="comfy-test-dockertest-"))
+        print(f"[docker test] Working dir: {work_root}")
+        try:
+            node_name = _copy_local_node(args.nodelink, work_root)
+        except Exception as e:
+            print(f"[docker test] {e}", file=sys.stderr)
+            shutil.rmtree(work_root, ignore_errors=True)
+            return 1
+        node_path = work_root / node_name
 
     # Logs dir — base directory bind-mounted into the container as /logs (or C:\logs).
     # The container's `comfy-test run` creates its own <short_name>-<timestamp>/<branch>/<platform>
@@ -473,7 +519,8 @@ def cmd_docker_test(args) -> int:
     _patch_null_commit_hash(node_path, run_dir)
 
     # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
-    if not args.keep_clone:
+    # In URL mode work_root is None — container did the cloning, nothing to clean here.
+    if work_root is not None and not args.keep_clone:
         shutil.rmtree(work_root, ignore_errors=True)
     print(f"[docker test] Logs: {run_dir}")
 
@@ -529,4 +576,6 @@ def add_docker_test_parser(subparsers):
                         "connects to (default 9222). Bump if the default is held by "
                         "a stale socket from a prior killed run that Windows hasn't "
                         "released yet.")
+    p.add_argument("--no-defender-warn", action="store_true",
+                   help="Windows: skip the Defender-exclusion check + warning at startup")
     p.set_defaults(func=cmd_docker_test, desktop_mode=None)

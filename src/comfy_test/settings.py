@@ -65,13 +65,15 @@ PATH_SETTINGS = [
     ("COMFY_TEST_LOCAL_UTILS", "Local utils directory (dev packages)", ""),
     ("COMFY_TEST_DOCKER_STAGE_DIR", "Docker build staging directory",
      r"D:\docker-stage" if _IS_WIN else "/tmp/comfy-test-docker-stage"),
+    ("COMFY_TEST_INSTALLER_CACHE",
+     "Cache directory for auto-downloaded driver/git installers (Windows only)",
+     str(Path.home() / ".comfy-test" / "installers") if _IS_WIN else ""),
     ("COMFY_TEST_INSTALLERS_DIR",
-     "Where matched-version driver/git installers live (Windows only)",
-     r"\\192.168.1.19\pxe\scripts\installers" if _IS_WIN else ""),
+     "Optional override directory for installers; leave empty for auto-download",
+     ""),
     ("COMFY_TEST_DOCKER_ARTIFACT_PATH",
      "Where `docker build --save` writes the .tar.zst",
-     r"\\192.168.1.19\pxe\scripts\comfy-test-windows-gpu-full.tar.zst" if _IS_WIN
-     else "/tmp/comfy-test-linux-gpu-full.tar.zst"),
+     ""),
 ]
 
 

@@ -138,10 +138,26 @@ def cmd_docker_list(args=None) -> int:
     print("Configured paths")
     print("-" * 70)
     for var in ("COMFY_TEST_DOCKER_STAGE_DIR",
+                "COMFY_TEST_INSTALLER_CACHE",
                 "COMFY_TEST_INSTALLERS_DIR",
                 "COMFY_TEST_DOCKER_ARTIFACT_PATH"):
         val = os.environ.get(var, "(unset)")
         print(f"  {var} = {val}")
+
+    if sys.platform == "win32":
+        from . import _defender
+        print()
+        print("Windows Defender exclusions")
+        print("-" * 70)
+        missing = _defender.check_defender_exclusions()
+        for p in _defender.CRITICAL_PATHS:
+            mark = "NOT excluded" if p in missing else "excluded"
+            print(f"  {p:50s}  {mark}")
+        if missing:
+            print()
+            print("  To exclude (run as Administrator; survives Tamper Protection):")
+            for line in _defender._fix_command(missing).split("\n"):
+                print(f"    {line.strip()}")
 
     return 0
 

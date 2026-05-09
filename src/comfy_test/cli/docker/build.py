@@ -26,8 +26,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
+
+from . import _defender
 
 
 DOCKER_IMAGE_LINUX = "comfy-test-linux-gpu:full"
@@ -143,7 +148,92 @@ def _query_host_driver_windows() -> Optional[str]:
         return None
 
 
+def _nvidia_driver_urls(version: str) -> List[str]:
+    """Possible upstream URLs for an NVIDIA Game Ready desktop DCH driver."""
+    return [
+        f"https://us.download.nvidia.com/Windows/{version}/{version}-desktop-win10-win11-64bit-international-dch-whql.exe",
+        f"https://us.download.nvidia.com/Windows/{version}/{version}-desktop-win10-win11-64bit-international-nsd-dch-whql.exe",
+        f"https://international.download.nvidia.com/Windows/{version}/{version}-desktop-win10-win11-64bit-international-dch-whql.exe",
+    ]
+
+
+def _git_for_windows_url(name: str) -> Optional[str]:
+    """Map a `Git-X.Y.Z-64-bit.exe` filename to its GitHub Releases URL."""
+    # Expect "Git-2.53.0-64-bit.exe" -> v2.53.0.windows.1
+    if not name.startswith("Git-") or not name.endswith("-64-bit.exe"):
+        return None
+    ver = name[len("Git-"):-len("-64-bit.exe")]
+    return f"https://github.com/git-for-windows/git/releases/download/v{ver}.windows.1/Git-{ver}-64-bit.exe"
+
+
+def _http_head_ok(url: str) -> bool:
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 400
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return False
+
+
+def _download(url: str, dest: Path) -> bool:
+    """Download url -> dest with a one-line summary. Returns True on success."""
+    print(f"[docker build] downloading {url}")
+    print(f"[docker build]   -> {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as fh:
+            shutil.copyfileobj(resp, fh, length=1024 * 1024)
+        tmp.replace(dest)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        print(f"[docker build]   download failed: {e}", file=sys.stderr)
+        try: tmp.unlink()
+        except OSError: pass
+        return False
+    sz = dest.stat().st_size
+    elapsed = time.time() - t0
+    print(f"[docker build]   downloaded {_human_size(sz)} in {elapsed:.1f}s")
+    return True
+
+
+def _resolve_installer(name: str, urls: List[str], cache_dir: Path,
+                        override_dir: Optional[Path], no_download: bool) -> Optional[Path]:
+    """Find or fetch an installer. Lookup order:
+       1. override_dir/name (if override_dir set)
+       2. cache_dir/name
+       3. download from first working URL into cache_dir/name
+    Returns the resolved Path, or None if nothing worked."""
+    if override_dir is not None and override_dir != Path():
+        candidate = override_dir / name
+        if candidate.is_file():
+            print(f"[docker build] using {candidate} (override)")
+            return candidate
+
+    cached = cache_dir / name
+    if cached.is_file():
+        print(f"[docker build] using {cached} (cache)")
+        return cached
+
+    if no_download:
+        print(f"[docker build] {name} not found locally and --no-download set", file=sys.stderr)
+        return None
+
+    for url in urls:
+        if not _http_head_ok(url):
+            continue
+        if _download(url, cached):
+            return cached
+
+    print(f"[docker build] could not auto-fetch {name}; tried:", file=sys.stderr)
+    for u in urls:
+        print(f"    {u}", file=sys.stderr)
+    return None
+
+
 def _build_windows(args, docker_exe: str) -> int:
+    _defender.warn_if_needed(args)
+
     tag = args.tag or DOCKER_IMAGE_WINDOWS
     src = _DOCKER_DIR / "windows-gpu"
     if not src.is_dir():
@@ -160,22 +250,38 @@ def _build_windows(args, docker_exe: str) -> int:
             return 2
         nvidia_exe = f"nvidia-driver-{host_drv}.exe"
         print(f"[docker build] host driver: {host_drv} → expecting {nvidia_exe}")
+        host_drv_for_url = host_drv
+    else:
+        # Best-effort: extract version from filename for URL lookup
+        n = nvidia_exe
+        if n.startswith("nvidia-driver-") and n.endswith(".exe"):
+            host_drv_for_url = n[len("nvidia-driver-"):-len(".exe")]
+        else:
+            host_drv_for_url = None
 
-    installers_dir = Path(os.environ.get("COMFY_TEST_INSTALLERS_DIR",
-                                          r"\\192.168.1.19\pxe\scripts\installers"))
-    nv_src = installers_dir / nvidia_exe
-    if not nv_src.is_file():
-        print(f"Driver installer not found at {nv_src}.\n"
+    # Resolve installers (override -> cache -> auto-download)
+    cache_dir = Path(args.installer_cache or
+                     os.environ.get("COMFY_TEST_INSTALLER_CACHE",
+                                    str(Path.home() / ".comfy-test" / "installers")))
+    override_str = os.environ.get("COMFY_TEST_INSTALLERS_DIR", "")
+    override_dir = Path(override_str) if override_str else None
+
+    nvidia_urls = _nvidia_driver_urls(host_drv_for_url) if host_drv_for_url else []
+    nv_src = _resolve_installer(nvidia_exe, nvidia_urls, cache_dir, override_dir, args.no_download)
+    if nv_src is None:
+        print(f"Driver installer not found and could not be downloaded.\n"
               f"Container driver must match host driver exactly. Stage {nvidia_exe} "
-              f"in {installers_dir} (or pass --nvidia-exe matching a staged file) and retry.",
+              f"in {cache_dir} (or set COMFY_TEST_INSTALLERS_DIR) and retry.",
               file=sys.stderr)
         return 3
 
     git_exe = args.git_exe
-    git_src = installers_dir / git_exe
-    if not git_src.is_file():
-        print(f"Git installer not found at {git_src}. Stage it or pass --git-exe.",
-              file=sys.stderr)
+    git_url = _git_for_windows_url(git_exe)
+    git_urls = [git_url] if git_url else []
+    git_src = _resolve_installer(git_exe, git_urls, cache_dir, override_dir, args.no_download)
+    if git_src is None:
+        print(f"Git installer not found and could not be downloaded. "
+              f"Stage {git_exe} in {cache_dir} or pass --git-exe.", file=sys.stderr)
         return 3
 
     info = _image_info(docker_exe, tag)
@@ -325,5 +431,11 @@ def add_docker_build_parser(subparsers):
                    help="Windows: name of the driver installer in "
                         "$COMFY_TEST_INSTALLERS_DIR (default: nvidia-driver-<host_driver>.exe)")
     p.add_argument("--git-exe", default="Git-2.53.0-64-bit.exe",
-                   help="Windows: name of the Git installer in $COMFY_TEST_INSTALLERS_DIR")
+                   help="Windows: name of the Git installer (filename selects the GitHub release URL)")
+    p.add_argument("--no-download", action="store_true",
+                   help="Windows: error out instead of fetching missing installers from upstream")
+    p.add_argument("--installer-cache", default=None,
+                   help="Windows: override $COMFY_TEST_INSTALLER_CACHE for this run")
+    p.add_argument("--no-defender-warn", action="store_true",
+                   help="Windows: skip the Defender-exclusion check + warning at startup")
     p.set_defaults(func=cmd_docker_build)
