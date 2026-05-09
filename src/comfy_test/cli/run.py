@@ -83,6 +83,22 @@ def cmd_run(args) -> int:
     if args.portable and host != "win32":
         print("[comfy-test] --portable is only valid on Windows", file=sys.stderr)
         return 1
+    if getattr(args, "desktop", False):
+        if host not in ("darwin", "win32"):
+            print("[comfy-test] --desktop is only valid on macOS or Windows", file=sys.stderr)
+            return 1
+        if args.portable:
+            print("[comfy-test] --desktop conflicts with --portable", file=sys.stderr)
+            return 1
+        # Route to ComfyUI Desktop driver — bypasses the ComfyUI server flow.
+        from comfy_test.cli._desktop_runner import run_desktop
+        if host == "darwin":
+            mode = "mac"
+        elif args.gpu:
+            mode = "windows_gpu"
+        else:
+            mode = "windows"
+        return run_desktop(args, mode)
 
     try:
         # Check if paths are configured
@@ -280,6 +296,12 @@ def add_run_parser(subparsers):
         "--portable",
         action="store_true",
         help="Use Windows Portable mode (only valid on Windows)",
+    )
+    run_parser.add_argument(
+        "--desktop",
+        action="store_true",
+        help="Drive ComfyUI Desktop via CDP instead of running a server "
+             "(macOS or Windows; --gpu on Windows means Electron + CUDA)",
     )
     run_parser.add_argument(
         "--workflow", "-W",

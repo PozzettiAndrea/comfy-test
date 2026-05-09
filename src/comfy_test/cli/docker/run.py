@@ -280,8 +280,12 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
             docker_cmd += ["-e", f"COMFY_TEST_NODE_BRANCH={args.branch}"]
     docker_cmd += [
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
-        DOCKER_IMAGE_WINDOWS,
-    ] + ct_args
+    ]
+    # Propagate Python pin (if set on host — usually picked by the YAML dispatcher).
+    py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
+    if py_pin:
+        docker_cmd += ["-e", f"COMFY_TEST_PYTHON_VERSION={py_pin}"]
+    docker_cmd += [DOCKER_IMAGE_WINDOWS] + ct_args
 
     print(f"[docker run] Running: {' '.join(docker_cmd)}")
     result = subprocess.run(docker_cmd)
@@ -369,8 +373,11 @@ def _run_linux(args, docker_exe: str, gpu: bool,
             docker_cmd += ["-e", f"COMFY_TEST_NODE_BRANCH={args.branch}"]
     docker_cmd += [
         "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
-        DOCKER_IMAGE_LINUX,
-    ] + ct_args
+    ]
+    py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
+    if py_pin:
+        docker_cmd += ["-e", f"COMFY_TEST_PYTHON_VERSION={py_pin}"]
+    docker_cmd += [DOCKER_IMAGE_LINUX] + ct_args
 
     print(f"[docker run] Running: {' '.join(docker_cmd)}")
     result = subprocess.run(docker_cmd)

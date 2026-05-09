@@ -263,6 +263,15 @@ jobs:
           || fromJson('["self-hosted","windows","cuda"]') }}
     timeout-minutes: 300
     steps:
+      - name: Pick Python version
+        id: python
+        shell: bash
+        run: |
+          versions=(3.10 3.11 3.12 3.13)
+          chosen=${versions[$RANDOM % ${#versions[@]}]}
+          echo "version=$chosen" >> $GITHUB_OUTPUT
+          echo "Picked Python $chosen (forwarded into container via COMFY_TEST_PYTHON_VERSION)"
+
       - name: Install comfy-test
         shell: bash
         run: |
@@ -275,15 +284,19 @@ jobs:
       - name: Run docker test (Linux)
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          COMFY_TEST_PYTHON_VERSION: ${{ steps.python.outputs.version }}
         run: |
           PORTABLE_FLAG=""
           if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
-          sudo comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" \
+          sudo -E comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --gpu $PORTABLE_FLAG
 
       - name: Run docker test (Windows)
         if: runner.os == 'Windows'
         shell: cmd
+        env:
+          COMFY_TEST_PYTHON_VERSION: ${{ steps.python.outputs.version }}
         run: |
           set "PORTABLE_FLAG="
           if /I "${{ inputs.platform }}"=="windows-portable-gpu" set "PORTABLE_FLAG=--portable"
@@ -335,4 +348,51 @@ jobs:
         with:
           name: results-${{ inputs.platform }}
           path: ${{ runner.temp }}/comfy-test-logs/
+          if-no-files-found: ignore
+
+  # =========================================================================
+  # Desktop (macos-desktop, windows-desktop, windows-desktop-gpu) — drives
+  # ComfyUI Desktop (Electron + Chromium + CDP) on hosted runners. No docker.
+  # =========================================================================
+  desktop:
+    if: ${{ contains(inputs.platform, 'desktop') }}
+    name: ${{ inputs.platform }}
+    runs-on: >-
+      ${{ startsWith(inputs.platform, 'macos') && 'macos-latest' || 'windows-latest' }}
+    timeout-minutes: 300
+    env:
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+    steps:
+      - name: Disable Defender realtime (Windows IO speedup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true 2>$null; exit 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install comfy-test
+        shell: bash
+        run: pip install --upgrade comfy-test
+
+      - name: Run desktop test (CPU)
+        if: ${{ inputs.platform == 'macos-desktop' || inputs.platform == 'windows-desktop' }}
+        shell: bash
+        run: |
+          comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
+            --branch "${{ inputs.branch }}" --desktop
+
+      - name: Run desktop test (GPU)
+        if: ${{ inputs.platform == 'windows-desktop-gpu' }}
+        shell: bash
+        run: |
+          comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
+            --branch "${{ inputs.branch }}" --desktop --gpu
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ inputs.platform }}
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore

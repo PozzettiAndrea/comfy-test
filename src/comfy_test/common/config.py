@@ -11,7 +11,16 @@ PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
 
 
 def _random_python_version() -> str:
-    """Select a random Python version for testing."""
+    """Select a random Python version for testing.
+
+    Honors $COMFY_TEST_PYTHON_VERSION if set (the YAML dispatcher pre-picks
+    so the version is visible at the run level). Falls back to random pick
+    over PYTHON_VERSIONS otherwise.
+    """
+    import os
+    pinned = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
+    if pinned in PYTHON_VERSIONS:
+        return pinned
     return random.choice(PYTHON_VERSIONS)
 
 
