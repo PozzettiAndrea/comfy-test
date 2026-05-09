@@ -1,0 +1,338 @@
+name: comfy-test dispatch
+#
+# Single reusable workflow for every platform comfy-test supports.
+#
+# Calling pattern (from comfy-gpu-ci or any external repo):
+#
+#   uses: PozzettiAndrea/comfy-test/.github/workflows/dispatch-test.yml@main
+#   with:
+#     node_repo: PozzettiAndrea/ComfyUI-SAM3
+#     branch: dev
+#     platform: linux | linux-gpu | windows | windows-gpu | windows-portable | windows-portable-gpu | macos
+#   secrets:
+#     NODE_PAT: ${{ secrets.NODE_PAT }}
+#
+# Architecture:
+#   - CPU platforms (`linux`, `windows`, `windows-portable`, `macos`) run on
+#     GitHub-hosted runners with the warm-cache pattern (.venv + ComfyUI clone
+#     + Playwright Chromium are cached across runs by setup-{os}-cpu-py{ver}).
+#   - GPU platforms (`linux-gpu`, `windows-gpu`, `windows-portable-gpu`) run on
+#     self-hosted cluster runners via `comfy-test docker run`. NO caching.
+#   - Desktop variants (`*-desktop`, `*-desktop-gpu`) are not yet wired in here;
+#     follow-up will route them through `comfy-test run --desktop` once that
+#     code path is added.
+
+on:
+  workflow_call:
+    inputs:
+      node_repo:
+        description: "owner/repo of the node to test"
+        required: true
+        type: string
+      branch:
+        description: "node branch"
+        type: string
+        default: dev
+      platform:
+        description: "linux | linux-gpu | windows | windows-gpu | windows-portable | windows-portable-gpu | macos"
+        required: true
+        type: string
+    secrets:
+      NODE_PAT:
+        required: false
+
+jobs:
+  # =========================================================================
+  # CPU on hosted runners (linux, windows, windows-portable, macos)
+  # =========================================================================
+  cpu:
+    if: ${{ !contains(inputs.platform, 'gpu') && !contains(inputs.platform, 'desktop') }}
+    name: ${{ inputs.platform }}
+    runs-on: >-
+      ${{ (startsWith(inputs.platform, 'linux') && 'ubuntu-latest')
+          || (startsWith(inputs.platform, 'macos') && 'macos-latest')
+          || 'windows-latest' }}
+    timeout-minutes: 300
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      PW_TEST_SCREENSHOT_NO_FONTS_READY: "1"
+      COMFY_ENV_DEBUG: "1"
+      COMFY_TEST_GPU: "0"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      COMFYUI_DIR: ${{ github.workspace }}/ComfyUI
+      VENV: ${{ github.workspace }}/.venv
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
+    steps:
+      # Hosted Windows runners eat 30-50% of build time on Defender realtime.
+      # No-op on self-hosted (TP blocks the cmdlet) — but we don't run CPU on
+      # self-hosted anyway. Linux/macOS skip via `if`.
+      - name: Disable Defender realtime (Windows IO speedup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true 2>$null; exit 0
+
+      - name: Resolve node name
+        shell: bash
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+        run: echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
+
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
+          sudo apt-get clean &
+          wait
+
+      - name: Pick Python version
+        id: python
+        shell: bash
+        run: |
+          versions=(3.10 3.11 3.12 3.13)
+          chosen=${versions[$RANDOM % ${#versions[@]}]}
+          echo "version=$chosen" >> $GITHUB_OUTPUT
+          echo "Picked Python $chosen"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.python.outputs.version }}
+
+      # Cache base setup: .venv, ComfyUI clone, Playwright Chromium.
+      # Same key across all nodes/branches — first run populates, rest hit warm.
+      - uses: actions/cache/restore@v4
+        id: setup-cache
+        with:
+          path: |
+            ${{ env.VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+          key: setup-${{ runner.os }}-cpu-py${{ steps.python.outputs.version }}
+
+      # ---- Setup (only on cache miss) ----
+      - name: Create venv and install uv
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          python -m venv "$VENV"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$VENV/Scripts/pip" install uv
+          else
+            "$VENV/bin/pip" install uv
+          fi
+
+      - name: Clone ComfyUI
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "$COMFYUI_DIR"
+
+      - name: Install ComfyUI requirements + Playwright
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            UV="$VENV/Scripts/uv"
+            PY="$VENV/Scripts/python"
+          else
+            UV="$VENV/bin/uv"
+            PY="$VENV/bin/python"
+          fi
+          "$UV" pip install -r "$COMFYUI_DIR/requirements.txt"
+          "$UV" pip install playwright
+          "$PY" -m playwright install chromium
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            "$PY" -m playwright install-deps chromium || true
+          fi
+
+      - uses: actions/cache/save@v4
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ env.VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+          key: setup-${{ runner.os }}-cpu-py${{ steps.python.outputs.version }}
+
+      # ---- Install comfy-test (always fresh — not cached) ----
+      - name: Install comfy-test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then UV="$VENV/Scripts/uv"; else UV="$VENV/bin/uv"; fi
+          # If this workflow was called via a tagged ref (vX.Y.Z), pin install.
+          version="$(echo "$GITHUB_WORKFLOW_REF" | grep -oE '@refs/tags/v[^/]+$' | sed 's|@refs/tags/v||')"
+          if [ -n "$version" ]; then
+            "$UV" pip install "comfy-test==$version"
+          else
+            "$UV" pip install --upgrade comfy-test
+          fi
+
+      # ---- Checkout the node into ComfyUI/custom_nodes/ ----
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.node_repo }}
+          ref: ${{ inputs.branch }}
+          token: ${{ secrets.NODE_PAT || github.token }}
+          path: ComfyUI/custom_nodes/${{ env.NODE_NAME }}
+
+      - name: Install node dependencies
+        shell: bash
+        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            UV="$VENV/Scripts/uv"; PY="$VENV/Scripts/python"
+          else
+            UV="$VENV/bin/uv"; PY="$VENV/bin/python"
+          fi
+          [ -f requirements.txt ] && "$UV" pip install -r requirements.txt || true
+          [ -f install.py ] && "$PY" install.py || true
+
+      - name: Install validate endpoint
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git \
+            "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
+
+      # ---- Start ComfyUI server, wait for ready, run tests, stop ----
+      - name: Start ComfyUI server
+        shell: bash
+        working-directory: ${{ env.COMFYUI_DIR }}
+        run: |
+          mkdir -p "$COMFY_TEST_LOGS_DIR"
+          if [ "$RUNNER_OS" = "Windows" ]; then PY="$VENV/Scripts/python"; else PY="$VENV/bin/python"; fi
+          "$PY" -u main.py --listen 127.0.0.1 --port 8188 --cpu \
+            > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+
+      - name: Wait for server
+        shell: bash
+        run: |
+          for i in $(seq 1 300); do
+            if ! kill -0 $SERVER_PID 2>/dev/null; then
+              echo "Server died!"
+              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+              exit 1
+            fi
+            if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to start within 5min"
+          cat "$COMFY_TEST_LOGS_DIR/server.log" || true
+          exit 1
+
+      - name: Run tests via comfy-test run
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY="$VENV/Scripts/python"; else PY="$VENV/bin/python"; fi
+          NODE_PATH="$COMFYUI_DIR/custom_nodes/$NODE_NAME"
+          PORTABLE_FLAG=""
+          if [ "${{ inputs.platform }}" = "windows-portable" ]; then PORTABLE_FLAG="--portable"; fi
+          "$PY" -m comfy_test run "$NODE_PATH" \
+            --branch "${{ inputs.branch }}" \
+            --server-url http://127.0.0.1:8188 \
+            --level execution \
+            $PORTABLE_FLAG
+
+      - name: Stop server
+        if: always()
+        shell: bash
+        run: kill $SERVER_PID 2>/dev/null || true
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ inputs.platform }}
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  # =========================================================================
+  # GPU on self-hosted cluster runners (linux-gpu, windows-gpu, windows-portable-gpu)
+  # =========================================================================
+  gpu:
+    if: ${{ contains(inputs.platform, 'gpu') && !contains(inputs.platform, 'desktop') }}
+    name: ${{ inputs.platform }}
+    runs-on: >-
+      ${{ contains(inputs.platform, 'linux')
+          && fromJson('["self-hosted","linux","cuda"]')
+          || fromJson('["self-hosted","windows","cuda"]') }}
+    timeout-minutes: 300
+    steps:
+      - name: Install comfy-test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo pip install --upgrade --break-system-packages comfy-test
+          else
+            pip install --upgrade comfy-test
+          fi
+
+      - name: Run docker test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          PORTABLE_FLAG=""
+          if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
+          sudo comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" \
+            --branch "${{ inputs.branch }}" --gpu $PORTABLE_FLAG
+
+      - name: Run docker test (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set "PORTABLE_FLAG="
+          if /I "${{ inputs.platform }}"=="windows-portable-gpu" set "PORTABLE_FLAG=--portable"
+          comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" --branch "${{ inputs.branch }}" --gpu %PORTABLE_FLAG%
+
+      # Publish results to gh-pages — same pattern both OSes, just different shell.
+      - name: Publish results (Linux)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
+        run: |
+          git config --global user.email "ci@scan2wall.com"
+          git config --global user.name "comfy-test"
+          git config --global credential.helper store
+          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
+          NODE_BASE="${{ inputs.node_repo }}"
+          NODE_BASE="${NODE_BASE##*/}"
+          SHORT_NAME="${NODE_BASE#ComfyUI-}"
+          # comfy-test docker run writes to <docker-root>/logs/<SHORT>-<HHMM>/...
+          # Find this run's results.json. Falls back gracefully if no logs dir is set.
+          LOGS_BASE="${COMFY_TEST_DOCKER_ROOT:-$HOME/.comfy-test/docker}/logs"
+          RESULTS=$(find "$LOGS_BASE" -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" 2>/dev/null | head -1)
+          if [ -z "$RESULTS" ]; then echo "No results found, skipping publish"; exit 0; fi
+          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
+
+      - name: Publish results (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: cmd
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
+        run: |
+          git config --global user.email "ci@scan2wall.com"
+          git config --global user.name "comfy-test"
+          git config --global credential.helper store
+          echo https://x-access-token:%NODE_PAT%@github.com> "%USERPROFILE%\.git-credentials"
+          set "NODE_REPO_INPUT=${{ inputs.node_repo }}"
+          for /f "tokens=2 delims=/" %%a in ("%NODE_REPO_INPUT%") do set "NODE_BASE=%%a"
+          set "SHORT_NAME=%NODE_BASE:ComfyUI-=%"
+          set "LOGS_BASE=%COMFY_TEST_DOCKER_ROOT%\logs"
+          if "%COMFY_TEST_DOCKER_ROOT%"=="" set "LOGS_BASE=D:\docker\logs"
+          for /f "delims=" %%f in ('where /R "%LOGS_BASE%" results.json 2^>nul ^| findstr /I /C:"\%SHORT_NAME%-" ^| findstr /I /C:"\${{ inputs.branch }}\${{ inputs.platform }}\results.json"') do set "RESULTS_DIR=%%~dpf"
+          if not defined RESULTS_DIR (echo No results found, skipping publish & exit /b 0)
+          if "%RESULTS_DIR:~-1%"=="\" set "RESULTS_DIR=%RESULTS_DIR:~0,-1%"
+          comfy-test publish "%RESULTS_DIR%" --repo "${{ inputs.node_repo }}"
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ inputs.platform }}
+          path: ${{ runner.temp }}/comfy-test-logs/
+          if-no-files-found: ignore
