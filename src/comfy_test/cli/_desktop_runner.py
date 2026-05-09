@@ -14,8 +14,10 @@ Mirrors the YML's responsibilities:
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -182,13 +184,40 @@ def _ensure_venv() -> Path:
     return venv_python
 
 
+def _kill_port_owner(port: int) -> None:
+    """Best-effort kill of whatever process is bound to 127.0.0.1:<port>.
+    Catches ComfyUI's Python backend (Documents/ComfyUI/.venv/Scripts/
+    python.exe) which survives `taskkill /F /IM ComfyUI.exe` because its
+    image name is plain python.exe, not ComfyUI.exe."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run([
+                "powershell", "-NoProfile", "-Command",
+                f"Get-NetTCPConnection -LocalPort {port} -State Listen "
+                f"-ErrorAction SilentlyContinue | "
+                f"ForEach-Object {{ Stop-Process -Id $_.OwningProcess "
+                f"-Force -ErrorAction SilentlyContinue }}"
+            ], capture_output=True, timeout=10)
+        else:
+            subprocess.run(
+                ["bash", "-c",
+                 f"lsof -ti tcp:{port} -sTCP:LISTEN | xargs -r kill -9"],
+                capture_output=True, timeout=10,
+            )
+    except Exception:
+        pass
+
+
 def _kill_existing(desktop_mode: str) -> None:
     """Kill any running ComfyUI process so our --remote-debugging-port flag takes effect.
-    (On a re-launched-already process, the flag is ignored.)"""
+    Also kills whoever's bound to port 8000 (the orphan ComfyUI Python
+    backend from a half-killed prior run); without this, the new wizard
+    click-through silently skips because /system_stats appears up at t=0."""
     if desktop_mode == "mac":
         subprocess.run(["pkill", "-f", "ComfyUI"], capture_output=True)
     else:
         subprocess.run(["taskkill", "/F", "/IM", "ComfyUI.exe"], capture_output=True)
+    _kill_port_owner(8000)
     time.sleep(2)
 
 
@@ -242,7 +271,6 @@ def _wipe_comfy_state() -> None:
     profile = _resolve_user_profile()
     targets = [
         _CACHE_DIR / "ComfyUI",
-        _CACHE_DIR.parent / "desktop-runs",
         profile / "AppData" / "Roaming" / "ComfyUI",
         profile / "AppData" / "Local" / "Programs" / "ComfyUI",
         profile / "Documents" / "ComfyUI",
@@ -253,10 +281,50 @@ def _wipe_comfy_state() -> None:
             _force_rmtree(t)
 
 
-def _launch(app_path: Path, desktop_mode: str, stdout_log: Path, cdp_port: int) -> None:
-    """Launch the Desktop app with CDP enabled. App stdout goes to stdout_log."""
+def _devtools_active_port_path(desktop_mode: str) -> Path:
+    """Electron writes the chosen --remote-debugging-port to this file in
+    its userData dir. Mirrors `_devtools_active_port_path` in cdp_driver.py;
+    we resolve robustly against SYSTEM-context APPDATA so agent-harness
+    shells don't trip us."""
+    if desktop_mode == "mac":
+        return (Path.home() / "Library" / "Application Support" /
+                "ComfyUI" / "DevToolsActivePort")
+    appdata = os.environ.get("APPDATA", "")
+    if appdata and "systemprofile" not in appdata.lower():
+        return Path(appdata) / "ComfyUI" / "DevToolsActivePort"
+    up = os.environ.get("USERPROFILE", "")
+    if up and "systemprofile" not in up.lower():
+        return Path(up) / "AppData" / "Roaming" / "ComfyUI" / "DevToolsActivePort"
+    username = os.environ.get("USERNAME", "")
+    if username and username.upper() != "SYSTEM":
+        return (Path("C:/Users") / username /
+                "AppData" / "Roaming" / "ComfyUI" / "DevToolsActivePort")
+    from glob import glob as _glob
+    for p in _glob(r"C:\Users\*\AppData\Roaming\ComfyUI"):
+        if "systemprofile" in p.lower():
+            continue
+        return Path(p) / "DevToolsActivePort"
+    return Path.home() / "AppData" / "Roaming" / "ComfyUI" / "DevToolsActivePort"
+
+
+def _launch(app_path: Path, desktop_mode: str, stdout_log: Path) -> None:
+    """Launch the Desktop app with --remote-debugging-port=0; chromium picks
+    a fresh ephemeral port the kernel guarantees is unbound, sidestepping
+    the Windows orphan-LISTEN-socket problem completely. The chosen port
+    is then read from <userData>/DevToolsActivePort by _wait_for_cdp."""
+    # Clear any stale DevToolsActivePort from a prior instance so we don't
+    # mistake its old port for the new one.
+    devtools_file = _devtools_active_port_path(desktop_mode)
+    try:
+        devtools_file.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[desktop] DevToolsActivePort cleanup err (ignored): {e}",
+              file=sys.stderr)
+
     out_fh = open(stdout_log, "wb")
-    flag = f"--remote-debugging-port={cdp_port}"
+    flag = "--remote-debugging-port=0"
     if desktop_mode == "mac":
         # `open --args` forwards flags to the Electron main process argv.
         subprocess.Popen(
@@ -271,14 +339,28 @@ def _launch(app_path: Path, desktop_mode: str, stdout_log: Path, cdp_port: int) 
         )
 
 
-def _wait_for_cdp(cdp_port: int, timeout_s: int = 60) -> bool:
+def _wait_for_cdp(desktop_mode: str, timeout_s: int = 240) -> Optional[int]:
+    """Poll <userData>/DevToolsActivePort until chromium writes the chosen
+    port. Returns the port (int) on success, None on timeout."""
+    devtools_file = _devtools_active_port_path(desktop_mode)
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/version", timeout=2)
-            return True
-        except Exception:
-            time.sleep(1)
+        if devtools_file.exists():
+            try:
+                content = devtools_file.read_text(encoding="utf-8").strip()
+                if content:
+                    port = int(content.splitlines()[0])
+                    # Sanity-check: confirm chromium is actually listening.
+                    try:
+                        urllib.request.urlopen(
+                            f"http://127.0.0.1:{port}/json/version", timeout=2)
+                        return port
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        time.sleep(1)
+    return None
     return False
 
 
@@ -558,25 +640,42 @@ def run_desktop(args, desktop_mode: str) -> int:
         print(f"[desktop] cdp_driver.py not found at {_CDP_DRIVER}", file=sys.stderr)
         return 2
 
-    # Bare-Windows baseline: kill any leftover ComfyUI, then wipe install +
-    # user state + stale clone dirs. Always-on; mirrors docker's per-container
-    # freshness model. Must run before _clone_node since the wipe nukes
-    # ~/.comfy-test-cache/desktop-runs/ where the clone lands.
+    # Bare-Windows baseline: kill any leftover ComfyUI + Python backend,
+    # then wipe install + user state. Always-on; mirrors docker's
+    # per-container freshness model.
     _kill_existing(desktop_mode)
     _wipe_comfy_state()
 
-    # Clone the target node -- shared helper used everywhere.
-    from comfy_test.cli._nodelink import clone_node, expand_nodelink
+    # Auto-cleanup on exit so Ctrl+C / exception / normal exit ALL kill the
+    # ComfyUI tree. Without this the Electron app + its Python backend
+    # survive Ctrl+C and the next run hits a stale :8000 listener that
+    # silently makes the wizard click-through skip.
+    def _cleanup_comfy_processes(*_a):
+        try:
+            _kill_existing(desktop_mode)
+        except Exception:
+            pass
+    atexit.register(_cleanup_comfy_processes)
+    def _sig_cleanup(signum, _frame):
+        _cleanup_comfy_processes()
+        # Restore default handler and re-raise so the signal still terminates us.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    signal.signal(signal.SIGINT, _sig_cleanup)
+    if hasattr(signal, "SIGTERM"):
+        try: signal.signal(signal.SIGTERM, _sig_cleanup)
+        except Exception: pass
 
-    work_root = Path.home() / ".comfy-test-cache" / "desktop-runs"
-    work_root.mkdir(parents=True, exist_ok=True)
-    clone_root = Path(work_root) / f"clone-{int(time.time())}"
-    try:
-        node_name = clone_node(args.nodelink, args.branch, clone_root)
-    except Exception as e:
-        print(f"[desktop] clone failed: {e}", file=sys.stderr)
-        return 1
-    print(f"[desktop] node: {node_name}  (cloned to {clone_root / node_name})")
+    # Desktop mode: NO local clone. Manager installs from main of the URL,
+    # and cdp_driver fetches all metadata it needs (pyproject.toml ->
+    # DisplayName/PublisherId/version, comfy-test.toml -> workflow spec,
+    # GitHub contents API -> workflows/ list) directly from
+    # raw.githubusercontent.com / api.github.com pinned to main.
+    from comfy_test.cli._nodelink import expand_nodelink
+
+    url = expand_nodelink(args.nodelink).rstrip(".git")
+    node_name = url.rsplit("/", 1)[-1]
+    print(f"[desktop] node: {node_name}  (URL: {url}, branch: main)")
 
     # Logs dir mirrors run.py's <short_name>-<HHMM> shape.
     short = node_name.removeprefix("ComfyUI-")
@@ -600,15 +699,20 @@ def run_desktop(args, desktop_mode: str) -> int:
     venv_python = _ensure_venv()
 
     # Bootstrap Desktop install + launch. (kill/wipe already ran up-front.)
+    # Launch with --remote-debugging-port=0 so chromium picks a fresh
+    # ephemeral port — no fight with stale Windows orphan-LISTEN sockets
+    # from prior killed runs. We read the chosen port from
+    # <userData>/DevToolsActivePort.
     app_path = _ensure_desktop_app(desktop_mode)
     stdout_log = debug_dir / "electron_stdout.log"
-    cdp_port = int(getattr(args, "cdp_port", None) or 9222)
-    _launch(app_path, desktop_mode, stdout_log, cdp_port)
-    print(f"[desktop] launched {app_path}, polling CDP on :{cdp_port}...")
-    if not _wait_for_cdp(cdp_port, 60):
-        print(f"[desktop] CDP didn't come up within 60s (port {cdp_port})", file=sys.stderr)
+    _launch(app_path, desktop_mode, stdout_log)
+    print(f"[desktop] launched {app_path}, waiting for DevToolsActivePort...")
+    cdp_port = _wait_for_cdp(desktop_mode, 240)
+    if cdp_port is None:
+        print(f"[desktop] CDP didn't come up within 240s "
+              f"(no DevToolsActivePort)", file=sys.stderr)
         return 1
-    print("[desktop] CDP up; running cdp_driver.py via cached venv")
+    print(f"[desktop] CDP up on :{cdp_port}; running cdp_driver.py via cached venv")
 
     # Drive the app via cdp_driver. Env vars match what the YMLs set.
     env = os.environ.copy()
@@ -617,8 +721,8 @@ def run_desktop(args, desktop_mode: str) -> int:
         "COMFY_TEST_GPU": "1" if desktop_mode == "windows_gpu" else "0",
         "COMFY_TEST_LOGS_DIR": str(logs_dir),
         "COMFY_TEST_DEBUG_DIR": str(debug_dir),
-        "NODE_REPO": expand_nodelink(args.nodelink).rstrip(".git").rsplit("github.com/", 1)[-1],
-        "NODE_BRANCH": args.branch or "main",
+        "NODE_REPO": url.rsplit("github.com/", 1)[-1],
+        "NODE_BRANCH": "main",  # Desktop only ever installs from main.
         "NODE_NAME": node_name,
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.

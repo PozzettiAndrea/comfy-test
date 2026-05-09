@@ -46,7 +46,42 @@ def cmd_run(args) -> int:
     """
     from ..orchestration.manager import TestManager
 
-    # Resolve <nodelink> positional. Three modes:
+    # Validate flag combos against host OS -- we never run cross-platform tests
+    host = sys.platform
+    if args.gpu and host == "darwin":
+        print("[comfy-test] --gpu is not supported on macOS (no NVIDIA on Apple Silicon)",
+              file=sys.stderr)
+        return 1
+    if args.portable and host != "win32":
+        print("[comfy-test] --portable is only valid on Windows", file=sys.stderr)
+        return 1
+
+    # Desktop mode dispatches BEFORE any clone-to-tempdir: ComfyUI Desktop's
+    # Manager only installs from main of the GitHub URL, so a local checkout
+    # or non-main branch is meaningless. cdp_driver fetches pyproject.toml
+    # / comfy-test.toml / workflows/ via raw.githubusercontent direct from
+    # main -- no local source needed.
+    if getattr(args, "desktop", False):
+        if host not in ("darwin", "win32"):
+            print("[comfy-test] --desktop is only valid on macOS or Windows", file=sys.stderr)
+            return 1
+        if args.portable:
+            print("[comfy-test] --desktop conflicts with --portable", file=sys.stderr)
+            return 1
+        if args.branch and args.branch != "main":
+            print(f"[comfy-test] --desktop ignores --branch {args.branch!r}; "
+                  f"Manager only installs from main", file=sys.stderr)
+        args.branch = "main"
+        from comfy_test.cli._desktop_runner import run_desktop
+        if host == "darwin":
+            mode = "mac"
+        elif args.gpu:
+            mode = "windows_gpu"
+        else:
+            mode = "windows"
+        return run_desktop(args, mode)
+
+    # Resolve <nodelink> positional. Three modes (non-desktop only):
     #   empty            -> cwd is the node dir (legacy behavior)
     #   local path       -> chdir into it
     #   URL / owner/repo -> shallow-clone to a temp dir, chdir into it
@@ -73,32 +108,6 @@ def cmd_run(args) -> int:
     node_dir = Path.cwd()
 
     print(f"[comfy-test] Testing: {node_dir.name}")
-
-    # Validate flag combos against host OS -- we never run cross-platform tests
-    host = sys.platform
-    if args.gpu and host == "darwin":
-        print("[comfy-test] --gpu is not supported on macOS (no NVIDIA on Apple Silicon)",
-              file=sys.stderr)
-        return 1
-    if args.portable and host != "win32":
-        print("[comfy-test] --portable is only valid on Windows", file=sys.stderr)
-        return 1
-    if getattr(args, "desktop", False):
-        if host not in ("darwin", "win32"):
-            print("[comfy-test] --desktop is only valid on macOS or Windows", file=sys.stderr)
-            return 1
-        if args.portable:
-            print("[comfy-test] --desktop conflicts with --portable", file=sys.stderr)
-            return 1
-        # Route to ComfyUI Desktop driver -- bypasses the ComfyUI server flow.
-        from comfy_test.cli._desktop_runner import run_desktop
-        if host == "darwin":
-            mode = "mac"
-        elif args.gpu:
-            mode = "windows_gpu"
-        else:
-            mode = "windows"
-        return run_desktop(args, mode)
 
     try:
         # Check if paths are configured
@@ -338,5 +347,11 @@ def add_run_parser(subparsers):
         "--vram-debug",
         action="store_true",
         help="Enable VRAM debug logging (logs model load/unload with per-module breakdown)",
+    )
+    run_parser.add_argument(
+        "--monitor-progress", type=int, default=None, metavar="PORT",
+        help="--desktop only: serve a live viewer on http://localhost:<PORT>/ "
+             "with the latest cdp_driver frame + session.log + comfyui.log tails. "
+             "Useful while iterating on the desktop driver.",
     )
     run_parser.set_defaults(func=cmd_run)
