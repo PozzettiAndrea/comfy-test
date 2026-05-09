@@ -20,7 +20,6 @@ auto-derived defaults — callers should consult those first.
 """
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -34,35 +33,39 @@ _root_cache: Optional[Path] = None
 _root_source_cache: Optional[str] = None  # "env" | "devdrv" | "fallback" — for diagnostics
 
 
+def _is_trusted_dev_drive(drive: str) -> bool:
+    """`fsutil devdrv query <drive>` returns 'This is a trusted developer volume.'
+    when the volume is one. Cheap probe — single subprocess call per letter."""
+    try:
+        r = subprocess.run(
+            ["fsutil", "devdrv", "query", drive],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:
+        return False
+    return "trusted developer volume" in r.stdout.lower()
+
+
 def _enum_dev_drives_windows() -> list:
     """Return list of (drive_letter_with_slash, free_gb) for Trusted Developer Volumes.
 
-    Empty list if fsutil devdrv enum is unsupported, errors, or returns nothing.
+    Windows has no first-class enumeration subcommand (no `fsutil devdrv enum`),
+    so we walk drive letters that exist and probe each via `fsutil devdrv query`.
     """
     if sys.platform != "win32":
         return []
-    try:
-        r = subprocess.run(
-            ["fsutil", "devdrv", "enum"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return []
-    if r.returncode != 0:
-        return []
     drives = []
-    # `fsutil devdrv enum` lines look like:
-    #     D:\
-    #     E:\
-    # plus headers. Pull anything matching <letter>:\.
-    for raw in r.stdout.splitlines():
-        m = re.match(r"^\s*([A-Za-z]:\\)\s*$", raw)
-        if not m:
-            continue
-        drive = m.group(1)
+    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":  # skip A,B,C — A/B legacy floppy, C never a dev drive
+        drive = f"{letter}:\\"
         try:
+            if not Path(drive).exists():
+                continue
             usage = shutil.disk_usage(drive)
         except OSError:
+            continue
+        if not _is_trusted_dev_drive(drive):
             continue
         free_gb = usage.free / (1024 ** 3)
         drives.append((drive, free_gb))
