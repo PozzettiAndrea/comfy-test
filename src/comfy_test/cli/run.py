@@ -3,12 +3,14 @@
 import os
 import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 from ..common.config import TestLevel
 from ..common.config_file import discover_config, load_config
 from ..common.errors import TestError, ConfigError
+from . import _nodelink
 from .paths import are_paths_configured, run_setup_wizard, get_workspace_dir, get_logs_dir
 
 
@@ -34,18 +36,53 @@ def get_current_platform() -> str:
 def cmd_run(args) -> int:
     """Run tests in a fresh ComfyUI environment.
 
-    1. Create workspace in configured workspace dir
-    2. Clone ComfyUI and create venv
-    3. Copy node into custom_nodes/
-    4. Install node dependencies
-    5. Run tests
-    6. Output results to configured logs dir
+    1. Resolve <nodelink> positional (URL → clone, local path → cd, empty → cwd)
+    2. Create workspace in configured workspace dir
+    3. Clone ComfyUI and create venv
+    4. Copy node into custom_nodes/
+    5. Install node dependencies
+    6. Run tests
+    7. Output results to configured logs dir
     """
     from ..orchestration.manager import TestManager
+
+    # Resolve <nodelink> positional. Three modes:
+    #   empty            → cwd is the node dir (legacy behavior)
+    #   local path       → chdir into it
+    #   URL / owner/repo → shallow-clone to a temp dir, chdir into it
+    _clone_tmpdir = None
+    nodelink = getattr(args, "nodelink", None)
+    if nodelink:
+        if _nodelink.is_url_nodelink(nodelink):
+            _clone_tmpdir = Path(tempfile.mkdtemp(prefix="comfy-test-run-"))
+            try:
+                name = _nodelink.clone_node(nodelink, args.branch, _clone_tmpdir,
+                                            log_prefix="[comfy-test]")
+            except Exception as e:
+                print(f"[comfy-test] {e}", file=sys.stderr)
+                shutil.rmtree(_clone_tmpdir, ignore_errors=True)
+                return 1
+            os.chdir(_clone_tmpdir / name)
+        else:
+            local = Path(_nodelink.expand_nodelink(nodelink)).resolve()
+            if not local.is_dir():
+                print(f"[comfy-test] Local path is not a directory: {local}", file=sys.stderr)
+                return 1
+            os.chdir(local)
 
     node_dir = Path.cwd()
 
     print(f"[comfy-test] Testing: {node_dir.name}")
+
+    # Validate flag combos against host OS — we never run cross-platform tests
+    host = sys.platform
+    if args.gpu and host == "darwin":
+        print("[comfy-test] --gpu is not supported on macOS (no NVIDIA on Apple Silicon)",
+              file=sys.stderr)
+        return 1
+    if args.portable and host != "win32":
+        print("[comfy-test] --portable is only valid on Windows", file=sys.stderr)
+        return 1
 
     try:
         # Check if paths are configured
@@ -79,14 +116,9 @@ def cmd_run(args) -> int:
         logs_dir = get_logs_dir()
         logs_dir.mkdir(exist_ok=True)
 
-        # Auto-detect platform if not specified
-        platform = args.platform if args.platform else get_current_platform()
-
-        # Handle --portable flag
+        # Platform is always derived from the host OS — we never run cross-platform.
+        platform = get_current_platform()
         if args.portable:
-            if platform not in ("windows", "windows_portable"):
-                print("Error: --portable flag is only valid on Windows", file=sys.stderr)
-                return 1
             platform = "windows_portable"
 
         # Build output path: logs_dir/NodeName-XXXX/branch/platform-gpu
@@ -207,22 +239,27 @@ def cmd_run(args) -> int:
     except TestError as e:
         print(f"Test error: {e.message}", file=sys.stderr)
         return 1
+    finally:
+        # Clean up the temp clone dir if we made one for a URL nodelink.
+        if _clone_tmpdir is not None:
+            shutil.rmtree(_clone_tmpdir, ignore_errors=True)
 
 
 def add_run_parser(subparsers):
     """Add the run subcommand parser."""
     run_parser = subparsers.add_parser(
         "run",
-        help="Run tests",
+        help="Run tests (native; takes a URL, local path, or nothing for cwd)",
+    )
+    run_parser.add_argument(
+        "nodelink",
+        nargs="?",
+        default=None,
+        help="Git URL, owner/repo shorthand, or local path. Omit to use current directory.",
     )
     run_parser.add_argument(
         "--config", "-c",
         help="Path to config file (default: auto-discover)",
-    )
-    run_parser.add_argument(
-        "--platform", "-p",
-        choices=["linux", "macos", "windows", "windows-portable"],
-        help="Run on specific platform only",
     )
     run_parser.add_argument(
         "--level", "-l",
