@@ -17,7 +17,7 @@ _RUN_DIR = Path(os.environ.get('COMFY_TEST_RUN_DIR', str(_LOGS_DIR)).replace('\\
 _DEBUG_DIR = Path(os.environ.get('COMFY_TEST_DEBUG_DIR', str(_LOGS_DIR)).replace('\\', '/'))
 
 # OUT = where DOM snapshots, intermediate frames, and the final mp4
-# master live. Treated as debug — no part of the standard report needs
+# master live. Treated as debug -- no part of the standard report needs
 # it. Standard outputs (results.json, videos/<workflow>/*) go under
 # _RUN_DIR.
 OUT = _DEBUG_DIR / 'electron_inspect'
@@ -42,14 +42,14 @@ def snap(page, name):
 # Frame capture is polling-based: page.screenshot() called from the
 # main thread on a sleep loop. We tried CDP Page.startScreencast (push)
 # but the ack flow has to run on Playwright's dispatcher thread, which
-# is the same thread that needs to read the ack response — chromium's
+# is the same thread that needs to read the ack response -- chromium's
 # send buffer fills (~318 frames) and screencast quietly stalls.
 #
 # Polling on the main thread doesn't have that problem (screenshot is
 # a sync RPC issued by the same thread that's running the rest of the
-# driver flow). The one failure mode polling had — page.screenshot()
+# driver flow). The one failure mode polling had -- page.screenshot()
 # silently failing post-relaunch because the page reference was bound
-# to a stale CDP target — is fixed by re-resolving the page from the
+# to a stale CDP target -- is fixed by re-resolving the page from the
 # current browser if a screenshot raises.
 _browser_ref = [None]  # set whenever connect_over_cdp gives us a browser
 _capture_warned = [False]
@@ -237,7 +237,7 @@ def _launch_comfy_random_port():
     """Launch ComfyUI with --remote-debugging-port=0 (let chromium pick a
     free ephemeral port) and read the chosen port from DevToolsActivePort.
     This is what every major browser-test harness does (Puppeteer,
-    Playwright, Selenium, chromedp) — sidesteps the Windows orphan-LISTEN
+    Playwright, Selenium, chromedp) -- sidesteps the Windows orphan-LISTEN
     socket problem entirely because each launch picks a fresh port the
     kernel guarantees is unbound. Returns the chosen port (int) or None."""
     devtools_file = _devtools_active_port_path()
@@ -291,7 +291,7 @@ def _wait_cdp_up(timeout_s=240):
 
 
 def _wait_cdp_port_free(timeout_s=30):
-    """Poll until nothing is bound to the CDP port — covers the Windows
+    """Poll until nothing is bound to the CDP port -- covers the Windows
     case where taskkill returns immediately but the kernel hasn't released
     the previous instance's listener yet. Best-effort: returns True if the
     port becomes bindable, False on timeout."""
@@ -588,7 +588,7 @@ def _run_named_card(page_arg, target_name):
     wait up to 600s. Returns {name, status, duration_seconds, error}."""
     log(f'  ext: clicking template {target_name}')
     try:
-        # No `:visible` filter — cards lower in the section's grid may be
+        # No `:visible` filter -- cards lower in the section's grid may be
         # off-screen until scrolled into view. data-testid is unique per
         # workflow, so the unfiltered locator is safe.
         card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]').first
@@ -672,7 +672,7 @@ def _run_named_card(page_arg, target_name):
 
 
 def _fetch_workflow_list_from_repo():
-    """Authoritative list of template workflow names — fetched from the
+    """Authoritative list of template workflow names -- fetched from the
     node repo's `workflows/` directory contents on GitHub. Each `.json`
     file's stem matches the data-testid suffix the Templates panel
     renders (`template-workflow-<stem>`). Used as the source of truth
@@ -753,7 +753,7 @@ with sync_playwright() as p:
     frame(page)
 
     # Click-through wizard loop. We don't pre-seed any config, so the
-    # app boots into the welcome → GPU → path → install → telemetry
+    # app boots into the welcome -> GPU -> path -> install -> telemetry
     # consent flow. We poll /system_stats; meanwhile we click whatever
     # primary action is on screen, in priority order: confirm popover
     # accept > raised button with a known label > any button with that
@@ -785,7 +785,7 @@ with sync_playwright() as p:
             return False
 
     def find_action(page):
-        # Confirm popover (e.g., "Delete .venv" → Recreate accept)
+        # Confirm popover (e.g., "Delete .venv" -> Recreate accept)
         try:
             loc = page.locator('button.p-confirmpopup-accept-button').first
             if loc.count() and loc.is_visible():
@@ -793,7 +793,7 @@ with sync_playwright() as p:
         except Exception:
             pass
         # Hardware tile FIRST when present and our preferred label is
-        # available — but only if we haven't already picked a tile on this
+        # available -- but only if we haven't already picked a tile on this
         # URL. The wizard pre-selects a default (CUDA on NVIDIA) so
         # Next/Install is enabled on entry; without picking our own tile
         # here, the button branch below would click Next and we'd silently
@@ -825,7 +825,7 @@ with sync_playwright() as p:
         # Last-resort fallback: any non-disabled hardware tile (covers
         # boxes whose tile labels don't match any of our PREFERRED entries).
         # Same gate: don't return a tile if we've already picked one on
-        # this URL — otherwise after clicking CPU we'd flip back to
+        # this URL -- otherwise after clicking CPU we'd flip back to
         # whatever .first happens to be (the wizard's NVIDIA tile).
         if not tile_already_picked:
             try:
@@ -858,7 +858,7 @@ with sync_playwright() as p:
             kind, loc, sig = found
             last_t = clicked.get(sig, 0)
             # Buttons may need re-clicking if the page didn't advance
-            # (CLICK_TTL gate). Tiles don't advance the page on click —
+            # (CLICK_TTL gate). Tiles don't advance the page on click --
             # once selected, find_action keeps returning the same tile
             # forever; suppress re-clicks until the URL changes (which
             # clears `clicked` at the top of the loop).
@@ -878,7 +878,7 @@ with sync_playwright() as p:
         log(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
 
     # ComfyUI Desktop's first-boot path triggers MULTIPLE Python-backend
-    # restarts within the first 1–2 minutes (validate install, migrate,
+    # restarts within the first 1-2 minutes (validate install, migrate,
     # reinstall packages, manager pulls, etc.). Each restart can kill
     # the chromium renderer's CDP target, breaking our `page` reference.
     # Wait for the backend to be CONTINUOUSLY UP for `stable_s` seconds
@@ -1012,7 +1012,7 @@ with sync_playwright() as p:
                 except Exception:
                     pass
 
-    # Extensions search → pick tile → choose pinned version → Install.
+    # Extensions search -> pick tile -> choose pinned version -> Install.
     # Pull DisplayName / PublisherId / version from the node repo's
     # pyproject.toml at https://raw.githubusercontent.com/<repo>/<branch>/.
     # If that fails we can't reliably target the right tile, so bail
@@ -1051,7 +1051,7 @@ with sync_playwright() as p:
 
     log(f'  ext: clicking {NODE_DISPLAY_NAME} by {PUBLISHER} tile')
     # Match both display name AND publisher in the same tile.
-    # Just :has-text("pznodes") is ambiguous — other tiles list
+    # Just :has-text("pznodes") is ambiguous -- other tiles list
     # pznodes as a related/compatible pack and matched first.
     tile_sel = (f'div.bg-modal-card-background.cursor-pointer'
                 f':has-text("{NODE_DISPLAY_NAME}")'
@@ -1074,7 +1074,7 @@ with sync_playwright() as p:
         sleep_capturing(page, 3, fps=5)
 
         # Version selector lives in the right panel below the
-        # ACTIONS/Basic Info accordions — usually below the fold.
+        # ACTIONS/Basic Info accordions -- usually below the fold.
         # It's a <div role="button" aria-haspopup="true"> currently
         # displaying e.g. "nightly". scroll_into_view_if_needed
         # auto-scrolls the right panel's overflow-y container.
@@ -1089,7 +1089,7 @@ with sync_playwright() as p:
                 # Try the pinned CNR version first; fall back to
                 # Latest then Nightly. "Latest" in this UI is an
                 # alias Manager dispatches as literal "@latest",
-                # which CNR can't always resolve — but it's the
+                # which CNR can't always resolve -- but it's the
                 # next-best signal. Nightly is git-main tracking.
                 picked = False
                 version_labels = tuple(filter(None, (NODE_VERSION, 'Latest', 'Nightly')))
@@ -1159,7 +1159,7 @@ with sync_playwright() as p:
         if not applied:
             log('  ext: Apply Changes toast not seen, skipping')
         # Capture the in-app backend restart for a few seconds, then
-        # do a hard close-and-reopen of the whole Electron app — the
+        # do a hard close-and-reopen of the whole Electron app -- the
         # Templates panel caches its node-pack list at app startup
         # and won't pick up newly-installed packs without a full
         # relaunch. Only force-kill when we never saw Apply Changes:
@@ -1190,7 +1190,7 @@ with sync_playwright() as p:
 
         log('  app: relaunching with CDP')
         # Send app stdout/stderr to /dev/null on relaunch; same reason as
-        # the bash launch — uv's progress dumps tons of noise.
+        # the bash launch -- uv's progress dumps tons of noise.
         if IS_WIN:
             # COMFY_DESKTOP_APP_EXE lets _desktop_runner.py point us at its
             # cached ComfyUI.exe; CI uses the NSIS-installed path.
@@ -1234,8 +1234,8 @@ with sync_playwright() as p:
                 time.sleep(1)
                 time.sleep(1)
             # Server is up but the renderer might still be on a splash
-            # (#/desktop-start, #/server-start) or — on Windows when
-            # there's no GPU — #/not-supported. Worse, custom-node
+            # (#/desktop-start, #/server-start) or -- on Windows when
+            # there's no GPU -- #/not-supported. Worse, custom-node
             # install scripts (e.g. SAM3) restart the python server,
             # which leaves the renderer stuck on the splash because the
             # IPC channel got reset while the renderer was waiting.
@@ -1288,14 +1288,14 @@ with sync_playwright() as p:
             # renderer's cached manifest does NOT include freshly-installed
             # node packs. Without this reload the EXTENSIONS section (with
             # comfyui-cadabra etc.) is missing from the nav. Verified
-            # interactively via CDP: BEFORE reload — 12 categories ending at
-            # "Partner Nodes"; AFTER reload — 14 categories adding
+            # interactively via CDP: BEFORE reload -- 12 categories ending at
+            # "Partner Nodes"; AFTER reload -- 14 categories adding
             # "EXTENSIONS / ComfyUI-GeometryPack / comfyui-cadabra".
             log('  app: forcing renderer reload to refresh node-pack manifest')
             try:
                 page.reload(wait_until='load', timeout=30000)
                 install_cursor(page)
-                # Re-wait for canvas after the reload — same shape as the
+                # Re-wait for canvas after the reload -- same shape as the
                 # initial wait, smaller budget since backend is already up.
                 for i in range(60):
                     try:
@@ -1340,7 +1340,7 @@ with sync_playwright() as p:
             log(f"  ext: What's New close failed: {e}")
 
         # On post-install relaunch, ComfyUI Desktop sometimes shows
-        # "Node Pack Issues Detected!" — a Vue modal warning about
+        # "Node Pack Issues Detected!" -- a Vue modal warning about
         # extension conflicts with the new ComfyUI version. It sits over
         # the canvas and intercepts clicks on the Templates sidebar
         # button. Dismiss before opening Templates.
@@ -1401,7 +1401,7 @@ with sync_playwright() as p:
                 # Earlier this loop scrolled `nav .scrollbar-hide.overflow-y-auto:visible`
                 # via .first + el.scrollBy(...). Frames from a recent run
                 # (CADabra-1248 macos-desktop) showed the panel state was
-                # IDENTICAL across 33 seconds of scroll iterations — the
+                # IDENTICAL across 33 seconds of scroll iterations -- the
                 # scroll was a no-op. Two reasons it failed:
                 #   1. .first arbitrarily picked one match among several
                 #      overflow-y-auto divs in the dialog (the right-panel
@@ -1509,9 +1509,9 @@ with sync_playwright() as p:
         # Pick the first CPU-compatible template per the node repo's
         # comfy-test.toml [test.workflows].cpu spec. Mirrors
         # comfy-test/src/comfy_test/common/config_file.py:resolve_workflows
-        #   - cpu = "all"            → any card
-        #   - cpu = ["a","b"]        → only "a" or "b"
-        #   - cpu = ["!a"] (any !)   → any card except those listed
+        #   - cpu = "all"            -> any card
+        #   - cpu = ["a","b"]        -> only "a" or "b"
+        #   - cpu = ["!a"] (any !)   -> any card except those listed
         if node_section is not None:
             cpu_mode = 'all'   # 'all' | 'include' | 'exclude'
             cpu_items = []     # list of workflow names (without .json)
@@ -1657,7 +1657,7 @@ with sync_playwright() as p:
             for ev in events[-15:]:
                 log(f'    ws: {ev}')
             if err:
-                # err is the raw msg.data from execution_error — typically
+                # err is the raw msg.data from execution_error -- typically
                 # has node_type, exception_type, exception_message, traceback.
                 try:
                     log('  ext: execution_error data:')
@@ -1691,7 +1691,7 @@ with sync_playwright() as p:
         # workflow inline (current behavior). For each remaining matching
         # workflow we kill ComfyUI, relaunch, reconnect Playwright, reload
         # the renderer (refreshes the templates manifest with installed
-        # packs), navigate to Templates → comfyui-cadabra section, click
+        # packs), navigate to Templates -> comfyui-cadabra section, click
         # the named card, and run it. Frame-index ranges are tracked so
         # the post-loop ffmpeg pass can emit one mp4 per workflow.
         _frame_ranges = []
@@ -1833,7 +1833,7 @@ try:
                 _shot_shutil.copyfile(str(last_frame), str(shot_path))
                 log(f'  screenshots/{wf_name}_executed.png placed')
             else:
-                log(f'  screenshots/{wf_name}_executed.png skipped — frame {end_idx} not on disk')
+                log(f'  screenshots/{wf_name}_executed.png skipped -- frame {end_idx} not on disk')
         except Exception as e:
             log(f'  screenshots/{wf_name}_executed.png copy failed: {e}')
         wf_meta = next((r for r in _workflow_results if r.get('name') == wf_name), {})
@@ -1856,7 +1856,7 @@ try:
 except Exception as e:
     log(f'  videos/ placement failed: {e}')
 
-# Drop the per-frame PNGs once the mp4 is encoded — they're only the
+# Drop the per-frame PNGs once the mp4 is encoded -- they're only the
 # raw input to ffmpeg and bloat both the artifact and gh-pages.
 try:
     if mp4.exists() and mp4.stat().st_size > 0:

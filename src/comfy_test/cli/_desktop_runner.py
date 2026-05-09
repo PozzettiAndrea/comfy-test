@@ -37,10 +37,10 @@ def _download(url: str, dest: Path) -> None:
     )
 
 # `desktop_mode` -> dict of platform-specific settings.
-# Repo paths are absolute so this works regardless of cwd.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_CDP_DRIVER = _REPO_ROOT / ".github" / "workflows" / "scripts" / "cdp_driver.py"
-_MERGE_LOGS = _REPO_ROOT / ".github" / "workflows" / "scripts" / "merge_logs.py"
+# Scripts ship inside the package so they're available after pip install.
+_DESKTOP_PKG = Path(__file__).resolve().parent.parent / "desktop"
+_CDP_DRIVER = _DESKTOP_PKG / "cdp_driver.py"
+_MERGE_LOGS = _DESKTOP_PKG / "merge_logs.py"
 
 # All host-side state lives under here so a `dockertest --desktop_*` run
 # leaves nothing behind on the host outside this dir (other than the

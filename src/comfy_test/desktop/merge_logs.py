@@ -30,9 +30,9 @@ SRC_TAG = {
 
 
 def _normalize_stem(name: str) -> str:
-    # main.log_2026-05-08T04-06-22-280Z.log → main
-    # comfyui.log → comfyui
-    # comfyui_8000.prev.log → comfyui_8000
+    # main.log_2026-05-08T04-06-22-280Z.log -> main
+    # comfyui.log -> comfyui
+    # comfyui_8000.prev.log -> comfyui_8000
     s = name
     if s.endswith('.log'):
         s = s[:-4]
@@ -59,7 +59,7 @@ def merge(logs_dir: Path) -> Path | None:
         if _normalize_stem(f.name) == 'main':
             continue
         # Skip rotated session logs (main.log_<ts>.log,
-        # comfyui.log_<ts>.log, *.prev*.log) — Electron rotates main.log
+        # comfyui.log_<ts>.log, *.prev*.log) -- Electron rotates main.log
         # on each session boundary, so on a CI-driven Apply Changes restart
         # we'd otherwise slurp BOTH the prior session's rotated log AND
         # the current session's fresh log.
