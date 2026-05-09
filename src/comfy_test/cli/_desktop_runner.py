@@ -681,7 +681,11 @@ def run_desktop(args, desktop_mode: str) -> int:
     short = node_name.removeprefix("ComfyUI-")
     timestamp = datetime.now().strftime("%H%M")
     run_id = f"{short}-{timestamp}"
-    logs_root = Path.home() / "comfy-test-logs"
+    # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
+    # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
+    # finds the run dir). Fall back to ~/comfy-test-logs for local use.
+    _env_logs = os.environ.get("COMFY_TEST_LOGS_DIR")
+    logs_root = Path(_env_logs) if _env_logs else Path.home() / "comfy-test-logs"
     logs_dir = logs_root / run_id
     debug_dir = logs_dir / "debug"
     for d in (logs_dir, debug_dir,
