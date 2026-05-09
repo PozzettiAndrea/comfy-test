@@ -156,17 +156,14 @@ jobs:
           key: setup-${{ runner.os }}-cpu-py${{ steps.python.outputs.version }}
 
       # ---- Install comfy-test (always fresh — not cached) ----
+      # Tracks PyPI latest. Reproducibility is achieved at the workflow level —
+      # comfy-gpu-ci pins this reusable to a specific @vX.Y.Z, and we keep
+      # dispatch-test.yml in lockstep with comfy-test releases.
       - name: Install comfy-test
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then UV="$VENV/Scripts/uv"; else UV="$VENV/bin/uv"; fi
-          # If this workflow was called via a tagged ref (vX.Y.Z), pin install.
-          version="$(echo "$GITHUB_WORKFLOW_REF" | grep -oE '@refs/tags/v[^/]+$' | sed 's|@refs/tags/v||')"
-          if [ -n "$version" ]; then
-            "$UV" pip install "comfy-test==$version"
-          else
-            "$UV" pip install --upgrade comfy-test
-          fi
+          "$UV" pip install --upgrade comfy-test
 
       # ---- Checkout the node into ComfyUI/custom_nodes/ ----
       - uses: actions/checkout@v4
