@@ -176,15 +176,54 @@ def _http_head_ok(url: str) -> bool:
 
 
 def _download(url: str, dest: Path) -> bool:
-    """Download url -> dest with a one-line summary. Returns True on success."""
+    """Download url -> dest with a single-line refreshing progress bar.
+    Returns True on success."""
     print(f"[docker build] downloading {url}")
     print(f"[docker build]   -> {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     t0 = time.time()
+    name = dest.name
     try:
         with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as fh:
-            shutil.copyfileobj(resp, fh, length=1024 * 1024)
+            try:
+                total = int(resp.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            chunk_size = 1024 * 1024
+            written = 0
+            last_print = 0.0
+            is_tty = sys.stderr.isatty()
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                written += len(chunk)
+                now = time.time()
+                if now - last_print >= 0.25:  # throttle ~4Hz
+                    last_print = now
+                    elapsed = now - t0
+                    rate = written / elapsed if elapsed > 0 else 0
+                    if total > 0:
+                        pct = written * 100 / total
+                        bar_w = 30
+                        filled = int(bar_w * written / total)
+                        bar = "=" * filled + ">" + " " * max(0, bar_w - filled - 1)
+                        line = (f"  [{bar}] {_human_size(written)}/{_human_size(total)} "
+                                f"({pct:5.1f}%) {_human_size(rate)}/s")
+                    else:
+                        line = f"  {_human_size(written)} downloaded ({_human_size(rate)}/s)"
+                    if is_tty:
+                        sys.stderr.write("\r" + line + "\033[K")
+                        sys.stderr.flush()
+                    else:
+                        # non-tty: print every ~50MB instead of every chunk
+                        if written - getattr(_download, "_last_logged", 0) > 50 * 1024 * 1024:
+                            _download._last_logged = written
+                            print(line, file=sys.stderr)
+            if is_tty:
+                sys.stderr.write("\n")
         tmp.replace(dest)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         print(f"[docker build]   download failed: {e}", file=sys.stderr)
@@ -193,7 +232,8 @@ def _download(url: str, dest: Path) -> bool:
         return False
     sz = dest.stat().st_size
     elapsed = time.time() - t0
-    print(f"[docker build]   downloaded {_human_size(sz)} in {elapsed:.1f}s")
+    rate = sz / elapsed if elapsed > 0 else 0
+    print(f"[docker build]   done: {_human_size(sz)} in {elapsed:.1f}s ({_human_size(rate)}/s)")
     return True
 
 
@@ -239,6 +279,12 @@ def _build_windows(args, docker_exe: str) -> int:
     if not src.is_dir():
         print(f"Build context not found at {src}", file=sys.stderr)
         return 2
+
+    # Overwrite prompt FIRST — before downloading 1+ GB of installers,
+    # confirm the user actually wants to rebuild.
+    info = _image_info(docker_exe, tag)
+    if info and not _confirm_overwrite(tag, info, args.force):
+        return 0
 
     # Driver-match guard.
     nvidia_exe = args.nvidia_exe
@@ -287,10 +333,6 @@ def _build_windows(args, docker_exe: str) -> int:
         print(f"Git installer not found and could not be downloaded. "
               f"Stage {git_exe} in {cache_dir} or pass --git-exe.", file=sys.stderr)
         return 3
-
-    info = _image_info(docker_exe, tag)
-    if info and not _confirm_overwrite(tag, info, args.force):
-        return 0
 
     stage_dir = Path(os.environ.get("COMFY_TEST_DOCKER_STAGE_DIR", r"D:\docker-stage")) / "windows-gpu"
     stage_dir.mkdir(parents=True, exist_ok=True)
