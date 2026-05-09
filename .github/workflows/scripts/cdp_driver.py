@@ -204,22 +204,81 @@ def _kill_comfy_proc():
         log(f'  loop: kill error (ignored): {e}')
 
 
-def _relaunch_comfy_via_popen():
+def _devtools_active_port_path():
+    """Electron writes the chosen --remote-debugging-port to this file in
+    its userData dir. Format:
+        <port>
+        /devtools/browser/<guid>
+    For ComfyUI Desktop, userData is %APPDATA%\\ComfyUI on Windows and
+    ~/Library/Application Support/ComfyUI on macOS. Resolve robustly so
+    SYSTEM-context APPDATA inherited from agent harnesses doesn't trip us."""
+    if sys.platform == 'win32':
+        appdata = os.environ.get('APPDATA', '')
+        if appdata and 'systemprofile' not in appdata.lower():
+            return Path(appdata) / 'ComfyUI' / 'DevToolsActivePort'
+        up = os.environ.get('USERPROFILE', '')
+        if up and 'systemprofile' not in up.lower():
+            return Path(up) / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+        username = os.environ.get('USERNAME', '')
+        if username and username.upper() != 'SYSTEM':
+            return Path('C:/Users') / username / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+        from glob import glob as _glob
+        for p in _glob(r'C:\Users\*\AppData\Roaming\ComfyUI'):
+            if 'systemprofile' in p.lower():
+                continue
+            return Path(p) / 'DevToolsActivePort'
+        return Path.home() / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Application Support' / 'ComfyUI' / 'DevToolsActivePort'
+    return Path.home() / '.config' / 'ComfyUI' / 'DevToolsActivePort'
+
+
+def _launch_comfy_random_port():
+    """Launch ComfyUI with --remote-debugging-port=0 (let chromium pick a
+    free ephemeral port) and read the chosen port from DevToolsActivePort.
+    This is what every major browser-test harness does (Puppeteer,
+    Playwright, Selenium, chromedp) — sidesteps the Windows orphan-LISTEN
+    socket problem entirely because each launch picks a fresh port the
+    kernel guarantees is unbound. Returns the chosen port (int) or None."""
+    devtools_file = _devtools_active_port_path()
+    # Clear stale file from prior instance so we don't read its old port.
+    try:
+        devtools_file.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f'  loop: DevToolsActivePort cleanup err (ignored): {e}')
+
     if sys.platform == 'win32':
         app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE') or os.path.join(
             os.environ.get('LOCALAPPDATA', ''), 'Programs', 'ComfyUI', 'ComfyUI.exe')
-        subprocess.Popen([app_exe, f'--remote-debugging-port={_CDP_PORT}'],
+        subprocess.Popen([app_exe, '--remote-debugging-port=0'],
                          stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
     else:
         app_path = os.environ.get('COMFY_DESKTOP_APP_PATH') or os.path.join(
             os.environ.get('GITHUB_WORKSPACE', ''), 'ComfyUI.app')
-        subprocess.Popen(['open', app_path, '--args', f'--remote-debugging-port={_CDP_PORT}'],
+        subprocess.Popen(['open', app_path, '--args', '--remote-debugging-port=0'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    log(f'  loop: waiting for DevToolsActivePort at {devtools_file}')
+    for i in range(240):
+        if devtools_file.exists():
+            try:
+                content = devtools_file.read_text(encoding='utf-8').strip()
+                if content:
+                    port = int(content.splitlines()[0])
+                    log(f'  loop: DevToolsActivePort -> {port} after {i+1}s')
+                    return port
+            except Exception as e:
+                log(f'  loop: DevToolsActivePort parse err: {e}')
+        time.sleep(1)
+    log(f'  loop: DevToolsActivePort never appeared after 240s')
+    return None
 
-def _wait_cdp_up(timeout_s=120):
+
+def _wait_cdp_up(timeout_s=240):
     for i in range(timeout_s):
         try:
             urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
@@ -228,6 +287,28 @@ def _wait_cdp_up(timeout_s=120):
         except Exception:
             time.sleep(1)
     log(f'  loop: CDP did not come up within {timeout_s}s')
+    return False
+
+
+def _wait_cdp_port_free(timeout_s=30):
+    """Poll until nothing is bound to the CDP port — covers the Windows
+    case where taskkill returns immediately but the kernel hasn't released
+    the previous instance's listener yet. Best-effort: returns True if the
+    port becomes bindable, False on timeout."""
+    import socket as _socket
+    for i in range(timeout_s):
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            s.bind(('127.0.0.1', _CDP_PORT))
+            s.close()
+            if i > 0:
+                log(f'  loop: port {_CDP_PORT} free after {i}s')
+            return True
+        except OSError:
+            try: s.close()
+            except Exception: pass
+            time.sleep(1)
+    log(f'  loop: port {_CDP_PORT} still held after {timeout_s}s; relaunching anyway')
     return False
 
 
@@ -259,11 +340,17 @@ def _restart_comfy(p_arg, current_browser):
     log('  loop: killing ComfyUI process')
     _kill_comfy_proc()
     time.sleep(5)
-    log('  loop: relaunching ComfyUI')
-    _relaunch_comfy_via_popen()
-    _wait_cdp_up(120)
-    log('  loop: reconnecting Playwright')
-    new_browser = p_arg.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
+    # Launch the new instance with --remote-debugging-port=0; chromium picks
+    # a fresh ephemeral port the kernel guarantees is unbound, so the
+    # Windows orphan-LISTEN socket from the killed instance can't trip us.
+    # Read the chosen port from <userData>/DevToolsActivePort.
+    log('  loop: launching ComfyUI with --remote-debugging-port=0')
+    new_port = _launch_comfy_random_port()
+    if new_port is None:
+        log('  loop: failed to obtain CDP port from DevToolsActivePort; bailing')
+        return None, current_browser
+    log(f'  loop: reconnecting Playwright on port {new_port}')
+    new_browser = p_arg.chromium.connect_over_cdp(f'http://localhost:{new_port}')
     _browser_ref[0] = new_browser
     _capture_warned[0] = False
     new_page = main_page(new_browser)
@@ -501,9 +588,12 @@ def _run_named_card(page_arg, target_name):
     wait up to 600s. Returns {name, status, duration_seconds, error}."""
     log(f'  ext: clicking template {target_name}')
     try:
-        card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]:visible').first
+        # No `:visible` filter — cards lower in the section's grid may be
+        # off-screen until scrolled into view. data-testid is unique per
+        # workflow, so the unfiltered locator is safe.
+        card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]').first
         if not card.count():
-            log(f'  ext: card {target_name} not found in section')
+            log(f'  ext: card {target_name} not found in section DOM')
             return {'name': target_name, 'status': 'fail',
                     'duration_seconds': 0,
                     'error': f'card {target_name} not found in section'}
@@ -579,6 +669,36 @@ def _run_named_card(page_arg, target_name):
     sleep_capturing(page_arg, 5, fps=5)
     return {'name': target_name, 'status': status,
             'duration_seconds': elapsed, 'error': err_str}
+
+
+def _fetch_workflow_list_from_repo():
+    """Authoritative list of template workflow names — fetched from the
+    node repo's `workflows/` directory contents on GitHub. Each `.json`
+    file's stem matches the data-testid suffix the Templates panel
+    renders (`template-workflow-<stem>`). Used as the source of truth
+    for the per-workflow loop so we don't depend on which cards the GUI
+    happens to have rendered/scrolled-into-view at enumeration time.
+    Returns empty list on any failure."""
+    try:
+        node_repo = os.environ.get('NODE_REPO', '')
+        node_branch = os.environ.get('NODE_BRANCH', 'main')
+        if not node_repo:
+            return []
+        url = f'https://api.github.com/repos/{node_repo}/contents/workflows?ref={node_branch}'
+        req = urllib.request.Request(url, headers={'User-Agent': 'comfy-test-cdp-driver'})
+        body = urllib.request.urlopen(req, timeout=10).read()
+        items = json.loads(body)
+        names = []
+        for item in items:
+            n = item.get('name', '')
+            if isinstance(n, str) and n.endswith('.json'):
+                names.append(n[:-5])
+        names.sort()
+        log(f'  loop: workflows/ from {node_repo}@{node_branch} -> {names}')
+        return names
+    except Exception as e:
+        log(f'  loop: workflows/ fetch failed ({e})')
+        return []
 
 
 def _parse_cpu_spec():
@@ -756,6 +876,79 @@ with sync_playwright() as p:
             time.sleep(2)
     else:
         log(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
+
+    # ComfyUI Desktop's first-boot path triggers MULTIPLE Python-backend
+    # restarts within the first 1–2 minutes (validate install, migrate,
+    # reinstall packages, manager pulls, etc.). Each restart can kill
+    # the chromium renderer's CDP target, breaking our `page` reference.
+    # Wait for the backend to be CONTINUOUSLY UP for `stable_s` seconds
+    # before proceeding with any UI actions. If the page dies during the
+    # wait, reconnect via CDP and get a fresh page.
+    def _reattach_after_close(old_browser):
+        # Wait for CDP to be reachable again (in case Electron is mid-restart).
+        for _i in range(120):
+            try:
+                urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
+                break
+            except Exception:
+                time.sleep(1)
+        else:
+            log(f'  recovery: CDP never came back within 120s')
+            return None, None
+        try: old_browser.close()
+        except Exception: pass
+        try:
+            nb = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
+            _browser_ref[0] = nb
+            _capture_warned[0] = False
+            np = main_page(nb)
+            if np is None:
+                log('  recovery: no page after reconnect')
+                return nb, None
+            install_cursor(np)
+            log(f'  recovery: reattached at {np.url}')
+            return nb, np
+        except Exception as e:
+            log(f'  recovery: reconnect failed: {e}')
+            return None, None
+
+    log('  app: waiting for backend stability (continuous /system_stats up for 30s)')
+    _stable_s = 30
+    _max_s = 300
+    _last_up = None
+    _stab_start = time.time()
+    while time.time() - _stab_start < _max_s:
+        try:
+            urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
+            if _last_up is None:
+                _last_up = time.time()
+                log(f'  app: /system_stats up; awaiting {_stable_s}s of stability')
+            elif time.time() - _last_up >= _stable_s:
+                log(f'  app: backend stable for {_stable_s}s; proceeding')
+                break
+        except Exception:
+            if _last_up is not None:
+                log(f'  app: /system_stats went DOWN '
+                    f'(was up {int(time.time()-_last_up)}s); waiting for re-up')
+            _last_up = None
+        # If the page itself died (Electron renderer reload / target close),
+        # reconnect now so we have a live page going forward.
+        try:
+            _ = page.url
+        except Exception as _pe:
+            log(f'  app: page died during stability wait ({_pe!r}); reconnecting')
+            _nb, _np = _reattach_after_close(browser)
+            if _np is None:
+                log('  app: reattach failed; bailing on stability wait')
+                break
+            browser = _nb
+            page = _np
+            _last_up = None  # restart stability counter post-reattach
+        try: frame(page)
+        except Exception: pass
+        time.sleep(1)
+    else:
+        log(f'  app: backend never stabilized within {_max_s}s; proceeding anyway')
 
     # Keep capturing past server-up so the main canvas/UI lands in
     # the video, then drive a short post-flow: dismiss the cloud
@@ -1503,11 +1696,27 @@ with sync_playwright() as p:
                 _first_workflow_frame_start if 'picked_name' in dir() and picked_name else 0,
                 fi[0],
             ))
+        # Workflow list is comfy-test-driven, NOT GUI-driven: we read the
+        # cpu/gpu spec from the node repo's comfy-test.toml and (for
+        # 'all' or '!exclude' modes) the full list from the repo's
+        # workflows/ directory contents. This avoids the failure mode
+        # where the Templates panel happens to be closed (or scrolled
+        # past the section) at enumeration time.
+        NODE_PACKAGE_NAME_outer = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
         try:
             cpu_mode_outer, cpu_items_outer = _parse_cpu_spec()
-            _all_matching = _enumerate_matching_cards(page, cpu_mode_outer, cpu_items_outer)
+            if cpu_mode_outer == 'include':
+                _all_matching = list(cpu_items_outer)
+            else:
+                _full_list = _fetch_workflow_list_from_repo()
+                if cpu_mode_outer == 'exclude':
+                    _all_matching = [n for n in _full_list if n not in cpu_items_outer]
+                else:  # 'all'
+                    _all_matching = _full_list
+            log(f'  loop: spec={cpu_mode_outer} items={cpu_items_outer} '
+                f'-> {len(_all_matching)} workflow(s) {_all_matching}')
         except Exception as e:
-            log(f'  loop: enumerate failed: {e}')
+            log(f'  loop: workflow list resolution failed: {e}')
             _all_matching = []
         first_name = _workflow_results[0]['name'] if _workflow_results else None
         _remaining = [n for n in _all_matching if n != first_name]
