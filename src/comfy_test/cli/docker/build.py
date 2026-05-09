@@ -260,9 +260,13 @@ def _build_windows(args, docker_exe: str) -> int:
             host_drv_for_url = None
 
     # Resolve installers (override -> cache -> auto-download)
-    cache_dir = Path(args.installer_cache or
-                     os.environ.get("COMFY_TEST_INSTALLER_CACHE",
-                                    str(Path.home() / ".comfy-test" / "installers")))
+    if args.installer_cache:
+        cache_dir = Path(args.installer_cache)
+    elif os.environ.get("COMFY_TEST_INSTALLER_CACHE"):
+        cache_dir = Path(os.environ["COMFY_TEST_INSTALLER_CACHE"])
+    else:
+        from . import _root
+        cache_dir = _root.subdir("installers")
     override_str = os.environ.get("COMFY_TEST_INSTALLERS_DIR", "")
     override_dir = Path(override_str) if override_str else None
 
@@ -365,12 +369,13 @@ def _build_windows(args, docker_exe: str) -> int:
 
 
 def _save_image(docker_exe: str, tag: str, args) -> int:
-    """`docker save | zstd -19` to $COMFY_TEST_DOCKER_ARTIFACT_PATH."""
+    """`docker save | zstd -19` to $COMFY_TEST_DOCKER_ARTIFACT_PATH (or <root>/artifacts/<tag>.tar.zst)."""
     artifact = args.artifact_path or os.environ.get("COMFY_TEST_DOCKER_ARTIFACT_PATH")
     if not artifact:
-        print("--save requires COMFY_TEST_DOCKER_ARTIFACT_PATH (or --artifact-path).",
-              file=sys.stderr)
-        return 4
+        from . import _root
+        # Default: <root>/artifacts/<image>-<variant>.tar.zst (e.g. comfy-test-windows-gpu-full.tar.zst)
+        safe = tag.replace(":", "-").replace("/", "-")
+        artifact = str(_root.subdir("artifacts") / f"{safe}.tar.zst")
     artifact_path = Path(artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"[docker build] saving {tag} → {artifact_path}")

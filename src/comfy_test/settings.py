@@ -63,16 +63,24 @@ _IS_WIN = sys.platform == "win32"
 # Path settings: (env_var, label, default_value)
 PATH_SETTINGS = [
     ("COMFY_TEST_LOCAL_UTILS", "Local utils directory (dev packages)", ""),
-    ("COMFY_TEST_DOCKER_STAGE_DIR", "Docker build staging directory",
-     r"D:\docker-stage" if _IS_WIN else "/tmp/comfy-test-docker-stage"),
+    ("COMFY_TEST_DOCKER_ROOT",
+     "Root for `comfy-test docker` host artifacts; auto-picks first Dev Drive when empty",
+     ""),
+    ("COMFY_TEST_LOGS_DIR",
+     "Override for `docker test` logs (default: <root>/logs)",
+     ""),
+    ("COMFY_TEST_DOCKER_STAGE_DIR",
+     "Override for the robocopy staging dir (default: <root>/stage; Windows only)",
+     ""),
     ("COMFY_TEST_INSTALLER_CACHE",
-     "Cache directory for auto-downloaded driver/git installers (Windows only)",
-     str(Path.home() / ".comfy-test" / "installers") if _IS_WIN else ""),
+     "Override for the auto-downloaded installer cache (default: <root>/installers)",
+     ""),
     ("COMFY_TEST_INSTALLERS_DIR",
-     "Optional override directory for installers; leave empty for auto-download",
+     "Optional override directory containing pre-staged installers; "
+     "leave empty for auto-download from upstream",
      ""),
     ("COMFY_TEST_DOCKER_ARTIFACT_PATH",
-     "Where `docker build --save` writes the .tar.zst",
+     "Where `docker build --save` writes the .tar.zst (default: <root>/artifacts/<image>.tar.zst)",
      ""),
 ]
 

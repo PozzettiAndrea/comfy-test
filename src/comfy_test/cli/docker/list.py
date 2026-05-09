@@ -101,6 +101,18 @@ def _smb_artifact_paths() -> list:
 def cmd_docker_list(args=None) -> int:
     docker_exe = _find_docker()
 
+    from . import _root
+    root, source = _root.get_docker_root_with_source()
+    source_label = {
+        "env": "set via $COMFY_TEST_DOCKER_ROOT",
+        "devdrv": "Dev Drive auto-detected",
+        "fallback": "fallback — no Dev Drive >=50GB free found",
+    }.get(source, source)
+    print("Docker root")
+    print("-" * 70)
+    print(f"  {root}  ({source_label})")
+    print()
+
     print("Local Docker images")
     print("-" * 70)
     if not docker_exe:
@@ -135,13 +147,15 @@ def cmd_docker_list(args=None) -> int:
                 print(f"  {str(p):55s}  (unreachable: {type(e).__name__})")
 
     print()
-    print("Configured paths")
+    print("Path overrides (env vars)")
     print("-" * 70)
-    for var in ("COMFY_TEST_DOCKER_STAGE_DIR",
+    for var in ("COMFY_TEST_DOCKER_ROOT",
+                "COMFY_TEST_LOGS_DIR",
+                "COMFY_TEST_DOCKER_STAGE_DIR",
                 "COMFY_TEST_INSTALLER_CACHE",
                 "COMFY_TEST_INSTALLERS_DIR",
                 "COMFY_TEST_DOCKER_ARTIFACT_PATH"):
-        val = os.environ.get(var, "(unset)")
+        val = os.environ.get(var, "(unset; uses default)")
         print(f"  {var} = {val}")
 
     if sys.platform == "win32":

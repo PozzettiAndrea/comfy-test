@@ -21,7 +21,8 @@ from typing import Optional
 DOCKER_IMAGE_WINDOWS = "comfy-test-windows-gpu:full"
 DOCKER_IMAGE_LINUX = "comfy-test-linux-gpu:full"
 DOCKER_GPU_DEVICE = "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599"  # GUID_DEVINTERFACE_DISPLAY_ADAPTER
-DOCKER_STAGE_ROOT = Path(r"C:\cds-docker-stage")
+
+from . import _root
 
 
 def _detect_host_platform() -> str:
@@ -178,9 +179,9 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
     workspace_dir = None
     env_cache_dir = None
     if args.persist:
-        workspace_dir = Path.home() / "comfy-test-workspaces" / f"{node_name}-{timestamp}"
+        workspace_dir = _root.subdir("workspaces") / f"{node_name}-{timestamp}"
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        env_cache_dir = Path.home() / "comfy-test-env-cache" / f"{node_name}-{timestamp}"
+        env_cache_dir = _root.subdir("env-cache") / f"{node_name}-{timestamp}"
         env_cache_dir.mkdir(parents=True, exist_ok=True)
         args.keep_clone = True
 
@@ -197,23 +198,27 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
     env_cache_mount_src = None
     node_mount_src = None
     if stage:
-        DOCKER_STAGE_ROOT.mkdir(parents=True, exist_ok=True)
-        logs_mount_src = DOCKER_STAGE_ROOT / "logs"
+        if os.environ.get("COMFY_TEST_DOCKER_STAGE_DIR"):
+            stage_root = Path(os.environ["COMFY_TEST_DOCKER_STAGE_DIR"])
+            stage_root.mkdir(parents=True, exist_ok=True)
+        else:
+            stage_root = _root.subdir("stage")
+        logs_mount_src = stage_root / "logs"
         shutil.rmtree(logs_mount_src, ignore_errors=True)
         logs_mount_src.mkdir(parents=True, exist_ok=True)
         if not url_mode:
-            node_mount_src = DOCKER_STAGE_ROOT / "node" / node_name
+            node_mount_src = stage_root / "node" / node_name
             shutil.rmtree(node_mount_src, ignore_errors=True)
             node_mount_src.parent.mkdir(parents=True, exist_ok=True)
         if workspace_dir is not None:
-            workspace_mount_src = DOCKER_STAGE_ROOT / "workspace"
+            workspace_mount_src = stage_root / "workspace"
             shutil.rmtree(workspace_mount_src, ignore_errors=True)
             workspace_mount_src.mkdir(parents=True, exist_ok=True)
         if env_cache_dir is not None:
-            env_cache_mount_src = DOCKER_STAGE_ROOT / "env_cache"
+            env_cache_mount_src = stage_root / "env_cache"
             # NOT wiped — env cache is the whole point of caching across runs.
             env_cache_mount_src.mkdir(parents=True, exist_ok=True)
-        print(f"[docker test] Dev Drive filters not attached; staging to {DOCKER_STAGE_ROOT}")
+        print(f"[docker test] Dev Drive filters not attached; staging to {stage_root}")
         if not url_mode:
             rc = subprocess.run(
                 ["robocopy", str(node_path), str(node_mount_src),
@@ -323,7 +328,7 @@ def _run_linux(args, docker_exe: str, gpu: bool,
 
     workspace_dir = None
     if args.persist:
-        workspace_dir = Path.home() / "comfy-test-workspaces" / f"{node_name}-{timestamp}"
+        workspace_dir = _root.subdir("workspaces") / f"{node_name}-{timestamp}"
         workspace_dir.mkdir(parents=True, exist_ok=True)
         args.keep_clone = True
 
@@ -495,8 +500,10 @@ def cmd_docker_test(args) -> int:
     timestamp = datetime.now().strftime("%H%M")
     if args.logs_dir:
         logs_dir = Path(args.logs_dir).resolve()
+    elif os.environ.get("COMFY_TEST_LOGS_DIR"):
+        logs_dir = Path(os.environ["COMFY_TEST_LOGS_DIR"]).resolve()
     else:
-        logs_dir = Path.home() / "comfy-test-logs"
+        logs_dir = _root.subdir("logs")
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     # Mirror run.py:66/93 so the host can locate this invocation's output.
