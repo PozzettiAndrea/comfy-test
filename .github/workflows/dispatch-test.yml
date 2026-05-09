@@ -2,25 +2,20 @@ name: comfy-test dispatch
 #
 # Single reusable workflow for every platform comfy-test supports.
 #
-# Calling pattern (from comfy-gpu-ci or any external repo):
+# Calling pattern (pin to a tag, never @main):
 #
-#   uses: PozzettiAndrea/comfy-test/.github/workflows/dispatch-test.yml@main
+#   uses: PozzettiAndrea/comfy-test/.github/workflows/dispatch-test.yml@vX.Y.Z
 #   with:
 #     node_repo: PozzettiAndrea/ComfyUI-SAM3
 #     branch: dev
-#     platform: linux | linux-gpu | windows | windows-gpu | windows-portable | windows-portable-gpu | macos
+#     platform: linux-cpu | linux-gpu | windows-cpu | windows-gpu | windows-portable-cpu | windows-portable-gpu | macos-cpu | windows-desktop | windows-desktop-gpu | macos-desktop
 #   secrets:
 #     NODE_PAT: ${{ secrets.NODE_PAT }}
 #
-# Architecture:
-#   - CPU platforms (`linux`, `windows`, `windows-portable`, `macos`) run on
-#     GitHub-hosted runners with the warm-cache pattern (.venv + ComfyUI clone
-#     + Playwright Chromium are cached across runs by setup-{os}-cpu-py{ver}).
-#   - GPU platforms (`linux-gpu`, `windows-gpu`, `windows-portable-gpu`) run on
-#     self-hosted cluster runners via `comfy-test docker run`. NO caching.
-#   - Desktop variants (`*-desktop`, `*-desktop-gpu`) are not yet wired in here;
-#     follow-up will route them through `comfy-test run --desktop` once that
-#     code path is added.
+# Architecture: comfy-test (the Python package) does the heavy lifting in all
+# three jobs — it clones the node, sets up its own venv + uv, clones ComfyUI,
+# installs deps, runs ComfyUI's server, drives tests, and writes results.
+# This YAML's job is just runner selection, Defender, and `comfy-test run`.
 
 on:
   workflow_call:
@@ -34,7 +29,7 @@ on:
         type: string
         default: dev
       platform:
-        description: "linux | linux-gpu | windows | windows-gpu | windows-portable | windows-portable-gpu | macos"
+        description: "linux-cpu | linux-gpu | windows-cpu | windows-gpu | windows-portable-cpu | windows-portable-gpu | macos-cpu | windows-desktop | windows-desktop-gpu | macos-desktop"
         required: true
         type: string
     secrets:
@@ -43,7 +38,7 @@ on:
 
 jobs:
   # =========================================================================
-  # CPU on hosted runners (linux, windows, windows-portable, macos)
+  # CPU on hosted runners (linux-cpu, windows-cpu, windows-portable-cpu, macos-cpu)
   # =========================================================================
   cpu:
     if: ${{ !contains(inputs.platform, 'gpu') && !contains(inputs.platform, 'desktop') }}
@@ -54,38 +49,13 @@ jobs:
           || 'windows-latest' }}
     timeout-minutes: 300
     env:
-      PYTHONUNBUFFERED: "1"
-      PYTHONFAULTHANDLER: "1"
-      PW_TEST_SCREENSHOT_NO_FONTS_READY: "1"
-      COMFY_ENV_DEBUG: "1"
-      COMFY_TEST_GPU: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
-      COMFYUI_DIR: ${{ github.workspace }}/ComfyUI
-      VENV: ${{ github.workspace }}/.venv
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright
     steps:
-      # Hosted Windows runners eat 30-50% of build time on Defender realtime.
-      # No-op on self-hosted (TP blocks the cmdlet) — but we don't run CPU on
-      # self-hosted anyway. Linux/macOS skip via `if`.
       - name: Disable Defender realtime (Windows IO speedup)
         if: runner.os == 'Windows'
         shell: pwsh
         run: Set-MpPreference -DisableRealtimeMonitoring $true 2>$null; exit 0
-
-      - name: Resolve node name
-        shell: bash
-        env:
-          INPUT_REPO: ${{ inputs.node_repo }}
-        run: echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
-
-      - name: Free disk space (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
-          sudo apt-get clean &
-          wait
 
       - name: Pick Python version
         id: python
@@ -100,145 +70,18 @@ jobs:
         with:
           python-version: ${{ steps.python.outputs.version }}
 
-      # Cache base setup: .venv, ComfyUI clone, Playwright Chromium.
-      # Same key across all nodes/branches — first run populates, rest hit warm.
-      - uses: actions/cache/restore@v4
-        id: setup-cache
-        with:
-          path: |
-            ${{ env.VENV }}
-            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-            ${{ env.COMFYUI_DIR }}
-          key: setup-${{ runner.os }}-cpu-py${{ steps.python.outputs.version }}
-
-      # ---- Setup (only on cache miss) ----
-      - name: Create venv and install uv
-        if: steps.setup-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          python -m venv "$VENV"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            "$VENV/Scripts/pip" install uv
-          else
-            "$VENV/bin/pip" install uv
-          fi
-
-      - name: Clone ComfyUI
-        if: steps.setup-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "$COMFYUI_DIR"
-
-      - name: Install ComfyUI requirements + Playwright
-        if: steps.setup-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            UV="$VENV/Scripts/uv"
-            PY="$VENV/Scripts/python"
-          else
-            UV="$VENV/bin/uv"
-            PY="$VENV/bin/python"
-          fi
-          "$UV" pip install -r "$COMFYUI_DIR/requirements.txt"
-          "$UV" pip install playwright
-          "$PY" -m playwright install chromium
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            "$PY" -m playwright install-deps chromium || true
-          fi
-
-      - uses: actions/cache/save@v4
-        if: steps.setup-cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ${{ env.VENV }}
-            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
-            ${{ env.COMFYUI_DIR }}
-          key: setup-${{ runner.os }}-cpu-py${{ steps.python.outputs.version }}
-
-      # ---- Install comfy-test (always fresh — not cached) ----
-      # Tracks PyPI latest. Reproducibility is achieved at the workflow level —
-      # comfy-gpu-ci pins this reusable to a specific @vX.Y.Z, and we keep
-      # dispatch-test.yml in lockstep with comfy-test releases.
       - name: Install comfy-test
         shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then UV="$VENV/Scripts/uv"; else UV="$VENV/bin/uv"; fi
-          "$UV" pip install --upgrade comfy-test
+        run: pip install --upgrade comfy-test
 
-      # ---- Checkout the node into ComfyUI/custom_nodes/ ----
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.node_repo }}
-          ref: ${{ inputs.branch }}
-          token: ${{ secrets.NODE_PAT || github.token }}
-          path: ComfyUI/custom_nodes/${{ env.NODE_NAME }}
-
-      - name: Install node dependencies
-        shell: bash
-        working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            UV="$VENV/Scripts/uv"; PY="$VENV/Scripts/python"
-          else
-            UV="$VENV/bin/uv"; PY="$VENV/bin/python"
-          fi
-          [ -f requirements.txt ] && "$UV" pip install -r requirements.txt || true
-          [ -f install.py ] && "$PY" install.py || true
-
-      - name: Install validate endpoint
+      - name: Run tests
         shell: bash
         run: |
-          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git \
-            "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
-
-      # ---- Start ComfyUI server, wait for ready, run tests, stop ----
-      - name: Start ComfyUI server
-        shell: bash
-        working-directory: ${{ env.COMFYUI_DIR }}
-        run: |
-          mkdir -p "$COMFY_TEST_LOGS_DIR"
-          if [ "$RUNNER_OS" = "Windows" ]; then PY="$VENV/Scripts/python"; else PY="$VENV/bin/python"; fi
-          "$PY" -u main.py --listen 127.0.0.1 --port 8188 --cpu \
-            > "$COMFY_TEST_LOGS_DIR/server.log" 2>&1 &
-          echo "SERVER_PID=$!" >> $GITHUB_ENV
-
-      - name: Wait for server
-        shell: bash
-        run: |
-          for i in $(seq 1 300); do
-            if ! kill -0 $SERVER_PID 2>/dev/null; then
-              echo "Server died!"
-              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
-              exit 1
-            fi
-            if curl -s http://127.0.0.1:8188/system_stats > /dev/null 2>&1; then
-              echo "Server ready after ${i}s"
-              cat "$COMFY_TEST_LOGS_DIR/server.log" || true
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Server failed to start within 5min"
-          cat "$COMFY_TEST_LOGS_DIR/server.log" || true
-          exit 1
-
-      - name: Run tests via comfy-test run
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then PY="$VENV/Scripts/python"; else PY="$VENV/bin/python"; fi
-          NODE_PATH="$COMFYUI_DIR/custom_nodes/$NODE_NAME"
           PORTABLE_FLAG=""
-          if [ "${{ inputs.platform }}" = "windows-portable" ]; then PORTABLE_FLAG="--portable"; fi
-          "$PY" -m comfy_test run "$NODE_PATH" \
+          if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
+          comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" \
-            --server-url http://127.0.0.1:8188 \
-            --level execution \
             $PORTABLE_FLAG
-
-      - name: Stop server
-        if: always()
-        shell: bash
-        run: kill $SERVER_PID 2>/dev/null || true
 
       - if: always()
         uses: actions/upload-artifact@v4
@@ -359,6 +202,7 @@ jobs:
     timeout-minutes: 300
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
     steps:
       - name: Disable Defender realtime (Windows IO speedup)
         if: runner.os == 'Windows'
