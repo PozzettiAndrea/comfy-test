@@ -206,38 +206,15 @@ jobs:
       node_branch: ${{ inputs.node_branch }}
     secrets: inherit
 
-  # ---------------------------------------------------------------------------
-  # GPU tests (self-hosted runners) - only if gpu workflows defined AND platform enabled
-  # ---------------------------------------------------------------------------
-  linux-gpu:
-    needs: [setup]
-    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-linux-gpu == 'true' && needs.setup.outputs.skip-linux-gpu != 'true'
-    uses: ./.github/workflows/_test-linux-gpu.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
-
-  windows-gpu:
-    needs: [setup]
-    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-gpu == 'true' && needs.setup.outputs.skip-windows-gpu != 'true'
-    uses: ./.github/workflows/_test-windows-gpu.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
-
-  windows-portable-gpu:
-    needs: [setup]
-    if: needs.setup.outputs.has-gpu == 'true' && needs.setup.outputs.run-windows-portable-gpu == 'true' && needs.setup.outputs.skip-windows-portable-gpu != 'true'
-    uses: ./.github/workflows/_test-windows-portable-gpu.yml
-    with:
-      config-file: ${{ inputs.config-file }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
+  # GPU bare-metal reusables removed (2026-05-09). GPU testing now goes through
+  # `comfy-test docker test` via the comfy-gpu-ci dispatcher; the old
+  # `_test-{linux,windows,windows-portable}-gpu.yml` files were deleted.
 
   # ---------------------------------------------------------------------------
   # Publish results
   # ---------------------------------------------------------------------------
   publish:
-    needs: [setup, linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, linux-gpu, windows-gpu, windows-portable-gpu]
+    needs: [setup, linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu]
     if: always() && needs.setup.outputs.run-publish == 'true'
     uses: ./.github/workflows/_publish-results.yml
     with:
