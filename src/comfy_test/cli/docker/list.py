@@ -156,8 +156,11 @@ def cmd_docker_list(args=None) -> int:
         if missing:
             print()
             print("  To exclude (run as Administrator; survives Tamper Protection):")
-            for line in _defender._fix_command(missing).split("\n"):
-                print(f"    {line.strip()}")
+            print("    PowerShell:")
+            for line in _defender._fix_command_powershell(missing).split("\n"):
+                print(f"      {line.strip()}")
+            print("    cmd.exe (one-liner):")
+            print(f"      {_defender._fix_command_cmd(missing)}")
 
     return 0
 

@@ -95,7 +95,7 @@ def check_defender_exclusions(critical_paths: List[str] = None) -> List[str]:
     return [p for p in paths if not _path_covered(p, exclusions)]
 
 
-def _fix_command(missing: List[str]) -> str:
+def _fix_command_powershell(missing: List[str]) -> str:
     lines = [
         "$reg = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Exclusions\\Paths'",
         "New-Item -Path $reg -Force | Out-Null",
@@ -104,6 +104,21 @@ def _fix_command(missing: List[str]) -> str:
         lines.append(f"New-ItemProperty -Path $reg -Name '{p}' -Value 0 -PropertyType DWord -Force | Out-Null")
     lines.append("gpupdate /force")
     return "\n    ".join(lines)
+
+
+def _fix_command_cmd(missing: List[str]) -> str:
+    parts = []
+    for p in missing:
+        parts.append(
+            f'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Exclusions\\Paths" '
+            f'/v "{p}" /t REG_DWORD /d 0 /f'
+        )
+    parts.append("gpupdate /force")
+    return " && ".join(parts)
+
+
+# Back-compat alias for older callers.
+_fix_command = _fix_command_powershell
 
 
 def print_warning(missing: List[str], pause_seconds: int = 5) -> None:
@@ -124,7 +139,11 @@ def print_warning(missing: List[str], pause_seconds: int = 5) -> None:
     print("Run this once as Administrator to add the exclusion (survives")
     print("Tamper Protection because it uses the GPO policy channel):")
     print()
-    print(f"    {_fix_command(missing)}")
+    print("  PowerShell:")
+    print(f"    {_fix_command_powershell(missing)}")
+    print()
+    print("  cmd.exe (one-liner):")
+    print(f"    {_fix_command_cmd(missing)}")
     print()
     print(f"Continuing in {pause_seconds} seconds. Set --no-defender-warn or")
     print("COMFY_TEST_NO_DEFENDER_WARN=1 to silence.")
