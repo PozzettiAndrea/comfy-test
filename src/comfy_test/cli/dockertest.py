@@ -520,4 +520,13 @@ def add_dockertest_parser(subparsers):
     desktop_group.add_argument("--desktop_windows_gpu", action="store_const",
                                const="windows_gpu", dest="desktop_mode",
                                help="Drive ComfyUI Desktop locally on Windows with GPU (no docker)")
+    p.add_argument("--monitor-progress", type=int, default=None, metavar="PORT",
+                   help="Desktop only: serve a live viewer on http://localhost:<PORT>/ "
+                        "showing the most recent driver frame + session.log tail. "
+                        "Useful while iterating on cdp_driver.py.")
+    p.add_argument("--cdp-port", type=int, default=9222, metavar="PORT",
+                   help="Desktop only: chromium remote-debugging port the driver "
+                        "connects to (default 9222). Bump if the default is held by "
+                        "a stale socket from a prior killed run that Windows hasn't "
+                        "released yet.")
     p.set_defaults(func=cmd_dockertest, desktop_mode=None)

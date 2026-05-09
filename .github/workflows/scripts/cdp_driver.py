@@ -11,6 +11,7 @@ def log(*a, **k):
 # the flat layout. The platform YMLs override them to mirror the cpu
 # nested structure: artifacts under <RUN_ID>/<platform>/, debug-only
 # captures (electron_inspect, frames mid-state) under <RUN_ID>/debug/.
+_CDP_PORT = int(os.environ.get('COMFY_DESKTOP_CDP_PORT', '9222'))
 _LOGS_DIR = Path(os.environ['COMFY_TEST_LOGS_DIR'].replace('\\', '/'))
 _RUN_DIR = Path(os.environ.get('COMFY_TEST_RUN_DIR', str(_LOGS_DIR)).replace('\\', '/'))
 _DEBUG_DIR = Path(os.environ.get('COMFY_TEST_DEBUG_DIR', str(_LOGS_DIR)).replace('\\', '/'))
@@ -115,7 +116,7 @@ def main_page(browser):
     return cands[0][0] if cands else None
 
 try:
-    tg = json.loads(urllib.request.urlopen('http://localhost:9222/json').read())
+    tg = json.loads(urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json').read())
     (OUT / 'targets.json').write_text(json.dumps(tg, indent=2))
     log(f'CDP targets: {len(tg)}')
     for t in tg:
@@ -185,7 +186,7 @@ def fill_with_cursor(page, sel, text):
         return False
 
 with sync_playwright() as p:
-    browser = p.chromium.connect_over_cdp('http://localhost:9222')
+    browser = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
     _browser_ref[0] = browser
     page = main_page(browser)
     if not page:
@@ -209,6 +210,21 @@ with sync_playwright() as p:
     PRIMARY_LABELS = ['Get Started', 'Next', 'Continue', 'Install', 'OK',
                       'Recreate', 'Confirm', 'Accept', 'Allow', 'Yes', 'Finish']
 
+    # Hardware-tile preference is driven by COMFY_TEST_GPU (set by
+    # _desktop_runner.py from --desktop_windows vs --desktop_windows_gpu),
+    # not by what the wizard's auto-detect picks. On an NVIDIA box the
+    # wizard pre-selects CUDA and enables Next/Install on entry, so without
+    # forcing our own tile click we'd silently always install CUDA.
+    _GPU_MODE = os.environ.get('COMFY_TEST_GPU', '0') == '1'
+    if sys.platform == 'darwin':
+        PREFERRED = ['Apple Silicon', 'MPS', 'M4', 'M3', 'M2', 'M1']
+    elif _GPU_MODE:
+        PREFERRED = ['NVIDIA', 'CUDA', 'AMD', 'ROCm', 'DirectML', 'GPU']
+    else:
+        PREFERRED = ['CPU']
+    log(f'  wizard: COMFY_TEST_GPU={os.environ.get("COMFY_TEST_GPU","0")} '
+        f'platform={sys.platform} preferred={PREFERRED}')
+
     def server_up():
         try:
             urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
@@ -224,6 +240,24 @@ with sync_playwright() as p:
                 return ('confirm', loc, f'CONFIRM|{(loc.text_content() or "").strip()}')
         except Exception:
             pass
+        # Hardware tile FIRST when present and our preferred label is
+        # available — but only if we haven't already picked a tile on this
+        # URL. The wizard pre-selects a default (CUDA on NVIDIA) so
+        # Next/Install is enabled on entry; without picking our own tile
+        # here, the button branch below would click Next and we'd silently
+        # inherit the host's hardware default. After clicking once, the
+        # tile stays visible (selection just toggles), so we must check
+        # `clicked` here to fall through to buttons rather than re-returning
+        # the same TILE| signature forever. URL change clears `clicked`.
+        tile_already_picked = any(k.startswith('TILE|') for k in clicked)
+        if not tile_already_picked:
+            for pref in PREFERRED:
+                try:
+                    tile = page.locator(f'button.hardware-option:has-text("{pref}")').first
+                    if tile.count() and tile.is_visible():
+                        return ('tile', tile, f'TILE|{pref}')
+                except Exception:
+                    pass
         # Exact-text primary buttons (exclude hardware tiles, must be visible+enabled).
         # :text-is is exact match; :has-text is substring (catches tiles by accident).
         for label in PRIMARY_LABELS:
@@ -236,26 +270,19 @@ with sync_playwright() as p:
                         return ('btn', loc, f'BTN|{label}')
                 except Exception:
                     pass
-        # Hardware-tile fallback: GPU picker disables the bottom Install
-        # button until a tile is clicked. Order matters: macOS-friendly
-        # tiles first so Apple Silicon wins on macOS; Windows runners
-        # have no GPU and fall through to CPU (NVIDIA-default would
-        # install cu130 torch which crashes at startup on a CPU box).
-        PREFERRED = ['Apple Silicon', 'MPS', 'M1', 'M2', 'M3', 'M4', 'CPU']
-        for pref in PREFERRED:
+        # Last-resort fallback: any non-disabled hardware tile (covers
+        # boxes whose tile labels don't match any of our PREFERRED entries).
+        # Same gate: don't return a tile if we've already picked one on
+        # this URL — otherwise after clicking CPU we'd flip back to
+        # whatever .first happens to be (the wizard's NVIDIA tile).
+        if not tile_already_picked:
             try:
-                tile = page.locator(f'button.hardware-option:has-text("{pref}")').first
+                tile = page.locator('button.hardware-option:not([aria-disabled="true"])').first
                 if tile.count() and tile.is_visible():
-                    return ('tile', tile, f'TILE|{pref}')
+                    name = (tile.get_attribute('aria-label') or tile.text_content() or 'tile').strip()[:40]
+                    return ('tile', tile, f'TILE|{name}')
             except Exception:
                 pass
-        try:
-            tile = page.locator('button.hardware-option:not([aria-disabled="true"])').first
-            if tile.count() and tile.is_visible():
-                name = (tile.get_attribute('aria-label') or tile.text_content() or 'tile').strip()[:40]
-                return ('tile', tile, f'TILE|{name}')
-        except Exception:
-            pass
         return None
 
     clicked = {}  # sig -> last_click_time; allow re-click after CLICK_TTL
@@ -278,7 +305,12 @@ with sync_playwright() as p:
         if found:
             kind, loc, sig = found
             last_t = clicked.get(sig, 0)
-            if time.time() - last_t < CLICK_TTL:
+            # Buttons may need re-clicking if the page didn't advance
+            # (CLICK_TTL gate). Tiles don't advance the page on click —
+            # once selected, find_action keeps returning the same tile
+            # forever; suppress re-clicks until the URL changes (which
+            # clears `clicked` at the top of the loop).
+            if last_t and (kind == 'tile' or time.time() - last_t < CLICK_TTL):
                 time.sleep(1); continue
             try:
                 click_with_cursor(page, loc)
@@ -535,30 +567,32 @@ with sync_playwright() as p:
         # Send app stdout/stderr to /dev/null on relaunch; same reason as
         # the bash launch — uv's progress dumps tons of noise.
         if IS_WIN:
-            app_exe = os.path.join(os.environ['LOCALAPPDATA'],
-                                   'Programs', 'ComfyUI', 'ComfyUI.exe')
-            subprocess.Popen([app_exe, '--remote-debugging-port=9222'],
+            # COMFY_DESKTOP_APP_EXE lets _desktop_runner.py point us at its
+            # cached ComfyUI.exe; CI uses the NSIS-installed path.
+            app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE') or os.path.join(
+                os.environ['LOCALAPPDATA'], 'Programs', 'ComfyUI', 'ComfyUI.exe')
+            subprocess.Popen([app_exe, f'--remote-debugging-port={_CDP_PORT}'],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
                              creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
         else:
-            ws = os.environ.get('GITHUB_WORKSPACE', '')
-            app_path = os.path.join(ws, 'ComfyUI.app')
-            subprocess.Popen(['open', app_path, '--args', '--remote-debugging-port=9222'],
+            app_path = os.environ.get('COMFY_DESKTOP_APP_PATH') or os.path.join(
+                os.environ.get('GITHUB_WORKSPACE', ''), 'ComfyUI.app')
+            subprocess.Popen(['open', app_path, '--args', f'--remote-debugging-port={_CDP_PORT}'],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
 
         log('  app: waiting for CDP')
         for i in range(120):
             try:
-                urllib.request.urlopen('http://localhost:9222/json/version', timeout=1)
+                urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
                 log(f'  app: CDP up after {i+1}s')
                 break
             except Exception:
                 time.sleep(1)
 
         log('  app: reconnecting Playwright')
-        browser = p.chromium.connect_over_cdp('http://localhost:9222')
+        browser = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
         _browser_ref[0] = browser
         _capture_warned[0] = False  # let frame() warn again post-relaunch
         page = main_page(browser)
@@ -621,6 +655,38 @@ with sync_playwright() as p:
             else:
                 log(f'  app: canvas never became ready (still at {page.url})')
             sleep_capturing(page, 5, fps=5)
+
+            # Force a renderer reload after the post-Apply-Changes Electron
+            # relaunch. The Templates dialog's left-nav caches its node-pack
+            # list at first JS-bundle init; even after the Electron process
+            # relaunches and reconnects to the new Python backend, the
+            # renderer's cached manifest does NOT include freshly-installed
+            # node packs. Without this reload the EXTENSIONS section (with
+            # comfyui-cadabra etc.) is missing from the nav. Verified
+            # interactively via CDP: BEFORE reload — 12 categories ending at
+            # "Partner Nodes"; AFTER reload — 14 categories adding
+            # "EXTENSIONS / ComfyUI-GeometryPack / comfyui-cadabra".
+            log('  app: forcing renderer reload to refresh node-pack manifest')
+            try:
+                page.reload(wait_until='load', timeout=30000)
+                install_cursor(page)
+                # Re-wait for canvas after the reload — same shape as the
+                # initial wait, smaller budget since backend is already up.
+                for i in range(60):
+                    try:
+                        ready = page.evaluate(
+                            "typeof window.app !== 'undefined' "
+                            "&& window.app.graph !== undefined")
+                        if ready:
+                            log(f'  app: canvas re-ready after reload in {i+1}s')
+                            break
+                    except Exception:
+                        pass
+                    frame(page)
+                    time.sleep(1)
+                sleep_capturing(page, 3, fps=5)
+            except Exception as e:
+                log(f'  app: post-relaunch reload failed: {e}')
 
         # Post-restart: close Nodes Manager (may not exist), open Templates sidebar.
         log('  ext: closing Nodes Manager dialog')
