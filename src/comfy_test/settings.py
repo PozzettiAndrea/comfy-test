@@ -7,6 +7,7 @@ Settings can be configured via:
 """
 
 import os
+import sys
 from pathlib import Path
 
 SETTINGS_FILE = Path.home() / ".comfy-test" / "settings.env"
@@ -57,9 +58,20 @@ DEBUG_DEFAULTS = {
 }
 
 
+_IS_WIN = sys.platform == "win32"
+
 # Path settings: (env_var, label, default_value)
 PATH_SETTINGS = [
     ("COMFY_TEST_LOCAL_UTILS", "Local utils directory (dev packages)", ""),
+    ("COMFY_TEST_DOCKER_STAGE_DIR", "Docker build staging directory",
+     r"D:\docker-stage" if _IS_WIN else "/tmp/comfy-test-docker-stage"),
+    ("COMFY_TEST_INSTALLERS_DIR",
+     "Where matched-version driver/git installers live (Windows only)",
+     r"\\192.168.1.19\pxe\scripts\installers" if _IS_WIN else ""),
+    ("COMFY_TEST_DOCKER_ARTIFACT_PATH",
+     "Where `docker build --save` writes the .tar.zst",
+     r"\\192.168.1.19\pxe\scripts\comfy-test-windows-gpu-full.tar.zst" if _IS_WIN
+     else "/tmp/comfy-test-linux-gpu-full.tar.zst"),
 ]
 
 

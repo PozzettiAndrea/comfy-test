@@ -1,5 +1,5 @@
-"""Dockertest command — clone a node from a git URL and run comfy-test against it
-inside an isolated Docker container with GPU passthrough.
+"""`comfy-test docker test` — clone a node from a git URL and run comfy-test
+against it inside an isolated Docker container with GPU passthrough.
 
 Supports both Windows hosts (process-isolated Windows containers) and Linux hosts
 (NVIDIA Container Toolkit).
@@ -114,7 +114,7 @@ def _expand_nodelink(nodelink: str) -> str:
     if not owner or not repo:
         return nodelink
     url = f"https://github.com/{owner}/{repo}.git"
-    print(f"[dockertest] Expanding {nodelink} → {url}")
+    print(f"[docker test] Expanding {nodelink} → {url}")
     return url
 
 
@@ -131,7 +131,7 @@ def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
         target = dest / node_name
         if target.exists():
             shutil.rmtree(target)
-        print(f"[dockertest] LOCAL PATH → copying {src_path} to {target}")
+        print(f"[docker test] LOCAL PATH → copying {src_path} to {target}")
         shutil.copytree(src_path, target, symlinks=False,
                         ignore=shutil.ignore_patterns(".venv", "venv", ".git",
                                                       "__pycache__", ".comfy-test"))
@@ -143,7 +143,7 @@ def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
     if target.exists():
         shutil.rmtree(target)
     branch_desc = f"branch={branch}" if branch else "default branch"
-    print(f"[dockertest] URL CLONE → git clone {nodelink} ({branch_desc}) → {target}")
+    print(f"[docker test] URL CLONE → git clone {nodelink} ({branch_desc}) → {target}")
     cmd = ["git", "clone", "--depth", "1"]
     if branch:
         cmd.extend(["--branch", branch])
@@ -159,7 +159,7 @@ def _clone_node(nodelink: str, branch: Optional[str], dest: Path) -> str:
         msg = subprocess.run(["git", "-C", str(target), "log", "-1", "--format=%s (%ci)"],
                              capture_output=True, text=True)
         subj = msg.stdout.strip() if msg.returncode == 0 else ""
-        print(f"[dockertest] cloned {node_name} @ {short}  {subj}")
+        print(f"[docker test] cloned {node_name} @ {short}  {subj}")
     return node_name
 
 
@@ -208,7 +208,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
             env_cache_mount_src = DOCKER_STAGE_ROOT / "env_cache"
             # NOT wiped — env cache is the whole point of caching across runs.
             env_cache_mount_src.mkdir(parents=True, exist_ok=True)
-        print(f"[dockertest] Dev Drive filters not attached; staging to {DOCKER_STAGE_ROOT}")
+        print(f"[docker test] Dev Drive filters not attached; staging to {DOCKER_STAGE_ROOT}")
         rc = subprocess.run(
             ["robocopy", str(node_path), str(node_mount_src),
              "/MIR", "/XJ", "/R:1", "/W:1",
@@ -218,7 +218,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
             capture_output=True, text=True,
         )
         if rc.returncode >= 8:
-            print(f"[dockertest] robocopy failed (exit {rc.returncode})\n{rc.stdout}\n{rc.stderr}",
+            print(f"[docker test] robocopy failed (exit {rc.returncode})\n{rc.stdout}\n{rc.stderr}",
                   file=sys.stderr)
             return 1
     else:
@@ -256,7 +256,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         DOCKER_IMAGE_WINDOWS,
     ] + ct_args
 
-    print(f"[dockertest] Running: {' '.join(docker_cmd)}")
+    print(f"[docker test] Running: {' '.join(docker_cmd)}")
     result = subprocess.run(docker_cmd)
 
     # Copy staged logs back to logs_dir
@@ -287,9 +287,9 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         )
 
     if workspace_dir is not None:
-        print(f"[dockertest] Workspace: {workspace_dir}")
+        print(f"[docker test] Workspace: {workspace_dir}")
     if env_cache_dir is not None:
-        print(f"[dockertest] Env cache: {env_cache_dir}")
+        print(f"[docker test] Env cache: {env_cache_dir}")
 
     return result.returncode
 
@@ -328,11 +328,11 @@ def _run_linux(args, docker_exe: str, gpu: bool,
         DOCKER_IMAGE_LINUX,
     ] + ct_args
 
-    print(f"[dockertest] Running: {' '.join(docker_cmd)}")
+    print(f"[docker test] Running: {' '.join(docker_cmd)}")
     result = subprocess.run(docker_cmd)
 
     if workspace_dir is not None:
-        print(f"[dockertest] Workspace: {workspace_dir}")
+        print(f"[docker test] Workspace: {workspace_dir}")
 
     return result.returncode
 
@@ -358,10 +358,10 @@ def _patch_null_commit_hash(node_path: Path, logs_dir: Path) -> None:
             continue
         data["commit_hash"] = sha
         results_file.write_text(_json.dumps(data, indent=2), encoding="utf-8")
-        print(f"[dockertest] Patched commit_hash={sha[:12]} in {results_file}")
+        print(f"[docker test] Patched commit_hash={sha[:12]} in {results_file}")
 
 
-def cmd_dockertest(args) -> int:
+def cmd_docker_test(args) -> int:
     """Clone a node from a URL (or local path) and run comfy-test in Docker.
 
     With --desktop_mac / --desktop_windows / --desktop_windows_gpu, bypass
@@ -377,7 +377,7 @@ def cmd_dockertest(args) -> int:
         # --portable have no meaning here.
         for flag in ("portable", "platform"):
             if getattr(args, flag, None):
-                print(f"[dockertest] --{flag} conflicts with --desktop_{desktop_mode}",
+                print(f"[docker test] --{flag} conflicts with --desktop_{desktop_mode}",
                       file=sys.stderr)
                 return 1
         from comfy_test.cli._desktop_runner import run_desktop  # local: keep optional dep cost low
@@ -385,7 +385,7 @@ def cmd_dockertest(args) -> int:
 
     # --portable is a shorthand for --platform windows-portable; reject mixing both.
     if args.portable and args.platform and args.platform != "windows-portable":
-        print(f"[dockertest] --portable conflicts with --platform={args.platform}", file=sys.stderr)
+        print(f"[docker test] --portable conflicts with --platform={args.platform}", file=sys.stderr)
         return 1
 
     # Platform handling
@@ -398,19 +398,19 @@ def cmd_dockertest(args) -> int:
     # Validate host/target combination
     if host_platform == "linux":
         if target_platform != "linux":
-            print(f"[dockertest] Linux host can only target 'linux', got '{target_platform}'.",
+            print(f"[docker test] Linux host can only target 'linux', got '{target_platform}'.",
                   file=sys.stderr)
             return 1
         if args.portable:
-            print("[dockertest] --portable is not supported on Linux.", file=sys.stderr)
+            print("[docker test] --portable is not supported on Linux.", file=sys.stderr)
             return 1
     elif host_platform == "windows":
         if target_platform not in ("windows", "windows-portable"):
-            print(f"[dockertest] Windows host only supports 'windows'/'windows-portable', "
+            print(f"[docker test] Windows host only supports 'windows'/'windows-portable', "
                   f"got '{target_platform}'.", file=sys.stderr)
             return 1
     else:
-        print(f"[dockertest] Docker mode is not supported on {host_platform}.", file=sys.stderr)
+        print(f"[docker test] Docker mode is not supported on {host_platform}.", file=sys.stderr)
         return 1
 
     gpu = bool(args.gpu)
@@ -419,7 +419,7 @@ def cmd_dockertest(args) -> int:
     docker_exe = _find_docker()
     if not docker_exe:
         hint = "Run install-host.ps1 first." if host_platform == "windows" else "Install docker."
-        print(f"[dockertest] docker not found. {hint}", file=sys.stderr)
+        print(f"[docker test] docker not found. {hint}", file=sys.stderr)
         return 1
 
     if host_platform == "windows":
@@ -427,16 +427,16 @@ def cmd_dockertest(args) -> int:
     else:
         err = _docker_preflight_linux(docker_exe)
     if err:
-        print(f"[dockertest] {err}", file=sys.stderr)
+        print(f"[docker test] {err}", file=sys.stderr)
         return 1
 
     # Clone or copy node
     work_root = Path(tempfile.mkdtemp(prefix="comfy-test-dockertest-"))
-    print(f"[dockertest] Working dir: {work_root}")
+    print(f"[docker test] Working dir: {work_root}")
     try:
         node_name = _clone_node(args.nodelink, args.branch, work_root)
     except Exception as e:
-        print(f"[dockertest] {e}", file=sys.stderr)
+        print(f"[docker test] {e}", file=sys.stderr)
         shutil.rmtree(work_root, ignore_errors=True)
         return 1
     node_path = work_root / node_name
@@ -475,15 +475,15 @@ def cmd_dockertest(args) -> int:
     # Clean temp clone dir. logs_dir lives outside work_root now, so the rmtree is safe.
     if not args.keep_clone:
         shutil.rmtree(work_root, ignore_errors=True)
-    print(f"[dockertest] Logs: {run_dir}")
+    print(f"[docker test] Logs: {run_dir}")
 
     return rc
 
 
-def add_dockertest_parser(subparsers):
-    """Register the `dockertest` subcommand."""
+def add_docker_test_parser(subparsers):
+    """Register the `docker test` subcommand."""
     p = subparsers.add_parser(
-        "dockertest",
+        "test",
         help="Clone a node from URL and run comfy-test in an isolated Docker container",
     )
     p.add_argument("nodelink", help="Git URL (or local path) to the custom node")
@@ -529,4 +529,4 @@ def add_dockertest_parser(subparsers):
                         "connects to (default 9222). Bump if the default is held by "
                         "a stale socket from a prior killed run that Windows hasn't "
                         "released yet.")
-    p.set_defaults(func=cmd_dockertest, desktop_mode=None)
+    p.set_defaults(func=cmd_docker_test, desktop_mode=None)

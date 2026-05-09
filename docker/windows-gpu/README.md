@@ -30,23 +30,29 @@ Phase 1 enables the `Containers` optional feature. **Reboot.** Re-run the script
 ## Build
 
 ```powershell
-.\build.ps1
+comfy-test docker build              # build only
+comfy-test docker build --save       # build + docker save | zstd to $COMFY_TEST_DOCKER_ARTIFACT_PATH
+comfy-test docker build -y           # overwrite existing image without prompting
 ```
 
-The script:
-1. Queries the host driver via `nvidia-smi`, expects `nvidia-driver-<version>.exe` staged in `\\192.168.1.19\pxe\scripts\installers\`. Fails fast if not found (override with `-NvidiaExe`).
-2. Stages driver + Git installer + Dockerfile + entrypoint into `D:\docker-stage\windows-gpu\`.
-3. `docker build --isolation=process` produces `comfy-test-windows-gpu:full`.
-4. **Smoke test 1**: spins up a throwaway uv venv inside the image, `uv pip install torch ... cu128`, runs `torch.cuda.is_available()`. Expected:
+The command:
+1. Queries the host driver via `nvidia-smi`, expects `nvidia-driver-<version>.exe` staged in `$COMFY_TEST_INSTALLERS_DIR` (default `\\192.168.1.19\pxe\scripts\installers\`). Fails fast if not found (override with `--nvidia-exe`).
+2. If `comfy-test-windows-gpu:full` already exists locally, prompts `Overwrite? [y/N]` (skip with `-y`).
+3. Stages driver + Git installer + Dockerfile + entrypoint into `$COMFY_TEST_DOCKER_STAGE_DIR\windows-gpu\` (default `D:\docker-stage\windows-gpu\`).
+4. `docker build --isolation=process` produces `comfy-test-windows-gpu:full`.
+5. **Smoke test 1**: spins up a throwaway uv venv inside the image, `uv pip install torch ... cu128`, runs `torch.cuda.is_available()`. Expected:
    ```
    torch 2.x.x+cu128
    cuda? True
    NVIDIA GeForce RTX <model>
    ```
    Note the `torch` install happens at smoke-test time only — the image itself does not bake torch (kept lean; comfy-test installs torch per-test via uv).
-5. **Smoke test 2**: `docker run --rm <image> --help` — confirms the entrypoint installs comfy-test from PyPI and the CLI is reachable.
+6. **Smoke test 2**: `docker run --rm <image> --help` — confirms the entrypoint installs comfy-test from PyPI and the CLI is reachable.
+7. With `--save`: `docker save comfy-test-windows-gpu:full | zstd -19 -o $COMFY_TEST_DOCKER_ARTIFACT_PATH` (default `\\192.168.1.19\pxe\scripts\comfy-test-windows-gpu-full.tar.zst`).
 
-If `cuda? False` or `code 43`: ABI mismatch between host kernel driver and in-container user-mode driver. Re-run with `-NvidiaExe nvidia-driver-<correct-version>.exe`. The driver-version guard at the start of `build.ps1` should normally catch this before the build, but there have been cases where multiple installers are staged with the wrong filename.
+If `cuda? False` or `code 43`: ABI mismatch between host kernel driver and in-container user-mode driver. Re-run with `--nvidia-exe nvidia-driver-<correct-version>.exe`. The driver-version guard at the start of `comfy-test docker build` should normally catch this before the build, but there have been cases where multiple installers are staged with the wrong filename.
+
+Edit the relevant paths (`COMFY_TEST_INSTALLERS_DIR`, `COMFY_TEST_DOCKER_STAGE_DIR`, `COMFY_TEST_DOCKER_ARTIFACT_PATH`) via `comfy-test settings` → Paths tab.
 
 ## Roll-out across the cluster
 
@@ -54,13 +60,10 @@ Each Windows runner loads `comfy-test-windows-gpu:full` from the SMB share at PX
 
 ```powershell
 # On the build host (e.g. andrew — the 4060 Ti, less in-demand than 3090s):
-.\build.ps1
-docker save comfy-test-windows-gpu:full | zstd -19 -o comfy-test-windows-gpu-full.tar.zst
-
-# Push to SMB share (overwrites previous):
-Copy-Item comfy-test-windows-gpu-full.tar.zst `
-    \\192.168.1.19\pxe\scripts\comfy-test-windows-gpu-full.tar.zst
+comfy-test docker build --save
 ```
+
+`--save` does the docker save + zstd + write to `$COMFY_TEST_DOCKER_ARTIFACT_PATH` (default `\\192.168.1.19\pxe\scripts\comfy-test-windows-gpu-full.tar.zst`) in one step.
 
 After this:
 - The build host has the new image locally and uses it on next CI run.
@@ -75,12 +78,13 @@ This is a one-runner-builds, multi-runner-rollout pattern. The build host pays t
 
 ## Why no digest pin?
 
-We use the floating `:ltsc2025` tag and accept that monthly Patch Tuesday cumulative updates change the base image bytes. The driver-match guard in `build.ps1` catches the only failure mode that actually matters (driver version skew). Pinning to a digest forces manual quarterly bumps for marginal benefit.
+We use the floating `:ltsc2025` tag and accept that monthly Patch Tuesday cumulative updates change the base image bytes. The driver-match guard in `comfy-test docker build` catches the only failure mode that actually matters (driver version skew). Pinning to a digest forces manual quarterly bumps for marginal benefit.
 
 ## Files
 
 - `Dockerfile` — single-stage build for `comfy-test-windows-gpu:full`.
-- `Dockerfile.spike.archive` — old stage-1 CUDA-feasibility test (kept for reference; not used by `build.ps1`).
+- `Dockerfile.spike.archive` — old stage-1 CUDA-feasibility test (kept for reference; not used by `comfy-test docker build`).
+- `build.ps1` — legacy shell wrapper (kept as a fallback during cutover; `comfy-test docker build` is the canonical entrypoint).
 - `build.ps1` — staging + build + smoke + rollout instructions.
 - `entrypoint.ps1` — installs comfy-test from PyPI at container start, then exec's the CLI.
 - `install-host.ps1` — one-time host bootstrap (Containers feature + Moby).
