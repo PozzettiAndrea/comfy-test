@@ -1527,18 +1527,23 @@ with sync_playwright() as p:
                     except ImportError:
                         import tomli as tomllib  # type: ignore
                     data = tomllib.loads(toml_text)
-                    cpu = data.get('test', {}).get('workflows', {}).get('cpu')
-                    if cpu == 'all' or cpu is None:
+                    # Read .gpu when COMFY_TEST_GPU=1, else .cpu. Earlier
+                    # this was hardcoded to 'cpu' which silently picked the
+                    # wrong workflow on --desktop_windows_gpu (the spec's
+                    # cpu-mode exclude list happened to allow alpha_wrap).
+                    spec_key_inline = 'gpu' if os.environ.get('COMFY_TEST_GPU', '0') == '1' else 'cpu'
+                    spec_inline = data.get('test', {}).get('workflows', {}).get(spec_key_inline)
+                    if spec_inline == 'all' or spec_inline is None:
                         cpu_mode = 'all'
-                    elif isinstance(cpu, list):
-                        excludes = [f.lstrip('!') for f in cpu if isinstance(f, str) and f.startswith('!')]
+                    elif isinstance(spec_inline, list):
+                        excludes = [f.lstrip('!') for f in spec_inline if isinstance(f, str) and f.startswith('!')]
                         if excludes:
                             cpu_mode = 'exclude'
                             cpu_items = [e[:-5] if e.endswith('.json') else e for e in excludes]
                         else:
                             cpu_mode = 'include'
-                            cpu_items = [f[:-5] if f.endswith('.json') else f for f in cpu]
-                    log(f'  ext: cpu spec = {cpu_mode} {cpu_items}')
+                            cpu_items = [f[:-5] if f.endswith('.json') else f for f in spec_inline]
+                    log(f'  ext: {spec_key_inline} spec = {cpu_mode} {cpu_items}')
             except Exception as e:
                 log(f'  ext: comfy-test.toml fetch/parse failed ({e}); defaulting to all')
 
@@ -1813,6 +1818,24 @@ try:
             log(f'  videos/{wf_name}/driver.mp4 placed (frames {start_idx+1}..{end_idx})')
         except Exception as e:
             log(f'  videos/{wf_name}/driver.mp4 encode failed: {e}')
+        # Per-workflow thumbnail for the html report's card grid:
+        # screenshots/<wf>_executed.png is what html_report.py:182 looks up.
+        # Use the LAST captured frame in the workflow's range so the
+        # thumbnail shows the workflow's final UI state, matching cpu/gpu's
+        # capture_execution_frames end-of-execution screenshot.
+        try:
+            import shutil as _shot_shutil
+            last_frame = FRAMES / f'frame_{end_idx:06d}.png'
+            shot_dir = _LOGS_DIR / 'screenshots'
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            shot_path = shot_dir / f'{wf_name}_executed.png'
+            if last_frame.exists():
+                _shot_shutil.copyfile(str(last_frame), str(shot_path))
+                log(f'  screenshots/{wf_name}_executed.png placed')
+            else:
+                log(f'  screenshots/{wf_name}_executed.png skipped — frame {end_idx} not on disk')
+        except Exception as e:
+            log(f'  screenshots/{wf_name}_executed.png copy failed: {e}')
         wf_meta = next((r for r in _workflow_results if r.get('name') == wf_name), {})
         (wf_dir / 'metadata.json').write_text(json.dumps({
             'mp4': 'driver.mp4',
