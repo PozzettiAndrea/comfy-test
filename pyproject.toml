@@ -1,6 +1,6 @@
 [project]
 name = "comfy-test"
-version = "0.3.63"
+version = "0.3.64"
 description = "Installation testing infrastructure for ComfyUI custom nodes"
 readme = "README.md"
 license = {text = "MIT"}
@@ -24,6 +24,7 @@ dependencies = [
     "websocket-client",      # ComfyUI WebSocket for workflow monitoring
     "py7zr>=0.20.0",         # Extract portable 7z archives
     "psutil>=5.9.0",         # Resource monitoring (CPU/RAM)
+    "uv>=0.4.0",             # `uv venv` / `uv pip` are shelled out for venv setup + installs
 ]
 
 [project.optional-dependencies]
