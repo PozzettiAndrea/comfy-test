@@ -173,7 +173,7 @@ jobs:
       # --- Run tests ---
       - name: Run tests
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
-        run: $VENV/bin/python -m comfy_test run --server-url http://127.0.0.1:8188 --level execution_light
+        run: $VENV/bin/python -m comfy_test run --server-url http://127.0.0.1:8188 --level execution
 
       # --- Cleanup ---
       - name: Stop server

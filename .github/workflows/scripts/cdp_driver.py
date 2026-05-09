@@ -185,6 +185,438 @@ def fill_with_cursor(page, sel, text):
     except Exception:
         return False
 
+# ============================================================================
+# Per-workflow loop helpers. Used by the multi-workflow loop after the
+# post-Apply-Changes Electron relaunch + renderer reload settles. Each
+# workflow runs from a freshly-restarted ComfyUI to mirror CI's per-container
+# isolation (no state-bleed between workflows).
+# ============================================================================
+
+def _kill_comfy_proc():
+    try:
+        if sys.platform == 'win32':
+            subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
+                           capture_output=True, timeout=10)
+        else:
+            subprocess.run(['pkill', '-f', 'ComfyUI'],
+                           capture_output=True, timeout=10)
+    except Exception as e:
+        log(f'  loop: kill error (ignored): {e}')
+
+
+def _relaunch_comfy_via_popen():
+    if sys.platform == 'win32':
+        app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE') or os.path.join(
+            os.environ.get('LOCALAPPDATA', ''), 'Programs', 'ComfyUI', 'ComfyUI.exe')
+        subprocess.Popen([app_exe, f'--remote-debugging-port={_CDP_PORT}'],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
+    else:
+        app_path = os.environ.get('COMFY_DESKTOP_APP_PATH') or os.path.join(
+            os.environ.get('GITHUB_WORKSPACE', ''), 'ComfyUI.app')
+        subprocess.Popen(['open', app_path, '--args', f'--remote-debugging-port={_CDP_PORT}'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _wait_cdp_up(timeout_s=120):
+    for i in range(timeout_s):
+        try:
+            urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
+            log(f'  loop: CDP up after {i+1}s')
+            return True
+        except Exception:
+            time.sleep(1)
+    log(f'  loop: CDP did not come up within {timeout_s}s')
+    return False
+
+
+def _wait_canvas_ready(page_arg, timeout_s=120):
+    for i in range(timeout_s):
+        try:
+            ready = page_arg.evaluate(
+                "typeof window.app !== 'undefined' "
+                "&& window.app.graph !== undefined")
+            if ready:
+                log(f'  loop: canvas ready after {i+1}s')
+                return True
+        except Exception:
+            pass
+        try: frame(page_arg)
+        except Exception: pass
+        time.sleep(1)
+    log(f'  loop: canvas not ready in {timeout_s}s (still at {page_arg.url})')
+    return False
+
+
+def _restart_comfy(p_arg, current_browser):
+    """Full restart: close current browser, kill ComfyUI, relaunch, reconnect,
+    reload renderer (refreshes templates manifest), wait for canvas. Returns
+    (new_page, new_browser). new_page may be None on failure."""
+    log('  loop: closing current browser')
+    try: current_browser.close()
+    except Exception: pass
+    log('  loop: killing ComfyUI process')
+    _kill_comfy_proc()
+    time.sleep(5)
+    log('  loop: relaunching ComfyUI')
+    _relaunch_comfy_via_popen()
+    _wait_cdp_up(120)
+    log('  loop: reconnecting Playwright')
+    new_browser = p_arg.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
+    _browser_ref[0] = new_browser
+    _capture_warned[0] = False
+    new_page = main_page(new_browser)
+    if new_page is None:
+        log('  loop: no page after restart, bailing')
+        return None, new_browser
+    install_cursor(new_page)
+    log(f'  loop: attached to {new_page.url}')
+    for i in range(180):
+        try:
+            urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
+            log(f'  loop: server ready after {i+1}s')
+            break
+        except Exception:
+            try: frame(new_page)
+            except Exception: pass
+            time.sleep(1)
+    _wait_canvas_ready(new_page, 120)
+    log('  loop: forcing renderer reload')
+    try:
+        new_page.reload(wait_until='load', timeout=30000)
+        install_cursor(new_page)
+        _wait_canvas_ready(new_page, 60)
+    except Exception as e:
+        log(f'  loop: post-restart reload failed: {e}')
+    sleep_capturing(new_page, 3, fps=5)
+    return new_page, new_browser
+
+
+def _dismiss_post_restart_modals(page_arg):
+    log('  ext: closing Nodes Manager dialog')
+    try:
+        cd = page_arg.locator('button[aria-label="Close dialog"]:visible').first
+        if cd.count():
+            click_with_cursor(page_arg, cd)
+            log('  ext: clicked Close dialog')
+            sleep_capturing(page_arg, 2, fps=5)
+    except Exception as e:
+        log(f'  ext: Close dialog failed: {e}')
+
+    log("  ext: dismissing What's New popup")
+    try:
+        wn = page_arg.locator(
+            '.whats-new-popup button[aria-label="Close"]:visible, '
+            '.whats-new-popup button.close-button:visible').first
+        if wn.count():
+            click_with_cursor(page_arg, wn)
+            log("  ext: closed What's New popup")
+            sleep_capturing(page_arg, 2, fps=5)
+        else:
+            log("  ext: What's New popup not present")
+    except Exception as e:
+        log(f"  ext: What's New close failed: {e}")
+
+    log('  ext: dismissing Node Pack Issues modal (if present)')
+    try:
+        npi = page_arg.locator(
+            'div[role="dialog"]:has-text("Node Pack Issues") button:has-text("Close"):visible, '
+            'div[role="dialog"]:has-text("Issues") button[aria-label="Close"]:visible').first
+        if npi.count():
+            click_with_cursor(page_arg, npi)
+            log('  ext: closed Node Pack Issues modal')
+            sleep_capturing(page_arg, 2, fps=5)
+        else:
+            log('  ext: Node Pack Issues modal not present')
+    except Exception as e:
+        log(f"  ext: Node Pack Issues close failed: {e}")
+
+
+def _open_templates_and_section(page_arg, node_package_name):
+    log('  ext: opening Templates sidebar')
+    try:
+        tpl = page_arg.locator('button[aria-label="Templates"]:visible').first
+        if tpl.count():
+            click_with_cursor(page_arg, tpl, timeout=10000)
+            log('  ext: clicked Templates')
+            sleep_capturing(page_arg, 4, fps=5)
+        else:
+            log('  ext: Templates sidebar button not found')
+            return False
+    except Exception as e:
+        log(f'  ext: Templates click failed: {e}')
+        return False
+
+    log(f'  ext: locating "{node_package_name}" section in Templates panel')
+    candidates = [
+        f'nav [role="button"]:has-text("{node_package_name}")',
+        f'nav span:has-text("{node_package_name}")',
+        f'nav button:has-text("{node_package_name}")',
+    ]
+    def find_node_section_local():
+        for sel in candidates:
+            loc = page_arg.locator(sel).first
+            if loc.count():
+                return loc, sel
+        return None, None
+    node_section, hit_sel = find_node_section_local()
+    if node_section is None:
+        find_panel_js = """
+        () => {
+          const dialogs = Array.from(document.querySelectorAll(
+            'div[role="dialog"], aside, nav'));
+          const scrollables = [];
+          dialogs.forEach(d => {
+            d.querySelectorAll('*').forEach(el => {
+              const cs = getComputedStyle(el);
+              if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll')
+                  && el.scrollHeight > el.clientHeight + 4) {
+                scrollables.push(el);
+              }
+            });
+          });
+          const nav_first = scrollables.find(el => el.closest('nav'));
+          const chosen = nav_first || scrollables.sort(
+            (a,b) => (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+          )[0];
+          if (!chosen) return null;
+          chosen.setAttribute('data-driver-scroll', '1');
+          return {scrollHeight: chosen.scrollHeight, clientHeight: chosen.clientHeight, scrollTop: chosen.scrollTop};
+        }
+        """
+        info = page_arg.evaluate(find_panel_js)
+        if info:
+            log(f'  ext: scroll target found (scrollHeight={info["scrollHeight"]} clientHeight={info["clientHeight"]})')
+        else:
+            log('  ext: no scrollable panel found, falling back to PageDown')
+        step_js = """
+        () => {
+          const el = document.querySelector('[data-driver-scroll="1"]');
+          if (!el) return null;
+          const before = el.scrollTop;
+          el.scrollBy(0, Math.max(40, el.clientHeight * 0.7));
+          return {before, after: el.scrollTop, max: el.scrollHeight - el.clientHeight};
+        }
+        """
+        stuck = 0
+        last_top = -1
+        for i in range(60):
+            res = page_arg.evaluate(step_js) if info else None
+            if res is None:
+                try: page_arg.keyboard.press('PageDown')
+                except Exception: pass
+            else:
+                if res['after'] == res['before']:
+                    stuck += 1
+                else:
+                    stuck = 0
+                last_top = res['after']
+                at_floor = (res['after'] >= res['max'] - 2 and stuck >= 2)
+                if at_floor:
+                    log(f'  ext: reached scroll floor at iter {i+1} '
+                        f'(scrollTop={res["after"]} max={res["max"]})')
+                    sleep_capturing(page_arg, 1, fps=5)
+                    node_section, hit_sel = find_node_section_local()
+                    break
+            sleep_capturing(page_arg, 0.7, fps=5)
+            node_section, hit_sel = find_node_section_local()
+            if node_section is not None:
+                log(f'  ext: scrolled {i+1}x to {node_package_name} '
+                    f'({hit_sel}, scrollTop={last_top})')
+                break
+        else:
+            log(f'  ext: ran 60 scroll iters, last scrollTop={last_top}')
+    if node_section is None:
+        log(f'  ext: {node_package_name} section not found after scrolling')
+        return False
+    try:
+        node_section.scroll_into_view_if_needed()
+        sleep_capturing(page_arg, 1, fps=5)
+        click_with_cursor(page_arg, node_section)
+        log(f'  ext: clicked {node_package_name} section')
+        sleep_capturing(page_arg, 2, fps=5)
+        return True
+    except Exception as e:
+        log(f'  ext: {node_package_name} section click failed: {e}')
+        return False
+
+
+def _enumerate_matching_cards(page_arg, cpu_mode, cpu_items):
+    try:
+        cards = page_arg.locator('[data-testid^="template-workflow-"]:visible')
+        n = cards.count()
+        log(f'  ext: {n} visible cards in section')
+        names = []
+        for i in range(n):
+            c = cards.nth(i)
+            tid = c.get_attribute('data-testid') or ''
+            nm = tid[len('template-workflow-'):] if tid.startswith('template-workflow-') else tid
+            if cpu_mode == 'all' or \
+               (cpu_mode == 'include' and nm in cpu_items) or \
+               (cpu_mode == 'exclude' and nm not in cpu_items):
+                names.append(nm)
+            else:
+                log(f'  ext: skipping {nm} (not in spec)')
+        return names
+    except Exception as e:
+        log(f'  ext: enumerate failed: {e}')
+        return []
+
+
+_WS_LISTENER_JS = r"""
+window._executionComplete = false;
+window._executionError = null;
+window._executionEvents = [];
+if (window.app && window.app.api && window.app.api.socket) {
+    const origOnMessage = window.app.api.socket.onmessage;
+    window.app.api.socket.onmessage = function(event) {
+        if (origOnMessage) {
+            try { origOnMessage.call(this, event); } catch(e) {}
+        }
+        if (event && typeof event.data === 'string') {
+            try {
+                const msg = JSON.parse(event.data);
+                window._executionEvents.push({type: msg.type, ts: Date.now()});
+                if (msg && msg.type === 'execution_success') {
+                    window._executionComplete = true;
+                } else if (msg && msg.type === 'execution_error') {
+                    window._executionError = msg.data;
+                    window._executionComplete = true;
+                } else if (msg && msg.type === 'execution_interrupted') {
+                    window._executionError = msg.data || 'Execution interrupted';
+                    window._executionComplete = true;
+                }
+            } catch (e) {}
+        }
+    };
+} else {
+    window._executionError = 'window.app.api.socket not available';
+}
+"""
+
+
+def _run_named_card(page_arg, target_name):
+    """Click target card by data-testid, install WS listener, click Run,
+    wait up to 600s. Returns {name, status, duration_seconds, error}."""
+    log(f'  ext: clicking template {target_name}')
+    try:
+        card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]:visible').first
+        if not card.count():
+            log(f'  ext: card {target_name} not found in section')
+            return {'name': target_name, 'status': 'fail',
+                    'duration_seconds': 0,
+                    'error': f'card {target_name} not found in section'}
+        card.scroll_into_view_if_needed()
+        sleep_capturing(page_arg, 1, fps=5)
+        click_with_cursor(page_arg, card)
+        log(f'  ext: clicked template {target_name}')
+        sleep_capturing(page_arg, 5, fps=5)
+    except Exception as e:
+        log(f'  ext: template click failed: {e}')
+        return {'name': target_name, 'status': 'fail',
+                'duration_seconds': 0, 'error': str(e)}
+
+    log('  ext: installing WS execution listener')
+    try:
+        page_arg.evaluate(_WS_LISTENER_JS)
+    except Exception as e:
+        log(f'  ext: WS listener install failed: {e}')
+
+    log('  ext: clicking Run')
+    try:
+        run_btn = page_arg.locator(
+            'button[aria-label="Run"]:visible, button:has-text("Run"):visible').first
+        if run_btn.count():
+            click_with_cursor(page_arg, run_btn)
+            log('  ext: clicked Run')
+        else:
+            log('  ext: Run button not found')
+    except Exception as e:
+        log(f'  ext: Run click failed: {e}')
+
+    log('  ext: waiting for execution_success / execution_error')
+    run_deadline = time.time() + 600
+    run_start = time.time()
+    while time.time() < run_deadline:
+        frame(page_arg)
+        try:
+            complete = page_arg.evaluate('window._executionComplete')
+        except Exception:
+            complete = False
+        if complete:
+            break
+        time.sleep(0.5)
+    elapsed = int(time.time() - run_start)
+    try:
+        events = page_arg.evaluate('window._executionEvents') or []
+        err = page_arg.evaluate('window._executionError')
+    except Exception:
+        events, err = [], None
+    log(f'  ext: WS events={len(events)} elapsed={elapsed}s')
+    for ev in events[-15:]:
+        log(f'    ws: {ev}')
+    if err:
+        try:
+            log('  ext: execution_error data:')
+            log(json.dumps(err, indent=2, default=str))
+        except Exception:
+            log(f'  ext: execution_error (non-serializable): {err!r}')
+    elif elapsed >= 600:
+        log('  ext: WORKFLOW TIMEOUT (no execution_success/error in 10min)')
+    else:
+        log(f'  ext: execution_success after {elapsed}s')
+
+    if err:
+        status = 'fail'
+        err_str = json.dumps(err, default=str)
+    elif elapsed >= 600:
+        status = 'timeout'
+        err_str = 'no execution_success/error in 10min'
+    else:
+        status = 'pass'
+        err_str = None
+    sleep_capturing(page_arg, 5, fps=5)
+    return {'name': target_name, 'status': status,
+            'duration_seconds': elapsed, 'error': err_str}
+
+
+def _parse_cpu_spec():
+    """Returns (mode, items) parsed from comfy-test.toml's
+    [test.workflows].cpu (or .gpu when COMFY_TEST_GPU=1)."""
+    cpu_mode = 'all'
+    cpu_items = []
+    try:
+        node_repo = os.environ.get('NODE_REPO', '')
+        node_branch = os.environ.get('NODE_BRANCH', 'main')
+        if node_repo:
+            toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
+            log(f'  ext: fetching comfy-test.toml from {toml_url}')
+            toml_text = urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8')
+            try:
+                import tomllib
+            except ImportError:
+                import tomli as tomllib  # type: ignore
+            data = tomllib.loads(toml_text)
+            spec_key = 'gpu' if os.environ.get('COMFY_TEST_GPU', '0') == '1' else 'cpu'
+            spec = data.get('test', {}).get('workflows', {}).get(spec_key)
+            if spec == 'all' or spec is None:
+                cpu_mode = 'all'
+            elif isinstance(spec, list):
+                excludes = [f.lstrip('!') for f in spec
+                            if isinstance(f, str) and f.startswith('!')]
+                if excludes:
+                    cpu_mode = 'exclude'
+                    cpu_items = [e[:-5] if e.endswith('.json') else e for e in excludes]
+                else:
+                    cpu_mode = 'include'
+                    cpu_items = [f[:-5] if f.endswith('.json') else f for f in spec]
+            log(f'  ext: {spec_key} spec = {cpu_mode} {cpu_items}')
+    except Exception as e:
+        log(f'  ext: comfy-test.toml fetch/parse failed ({e}); defaulting to all')
+    return cpu_mode, cpu_items
+
+
 with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
     _browser_ref[0] = browser
@@ -947,6 +1379,10 @@ with sync_playwright() as p:
             except Exception as e:
                 log(f'  ext: template click failed: {e}')
 
+            # Snapshot fi[0] before the first workflow's Run so we can slice
+            # its frame range out of the global frame counter for per-workflow
+            # video encoding at the end of the run.
+            _first_workflow_frame_start = fi[0]
             # Hook the page's existing WebSocket BEFORE clicking Run.
             # Same approach as comfy-test/src/comfy_test/reporting/screenshot.py:
             # intercept window.app.api.socket.onmessage; flag completion on
@@ -1053,6 +1489,52 @@ with sync_playwright() as p:
             })
             sleep_capturing(page, 5, fps=5)
 
+        # Multi-workflow loop. The block above ran the FIRST matching
+        # workflow inline (current behavior). For each remaining matching
+        # workflow we kill ComfyUI, relaunch, reconnect Playwright, reload
+        # the renderer (refreshes the templates manifest with installed
+        # packs), navigate to Templates → comfyui-cadabra section, click
+        # the named card, and run it. Frame-index ranges are tracked so
+        # the post-loop ffmpeg pass can emit one mp4 per workflow.
+        _frame_ranges = []
+        if _workflow_results:
+            _frame_ranges.append((
+                _workflow_results[0]['name'],
+                _first_workflow_frame_start if 'picked_name' in dir() and picked_name else 0,
+                fi[0],
+            ))
+        try:
+            cpu_mode_outer, cpu_items_outer = _parse_cpu_spec()
+            _all_matching = _enumerate_matching_cards(page, cpu_mode_outer, cpu_items_outer)
+        except Exception as e:
+            log(f'  loop: enumerate failed: {e}')
+            _all_matching = []
+        first_name = _workflow_results[0]['name'] if _workflow_results else None
+        _remaining = [n for n in _all_matching if n != first_name]
+        log(f'  loop: matching={len(_all_matching)} first_ran={first_name!r} '
+            f'remaining={len(_remaining)} -> {_remaining}')
+
+        NODE_PACKAGE_NAME_outer = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
+        for _idx, _wf_name in enumerate(_remaining):
+            log(f'  loop: full restart for workflow {_idx+2}/{len(_all_matching)} ({_wf_name})')
+            page, browser = _restart_comfy(p, browser)
+            if page is None:
+                log('  loop: restart failed (no page); bailing out of remaining workflows')
+                break
+            _dismiss_post_restart_modals(page)
+            if not _open_templates_and_section(page, NODE_PACKAGE_NAME_outer):
+                log(f'  loop: Templates+section open failed for {_wf_name}; recording fail')
+                _workflow_results.append({
+                    'name': _wf_name, 'status': 'fail',
+                    'duration_seconds': 0,
+                    'error': 'Templates+section not openable after restart',
+                })
+                continue
+            _start = fi[0]
+            _result = _run_named_card(page, _wf_name)
+            _workflow_results.append(_result)
+            _frame_ranges.append((_wf_name, _start, fi[0]))
+
     snap(page, 'final')
     log(f'Captured {fi[0]} frames')
     browser.close()
@@ -1080,6 +1562,9 @@ except Exception as e:
     log(f'imageio-ffmpeg unavailable ({e}); falling back to PATH ffmpeg')
     ffmpeg_exe = 'ffmpeg'
 
+# Master mp4 covers the entire run (wizard + installs + every workflow).
+# Useful for end-to-end debugging; per-workflow mp4s are sliced from the
+# global frame sequence below using `_frame_ranges` populated by the loop.
 mp4 = OUT / 'driver.mp4'
 try:
     subprocess.run([
@@ -1093,10 +1578,54 @@ try:
 except Exception as e:
     log(f'ffmpeg failed: {e}')
 
+# Per-workflow mp4 encoding. Each entry in _frame_ranges is
+# (workflow_name, start_idx, end_idx). frame_NNNNNN.png is 1-indexed
+# (fi[0] is incremented BEFORE the screenshot), so ffmpeg's
+# -start_number is start_idx+1 and -frames:v is the count.
+_frame_ranges_local = locals().get('_frame_ranges', [])
+videos_root = _RUN_DIR / 'videos'
+try:
+    for wf_name, start_idx, end_idx in _frame_ranges_local:
+        count = max(1, end_idx - start_idx)
+        wf_dir = videos_root / wf_name
+        wf_dir.mkdir(parents=True, exist_ok=True)
+        wf_mp4 = wf_dir / 'driver.mp4'
+        try:
+            subprocess.run([
+                ffmpeg_exe, '-y',
+                '-start_number', str(start_idx + 1),
+                '-framerate', '5',
+                '-i', str(FRAMES / 'frame_%06d.png'),
+                '-frames:v', str(count),
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+                str(wf_mp4),
+            ], check=True)
+            log(f'  videos/{wf_name}/driver.mp4 placed (frames {start_idx+1}..{end_idx})')
+        except Exception as e:
+            log(f'  videos/{wf_name}/driver.mp4 encode failed: {e}')
+        wf_meta = next((r for r in _workflow_results if r.get('name') == wf_name), {})
+        (wf_dir / 'metadata.json').write_text(json.dumps({
+            'mp4': 'driver.mp4',
+            'duration_seconds': wf_meta.get('duration_seconds') or 0,
+            'status': wf_meta.get('status') or 'unknown',
+        }, indent=2), encoding='utf-8')
+    # If no workflows ran (or _frame_ranges is empty), fall back to the
+    # legacy 'system' copy so the html report still has something to show.
+    if not _frame_ranges_local and mp4.exists() and mp4.stat().st_size > 0:
+        import shutil
+        sys_dir = videos_root / 'system'
+        sys_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(str(mp4), str(sys_dir / 'driver.mp4'))
+        (sys_dir / 'metadata.json').write_text(json.dumps({
+            'mp4': 'driver.mp4', 'duration_seconds': 0, 'status': 'pass',
+        }, indent=2), encoding='utf-8')
+        log('  videos/system/driver.mp4 placed (no workflows ran)')
+except Exception as e:
+    log(f'  videos/ placement failed: {e}')
+
 # Drop the per-frame PNGs once the mp4 is encoded — they're only the
-# raw input to ffmpeg and bloat both the artifact and gh-pages
-# (1000+ frame_*.png files per platform). Keep frames/ on ffmpeg failure
-# so the run is still debuggable.
+# raw input to ffmpeg and bloat both the artifact and gh-pages.
 try:
     if mp4.exists() and mp4.stat().st_size > 0:
         import shutil
@@ -1104,37 +1633,3 @@ try:
         log(f'  removed {FRAMES} after successful encode')
 except Exception as e:
     log(f'  frames cleanup failed: {e}')
-
-# Place a copy of the mp4 under videos/<workflow_name>/driver.mp4 with
-# a sidecar metadata.json so the html report's existing video-discovery
-# loop (html_report.generate_html_report) renders it as a playable
-# video on the per-platform index. Use the picked template name for
-# now; when the per-workflow loop ships, this will be one entry per
-# workflow plus a 'system' entry for the wizard/install phase.
-try:
-    if mp4.exists() and mp4.stat().st_size > 0:
-        import shutil
-        videos_root = _RUN_DIR / 'videos'
-        for _wf in _workflow_results:
-            wf_name = _wf.get('name') or 'system'
-            wf_dir = videos_root / wf_name
-            wf_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(str(mp4), str(wf_dir / 'driver.mp4'))
-            (wf_dir / 'metadata.json').write_text(json.dumps({
-                'mp4': 'driver.mp4',
-                'duration_seconds': _wf.get('duration_seconds') or 0,
-                'status': _wf.get('status') or 'unknown',
-            }, indent=2), encoding='utf-8')
-            log(f'  videos/{wf_name}/driver.mp4 placed')
-        # Always also make a 'system' entry pointing at the same mp4
-        # so the wizard/install run is browsable even if no workflow ran.
-        if not _workflow_results:
-            sys_dir = videos_root / 'system'
-            sys_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(str(mp4), str(sys_dir / 'driver.mp4'))
-            (sys_dir / 'metadata.json').write_text(json.dumps({
-                'mp4': 'driver.mp4', 'duration_seconds': 0, 'status': 'pass',
-            }, indent=2), encoding='utf-8')
-            log('  videos/system/driver.mp4 placed (no workflows ran)')
-except Exception as e:
-    log(f'  videos/ placement failed: {e}')
