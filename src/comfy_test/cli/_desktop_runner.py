@@ -565,14 +565,14 @@ def run_desktop(args, desktop_mode: str) -> int:
     _kill_existing(desktop_mode)
     _wipe_comfy_state()
 
-    # Clone the target node -- same helper dockertest uses.
-    from comfy_test.cli.dockertest import _clone_node, _expand_nodelink  # local import: avoids cycles
+    # Clone the target node -- shared helper used everywhere.
+    from comfy_test.cli._nodelink import clone_node, expand_nodelink
 
     work_root = Path.home() / ".comfy-test-cache" / "desktop-runs"
     work_root.mkdir(parents=True, exist_ok=True)
     clone_root = Path(work_root) / f"clone-{int(time.time())}"
     try:
-        node_name = _clone_node(args.nodelink, args.branch, clone_root)
+        node_name = clone_node(args.nodelink, args.branch, clone_root)
     except Exception as e:
         print(f"[desktop] clone failed: {e}", file=sys.stderr)
         return 1
@@ -617,7 +617,7 @@ def run_desktop(args, desktop_mode: str) -> int:
         "COMFY_TEST_GPU": "1" if desktop_mode == "windows_gpu" else "0",
         "COMFY_TEST_LOGS_DIR": str(logs_dir),
         "COMFY_TEST_DEBUG_DIR": str(debug_dir),
-        "NODE_REPO": _expand_nodelink(args.nodelink).rstrip(".git").rsplit("github.com/", 1)[-1],
+        "NODE_REPO": expand_nodelink(args.nodelink).rstrip(".git").rsplit("github.com/", 1)[-1],
         "NODE_BRANCH": args.branch or "main",
         "NODE_NAME": node_name,
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
