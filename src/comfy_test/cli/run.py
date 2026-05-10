@@ -69,9 +69,14 @@ def cmd_run(args) -> int:
             print("[comfy-test] --desktop conflicts with --portable", file=sys.stderr)
             return 1
         if args.branch and args.branch != "main":
-            print(f"[comfy-test] --desktop ignores --branch {args.branch!r}; "
-                  f"Manager only installs from main", file=sys.stderr)
-        args.branch = "main"
+            print(f"[comfy-test] --desktop installs from main regardless of "
+                  f"--branch {args.branch!r}; Manager-driven flow has no "
+                  f"branch selection. Results will land under "
+                  f"gh-pages/{args.branch}/<platform>/ to match the user's "
+                  f"intent.", file=sys.stderr)
+        # NOTE: don't overwrite args.branch -- _desktop_runner uses it for the
+        # logs path layout (gh-pages/<branch>/<platform>/), while NODE_BRANCH
+        # is hardcoded to "main" separately when invoking cdp_driver.
         from comfy_test.cli._desktop_runner import run_desktop
         if host == "darwin":
             mode = "mac"

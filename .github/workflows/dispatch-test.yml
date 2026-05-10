@@ -13,9 +13,17 @@ name: comfy-test dispatch
 #     NODE_PAT: ${{ secrets.NODE_PAT }}
 #
 # Architecture: comfy-test (the Python package) does the heavy lifting in all
-# three jobs — it clones the node, sets up its own venv + uv, clones ComfyUI,
-# installs deps, runs ComfyUI's server, drives tests, and writes results.
-# This YAML's job is just runner selection, Defender, and `comfy-test run`.
+# three test jobs (it clones the node, sets up its own venv + uv, clones
+# ComfyUI, installs deps, runs ComfyUI's server, drives tests, writes
+# results). The test jobs only upload the results as an artifact. A separate
+# `publish` job downloads that artifact and pushes to gh-pages -- so a flaky
+# publish can be re-run by itself without re-running the (slow) test job.
+#
+# COMFY_TEST_VERSION is pinned in lockstep with this workflow's git tag:
+# tagging vX.Y.Z bumps both the YAML and the value below, so dispatch-test.yml
+# at @vX.Y.Z always installs comfy-test==X.Y.Z. Avoids the PyPI CDN
+# propagation race where a freshly-published tag isn't yet visible to runners
+# that hit a stale CDN edge.
 
 on:
   workflow_call:
@@ -36,6 +44,10 @@ on:
       NODE_PAT:
         required: false
 
+env:
+  # Bump in lockstep with the v0.3.X tag this YAML lives at.
+  COMFY_TEST_VERSION: "0.3.73"
+
 jobs:
   # =========================================================================
   # CPU on hosted runners (linux-cpu, windows-cpu, windows-portable-cpu, macos-cpu)
@@ -53,8 +65,7 @@ jobs:
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
       # Without this, comfy-test's stdout block-buffers (CI step is a pipe,
       # not a TTY), so [desktop]/[comfy-test] prints are invisible until
-      # process exit. Setting it at the job-level applies to every step
-      # that invokes python/comfy-test.
+      # process exit.
       PYTHONUNBUFFERED: "1"
       # Speed up pip/uv installs by skipping per-file .pyc compilation
       # (slows install, never read in one-shot CI runs) and by hard-linking
@@ -109,7 +120,7 @@ jobs:
 
       - name: Install comfy-test
         shell: bash
-        run: pip install --upgrade comfy-test
+        run: pip install "comfy-test==${COMFY_TEST_VERSION}"
 
       - name: Run tests
         shell: bash
@@ -119,31 +130,6 @@ jobs:
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" \
             $PORTABLE_FLAG
-
-      # Push results.json + screenshots to <node-repo>:gh-pages/<branch>/<platform>/
-      # so https://<owner>.github.io/<node>/<branch>/ shows the new run.
-      # Mirrors the gpu job's Linux publish step; comfy-test run writes to
-      # ${COMFY_TEST_LOGS_DIR}/<short>-<HHMM>/<branch>/<platform>/ so the same
-      # find -path glob works.
-      - name: Publish results
-        if: always()
-        shell: bash
-        env:
-          NODE_PAT: ${{ secrets.NODE_PAT }}
-        run: |
-          if [ -z "${NODE_PAT:-}" ]; then echo "No NODE_PAT, skipping publish"; exit 0; fi
-          git config --global user.email "ci@scan2wall.com"
-          git config --global user.name "comfy-test"
-          git config --global credential.helper store
-          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
-          NODE_BASE="${{ inputs.node_repo }}"
-          NODE_BASE="${NODE_BASE##*/}"
-          SHORT_NAME="${NODE_BASE#ComfyUI-}"
-          RESULTS=$(find "$COMFY_TEST_LOGS_DIR" \
-            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" \
-            2>/dev/null | head -1)
-          if [ -z "$RESULTS" ]; then echo "No results found, skipping publish"; exit 0; fi
-          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
 
       - if: always()
         uses: actions/upload-artifact@v4
@@ -164,6 +150,10 @@ jobs:
           && fromJson('["self-hosted","linux","cuda"]')
           || fromJson('["self-hosted","windows","cuda"]') }}
     timeout-minutes: 300
+    env:
+      # Where the publish job will look. We cp results from the docker logs
+      # dir here after the run so the artifact contains them.
+      COMFY_TEST_LOGS_DIR: ${{ runner.temp }}/comfy-test-logs
     steps:
       - name: Pick Python version
         id: python
@@ -178,9 +168,9 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo pip install --upgrade --break-system-packages comfy-test
+            sudo pip install --break-system-packages "comfy-test==${COMFY_TEST_VERSION}"
           else
-            pip install --upgrade comfy-test
+            pip install "comfy-test==${COMFY_TEST_VERSION}"
           fi
 
       - name: Run docker test (Linux)
@@ -204,56 +194,56 @@ jobs:
           if /I "${{ inputs.platform }}"=="windows-portable-gpu" set "PORTABLE_FLAG=--portable"
           comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" --branch "${{ inputs.branch }}" --gpu %PORTABLE_FLAG%
 
-      # Publish results to gh-pages — same pattern both OSes, just different shell.
-      - name: Publish results (Linux)
+      # Stage docker results into COMFY_TEST_LOGS_DIR so the artifact upload
+      # (and downstream publish job) can find them with the same find -path
+      # glob the cpu / desktop jobs use.
+      - name: Stage results (Linux)
         if: always() && runner.os == 'Linux'
         shell: bash
-        env:
-          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
-          git config --global user.email "ci@scan2wall.com"
-          git config --global user.name "comfy-test"
-          git config --global credential.helper store
-          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
-          NODE_BASE="${{ inputs.node_repo }}"
-          NODE_BASE="${NODE_BASE##*/}"
-          SHORT_NAME="${NODE_BASE#ComfyUI-}"
-          # comfy-test docker run writes to <docker-root>/logs/<SHORT>-<HHMM>/...
-          # Find this run's results.json. Falls back gracefully if no logs dir is set.
+          mkdir -p "$COMFY_TEST_LOGS_DIR"
           LOGS_BASE="${COMFY_TEST_DOCKER_ROOT:-$HOME/.comfy-test/docker}/logs"
-          RESULTS=$(find "$LOGS_BASE" -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" 2>/dev/null | head -1)
-          if [ -z "$RESULTS" ]; then echo "No results found, skipping publish"; exit 0; fi
-          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
+          NODE_BASE="${{ inputs.node_repo }}"; SHORT_NAME="${NODE_BASE##*/}"; SHORT_NAME="${SHORT_NAME#ComfyUI-}"
+          # Latest run dir matching <SHORT>-<HHMM>
+          LATEST=$(find "$LOGS_BASE" -maxdepth 1 -type d -name "${SHORT_NAME}-*" 2>/dev/null | sort | tail -1)
+          if [ -n "$LATEST" ]; then
+            sudo cp -r "$LATEST" "$COMFY_TEST_LOGS_DIR/"
+            sudo chown -R "$USER" "$COMFY_TEST_LOGS_DIR"
+            echo "Staged $LATEST -> $COMFY_TEST_LOGS_DIR"
+          else
+            echo "No <SHORT_NAME>-* dir found under $LOGS_BASE"
+          fi
 
-      - name: Publish results (Windows)
+      - name: Stage results (Windows)
         if: always() && runner.os == 'Windows'
         shell: cmd
-        env:
-          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
-          git config --global user.email "ci@scan2wall.com"
-          git config --global user.name "comfy-test"
-          git config --global credential.helper store
-          echo https://x-access-token:%NODE_PAT%@github.com> "%USERPROFILE%\.git-credentials"
+          if not exist "%COMFY_TEST_LOGS_DIR%" mkdir "%COMFY_TEST_LOGS_DIR%"
+          set "LOGS_BASE=%COMFY_TEST_DOCKER_ROOT%\logs"
+          if "%COMFY_TEST_DOCKER_ROOT%"=="" set "LOGS_BASE=D:\docker\logs"
           set "NODE_REPO_INPUT=${{ inputs.node_repo }}"
           for /f "tokens=2 delims=/" %%a in ("%NODE_REPO_INPUT%") do set "NODE_BASE=%%a"
           set "SHORT_NAME=%NODE_BASE:ComfyUI-=%"
-          set "LOGS_BASE=%COMFY_TEST_DOCKER_ROOT%\logs"
-          if "%COMFY_TEST_DOCKER_ROOT%"=="" set "LOGS_BASE=D:\docker\logs"
-          for /f "delims=" %%f in ('where /R "%LOGS_BASE%" results.json 2^>nul ^| findstr /I /C:"\%SHORT_NAME%-" ^| findstr /I /C:"\${{ inputs.branch }}\${{ inputs.platform }}\results.json"') do set "RESULTS_DIR=%%~dpf"
-          if not defined RESULTS_DIR (echo No results found, skipping publish & exit /b 0)
-          if "%RESULTS_DIR:~-1%"=="\" set "RESULTS_DIR=%RESULTS_DIR:~0,-1%"
-          comfy-test publish "%RESULTS_DIR%" --repo "${{ inputs.node_repo }}"
+          set "LATEST="
+          for /f "delims=" %%d in ('dir "%LOGS_BASE%\%SHORT_NAME%-*" /b /ad /o-d 2^>nul') do (
+            if not defined LATEST set "LATEST=%%d"
+          )
+          if defined LATEST (
+            xcopy "%LOGS_BASE%\%LATEST%" "%COMFY_TEST_LOGS_DIR%\%LATEST%\" /E /I /Q /Y
+            echo Staged %LOGS_BASE%\%LATEST% -^> %COMFY_TEST_LOGS_DIR%
+          ) else (
+            echo No matching run dir found under %LOGS_BASE%
+          )
 
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: results-${{ inputs.platform }}
-          path: ${{ runner.temp }}/comfy-test-logs/
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
 
   # =========================================================================
-  # Desktop (macos-desktop, windows-desktop, windows-desktop-gpu) — drives
+  # Desktop (macos-desktop, windows-desktop, windows-desktop-gpu) -- drives
   # ComfyUI Desktop (Electron + Chromium + CDP) on hosted runners. No docker.
   # =========================================================================
   desktop:
@@ -265,10 +255,6 @@ jobs:
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
-      # Without this, comfy-test's stdout block-buffers (CI step is a pipe,
-      # not a TTY), so [desktop]/[comfy-test] prints are invisible until
-      # process exit. Setting it at the job-level applies to every step
-      # that invokes python/comfy-test.
       PYTHONUNBUFFERED: "1"
       # Speed up pip/uv installs by skipping per-file .pyc compilation
       # (slows install, never read in one-shot CI runs) and by hard-linking
@@ -314,7 +300,7 @@ jobs:
 
       - name: Install comfy-test
         shell: bash
-        run: pip install --upgrade comfy-test
+        run: pip install "comfy-test==${COMFY_TEST_VERSION}"
 
       - name: Run desktop test (CPU)
         if: ${{ inputs.platform == 'macos-desktop' || inputs.platform == 'windows-desktop' }}
@@ -330,32 +316,60 @@ jobs:
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --desktop --gpu
 
-      # Push results.json + screenshots to <node-repo>:gh-pages/<branch>/<platform>/.
-      # _desktop_runner writes to <COMFY_TEST_LOGS_DIR>/<short>-<HHMM>/<branch>/<platform>/
-      # (aligned with cpu/gpu run.py shape), so the same find -path glob works.
-      - name: Publish results
-        if: always()
-        shell: bash
-        env:
-          NODE_PAT: ${{ secrets.NODE_PAT }}
-        run: |
-          if [ -z "${NODE_PAT:-}" ]; then echo "No NODE_PAT, skipping publish"; exit 0; fi
-          git config --global user.email "ci@scan2wall.com"
-          git config --global user.name "comfy-test"
-          git config --global credential.helper store
-          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
-          NODE_BASE="${{ inputs.node_repo }}"
-          NODE_BASE="${NODE_BASE##*/}"
-          SHORT_NAME="${NODE_BASE#ComfyUI-}"
-          RESULTS=$(find "$COMFY_TEST_LOGS_DIR" \
-            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" \
-            2>/dev/null | head -1)
-          if [ -z "$RESULTS" ]; then echo "No results found, skipping publish"; exit 0; fi
-          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
-
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: results-${{ inputs.platform }}
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
+
+  # =========================================================================
+  # Publish (separate job so a flaky publish can be re-run from the GHA UI
+  # without re-running the test job). Downloads the test job's artifact,
+  # finds results.json under <run_id>/<branch>/<platform>/, runs
+  # `comfy-test publish` to push to <node-repo>:gh-pages/<branch>/<platform>/.
+  # =========================================================================
+  publish:
+    needs: [cpu, gpu, desktop]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install comfy-test
+        shell: bash
+        run: pip install "comfy-test==${COMFY_TEST_VERSION}"
+
+      - name: Download test artifact
+        id: dl
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: results-${{ inputs.platform }}
+          path: ./results
+
+      - name: Publish to gh-pages
+        if: steps.dl.outcome == 'success'
+        shell: bash
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
+        run: |
+          if [ -z "${NODE_PAT:-}" ]; then echo "No NODE_PAT secret; skipping publish."; exit 0; fi
+          git config --global user.email "ci@scan2wall.com"
+          git config --global user.name "comfy-test"
+          git config --global credential.helper store
+          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
+          NODE_BASE="${{ inputs.node_repo }}"; SHORT_NAME="${NODE_BASE##*/}"; SHORT_NAME="${SHORT_NAME#ComfyUI-}"
+          RESULTS=$(find ./results \
+            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" \
+            2>/dev/null | head -1)
+          if [ -z "$RESULTS" ]; then
+            echo "No results.json under ./results matching ${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/. Listing artifact for debug:"
+            find ./results -maxdepth 6 -type f 2>/dev/null | head -50
+            exit 0
+          fi
+          echo "Publishing $RESULTS"
+          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
