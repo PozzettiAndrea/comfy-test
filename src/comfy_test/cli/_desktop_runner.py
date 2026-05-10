@@ -736,13 +736,56 @@ def run_desktop(args, desktop_mode: str) -> int:
         # poll/reconnect, and the post-Apply-Changes app Popen flag.
         "COMFY_DESKTOP_CDP_PORT": str(cdp_port),
     })
-    session_log = open(logs_dir / "session.log", "w", encoding="utf-8")
+    # Tee cdp_driver's stdout/stderr to BOTH session.log (for the artifact)
+    # AND the parent's stdout (for live CI step log visibility). Also spawn
+    # a background thread that tails ComfyUI's comfyui.log so the Python
+    # backend's output (model loads, node execution, errors) shows up in
+    # the step log too -- equivalent to what `--monitor-progress` shows
+    # locally but going to stdout instead of an HTTP page.
+    import threading
+    session_log_path = logs_dir / "session.log"
+    session_log = open(session_log_path, "w", encoding="utf-8", errors="replace")
+
+    _comfy_tail_stop = threading.Event()
+    def _tail_comfy_log():
+        # Wait for the comfyui.log file to appear (ComfyUI may take 30s+
+        # to bootstrap). Then tail it line-by-line, prefixing each line
+        # with [comfy] so it's distinguishable from cdp_driver output.
+        path = _resolve_comfy_log()
+        deadline = time.time() + 600
+        while path is None or not path.exists():
+            if _comfy_tail_stop.is_set() or time.time() > deadline:
+                return
+            time.sleep(2)
+            path = _resolve_comfy_log()
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)  # tail -f start: end of file
+                while not _comfy_tail_stop.is_set():
+                    line = f.readline()
+                    if not line:
+                        time.sleep(0.5)
+                        continue
+                    sys.stdout.write(f"[comfy] {line.rstrip()}\n")
+        except Exception as e:
+            sys.stdout.write(f"[comfy] tail failed: {e}\n")
+
+    tail_thread = threading.Thread(target=_tail_comfy_log, daemon=True)
+    tail_thread.start()
+
     try:
-        rc = subprocess.call(
+        proc = subprocess.Popen(
             [str(venv_python), str(_CDP_DRIVER)],
-            env=env, stdout=session_log, stderr=subprocess.STDOUT,
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
         )
+        for line in proc.stdout:
+            session_log.write(line)
+            session_log.flush()
+            sys.stdout.write(line)
+        rc = proc.wait()
     finally:
+        _comfy_tail_stop.set()
         session_log.close()
 
     # Post-run: collect Desktop logs, merge them, render index.html.
