@@ -149,10 +149,20 @@ jobs:
     # job-level (the runner isn't allocated yet at job-definition parse time)
     # and GitHub rejects the whole workflow with 422 if you try. We set
     # COMFY_TEST_LOGS_DIR via $GITHUB_ENV in the first step instead.
+    # Split per-OS because the self-hosted Windows runner (andrew) doesn't
+    # have bash on PATH (Git\bin removed to avoid the sh.exe PATH leak).
     steps:
-      - name: Set COMFY_TEST_LOGS_DIR (runner.temp not valid at job-env)
+      - name: Set COMFY_TEST_LOGS_DIR (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: echo "COMFY_TEST_LOGS_DIR=${{ runner.temp }}/comfy-test-logs" >> "$GITHUB_ENV"
+
+      - name: Set COMFY_TEST_LOGS_DIR (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $logs = "$env:RUNNER_TEMP\comfy-test-logs"
+          "COMFY_TEST_LOGS_DIR=$logs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Pick Python version
         id: python
