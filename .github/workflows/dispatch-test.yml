@@ -51,6 +51,11 @@ jobs:
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      # Without this, comfy-test's stdout block-buffers (CI step is a pipe,
+      # not a TTY), so [desktop]/[comfy-test] prints are invisible until
+      # process exit. Setting it at the job-level applies to every step
+      # that invokes python/comfy-test.
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Disable Defender realtime (Windows IO speedup)
         if: runner.os == 'Windows'
@@ -203,6 +208,11 @@ jobs:
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      # Without this, comfy-test's stdout block-buffers (CI step is a pipe,
+      # not a TTY), so [desktop]/[comfy-test] prints are invisible until
+      # process exit. Setting it at the job-level applies to every step
+      # that invokes python/comfy-test.
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Disable Defender realtime (Windows IO speedup)
         if: runner.os == 'Windows'
