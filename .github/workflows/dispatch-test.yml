@@ -19,11 +19,10 @@ name: comfy-test dispatch
 # `publish` job downloads that artifact and pushes to gh-pages -- so a flaky
 # publish can be re-run by itself without re-running the (slow) test job.
 #
-# COMFY_TEST_VERSION is pinned in lockstep with this workflow's git tag:
-# tagging vX.Y.Z bumps both the YAML and the value below, so dispatch-test.yml
-# at @vX.Y.Z always installs comfy-test==X.Y.Z. Avoids the PyPI CDN
-# propagation race where a freshly-published tag isn't yet visible to runners
-# that hit a stale CDN edge.
+# Test jobs install the latest published comfy-test from PyPI via
+# `pip install --upgrade`. If a freshly-tagged release hasn't yet propagated
+# to PyPI's CDN edges (window is < ~60s), one run may pull the previous
+# version -- just retrigger and it'll catch up.
 
 on:
   workflow_call:
@@ -43,10 +42,6 @@ on:
     secrets:
       NODE_PAT:
         required: false
-
-env:
-  # Bump in lockstep with the v0.3.X tag this YAML lives at.
-  COMFY_TEST_VERSION: "0.3.73"
 
 jobs:
   # =========================================================================
@@ -120,7 +115,7 @@ jobs:
 
       - name: Install comfy-test
         shell: bash
-        run: pip install "comfy-test==${COMFY_TEST_VERSION}"
+        run: pip install --upgrade comfy-test
 
       - name: Run tests
         shell: bash
@@ -172,9 +167,9 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo pip install --break-system-packages "comfy-test==${COMFY_TEST_VERSION}"
+            sudo pip install --upgrade --break-system-packages comfy-test
           else
-            pip install "comfy-test==${COMFY_TEST_VERSION}"
+            pip install --upgrade comfy-test
           fi
 
       - name: Run docker test (Linux)
@@ -248,13 +243,21 @@ jobs:
 
   # =========================================================================
   # Desktop (macos-desktop, windows-desktop, windows-desktop-gpu) -- drives
-  # ComfyUI Desktop (Electron + Chromium + CDP) on hosted runners. No docker.
+  # ComfyUI Desktop (Electron + Chromium + CDP). All run native (no docker):
+  # ComfyUI Desktop is an Electron app and process-isolated Windows
+  # containers can't run Electron with GPU + display the way bare-metal can.
+  #   * macos-desktop      -> github-hosted macos-latest (Apple Silicon)
+  #   * windows-desktop    -> github-hosted windows-latest
+  #   * windows-desktop-gpu-> self-hosted [windows, cuda] (same pool as the
+  #                           gpu job; that's where the NVIDIA driver lives)
   # =========================================================================
   desktop:
     if: ${{ contains(inputs.platform, 'desktop') }}
     name: ${{ inputs.platform }}
     runs-on: >-
-      ${{ startsWith(inputs.platform, 'macos') && 'macos-latest' || 'windows-latest' }}
+      ${{ (startsWith(inputs.platform, 'macos') && 'macos-latest')
+          || (inputs.platform == 'windows-desktop-gpu' && fromJson('["self-hosted","windows","cuda"]'))
+          || 'windows-latest' }}
     timeout-minutes: 300
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
@@ -304,7 +307,7 @@ jobs:
 
       - name: Install comfy-test
         shell: bash
-        run: pip install "comfy-test==${COMFY_TEST_VERSION}"
+        run: pip install --upgrade comfy-test
 
       - name: Run desktop test (CPU)
         if: ${{ inputs.platform == 'macos-desktop' || inputs.platform == 'windows-desktop' }}
@@ -345,7 +348,7 @@ jobs:
 
       - name: Install comfy-test
         shell: bash
-        run: pip install "comfy-test==${COMFY_TEST_VERSION}"
+        run: pip install --upgrade comfy-test
 
       - name: Download test artifact
         id: dl
