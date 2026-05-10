@@ -198,6 +198,15 @@ jobs:
         shell: bash
         run: sudo pip install --upgrade --break-system-packages comfy-test
 
+      # Self-hosted Windows runners (andrew) don't ship Python on the SYSTEM
+      # PATH that GHA shells inherit; only USER PATH has it. setup-python
+      # downloads/uses-cache + prepends to GITHUB_PATH so the next step's `pip`
+      # resolves. Same pattern the cpu job already uses.
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: ${{ env.COMFY_TEST_PYTHON_VERSION }}
+
       - name: Install comfy-test (Windows)
         if: runner.os == 'Windows'
         shell: cmd
