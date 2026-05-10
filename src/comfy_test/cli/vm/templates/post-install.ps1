@@ -136,8 +136,45 @@ function Stage-InstallComfyDesktop {
     Log "[stage5] done"
 }
 
+function Stage-MountSharedFolder {
+    # Mount the host SMB share as Z: for the ci-runner profile, persistent.
+    # No-op when the host opted out of --shared-folder (UNC is empty).
+    $unc  = '<<SHARED_FOLDER_UNC>>'
+    $user = '<<SHARED_FOLDER_USER>>'
+    $pwd  = '<<SHARED_FOLDER_PASSWORD>>'
+    if (-not $unc) {
+        Log "[stage6] no shared folder configured; skipping Z: mount"
+        return
+    }
+    Log "[stage6] mounting $unc as Z: (persistent, user $user)"
+    $sec = ConvertTo-SecureString $pwd -AsPlainText -Force
+    $cred = New-Object System.Management.Automation.PSCredential($user, $sec)
+    # New-PSDrive -Persist makes the mapping survive reboots for the
+    # current user. -Scope Global keeps it visible after the function
+    # returns (PSDrive scope defaults to Local otherwise).
+    try {
+        New-PSDrive -Name Z -PSProvider FileSystem -Root $unc `
+                    -Credential $cred -Persist -Scope Global -ErrorAction Stop | Out-Null
+        Log "  Z: mounted -> $unc"
+    } catch {
+        Log "  WARN: New-PSDrive failed ($($_.Exception.Message)); falling back to net use"
+        # Fallback: net use (no PSCredential, but works on older PS).
+        & net.exe use Z: $unc /user:$user $pwd /persistent:yes | ForEach-Object { Log "    $_" }
+        if ($LASTEXITCODE -ne 0) { Log "  FALLBACK ALSO FAILED (exit $LASTEXITCODE); continuing without Z:" }
+    }
+}
+
 function Stage-ConfigureRunner {
-    Log "[stage6] configure GHA runner"
+    # Skip when the host opted out (--no-runner, or runner-url/token not
+    # provided). RUNNER_URL is the empty string in that case.
+    $runnerUrl = '<<RUNNER_URL>>'
+    if (-not $runnerUrl) {
+        Log "[stage7] no runner URL configured; skipping GHA runner setup"
+        Log "[stage7] (re-run host-side with --runner-url + --runner-token-env "
+        Log "          to add a runner later; or register manually inside the VM)"
+        return
+    }
+    Log "[stage7] configure GHA runner"
     $runnerDir = "C:\actions-runner"
     if (-not (Test-Path $runnerDir)) {
         New-Item -Path $runnerDir -ItemType Directory -Force | Out-Null
@@ -215,6 +252,10 @@ try {
                 $state = "stage6"; Save-State $state
             }
             "stage6" {
+                Stage-MountSharedFolder
+                $state = "stage7"; Save-State $state
+            }
+            "stage7" {
                 Stage-ConfigureRunner
                 $state = "done"; Save-State $state
             }

@@ -18,10 +18,23 @@ Run as Administrator (Hyper-V cmdlets + DDA both require it).
 from __future__ import annotations
 
 import os
+import secrets
+import string
 import sys
 from pathlib import Path
+from typing import Optional
 
+from ._iso import (
+    DEFAULT_WIN_ARCH,
+    DEFAULT_WIN_LANG,
+    DEFAULT_WIN_RELEASE,
+    download_windows_iso,
+)
 from ._root import (
+    DEFAULT_GPU_FILTER,
+    DEFAULT_NVIDIA_DRIVER_VERSION,
+    DEFAULT_SHARE_NAME,
+    DEFAULT_SHARED_FOLDER,
     DEFAULT_SNAPSHOT_NAME,
     DEFAULT_VIRTUAL_SWITCH,
     DEFAULT_VM_CPU,
@@ -29,8 +42,15 @@ from ._root import (
     DEFAULT_VM_MEMORY_GB,
     DEFAULT_VM_NAME,
     DEFAULT_VM_ROOT,
+    _default_switch_host_ip,
+    _gpu_attached_to_vm,
+    _gpu_in_host_limbo,
+    _gpu_location_path_for_instance,
+    _gpu_on_host,
     _ps,
     _require_windows,
+    _resolve_nvidia_driver_url,
+    _smb_share_exists,
     _vm_exists,
     _wait_for_vm_state,
 )
@@ -95,14 +115,29 @@ _GUEST_CHECKLIST = """\
        $lnk.WorkingDirectory = "C:\\actions-runner"
        $lnk.Save()
 
-  9. From the HOST, snapshot the clean state:
+  9. (Optional) Set up the host->VM shared folder for persistent files
+     (model weights, outputs -- survives snapshot-restores):
+       comfy-test vm share create
+       # then inside the VM, mount as Z::
+       New-PSDrive -Name Z -PSProvider FileSystem `
+                   -Root '\\\\<host-ip>\\ComfySharedVM' `
+                   -Persist -Credential (Get-Credential)
+
+ 10. From the HOST, snapshot the clean state:
        comfy-test vm snapshot --name clean-baseline
 
- 10. dispatch-test.yml's windows-desktop-gpu job calls
+ 11. dispatch-test.yml's windows-desktop-gpu job calls
        comfy-test vm restore --snapshot clean-baseline
      before each run. Per-test isolation done.
 
-(Or skip steps 2-9 entirely with `comfy-test vm build --unattended ...`.)
+ 12. To reclaim the GPU for your workstation:
+       comfy-test vm gpu detach
+     ...and to give it back to the VM:
+       comfy-test vm gpu attach
+
+(Or skip steps 2-9 entirely with `comfy-test vm build --unattended ...`,
+which auto-downloads the Windows ISO, mounts it, runs Windows install +
+post-install end-to-end, sets up the SMB share, and snapshots.)
 """
 
 
@@ -117,43 +152,132 @@ def _resolve_secret(value, env_var, *, what):
     return None
 
 
+def _generate_password(length: int = 20) -> str:
+    """Strong password for the local 'ci-runner' account. Avoids ambiguous
+    characters (0/O, 1/l/I) so the user can read it back from a printed
+    banner without confusion."""
+    alphabet = (
+        "ABCDEFGHJKLMNPQRSTUVWXYZ"   # no I, O
+        "abcdefghijkmnpqrstuvwxyz"   # no l, o
+        "23456789"                   # no 0, 1
+        "!@#%&*-_+="
+    )
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
 def _validate_unattended_args(args) -> dict:
-    """Returns a dict of resolved values; exits non-zero on missing required ones."""
-    missing = []
+    """Returns a dict of resolved values; exits non-zero on missing requirements.
 
+    Nothing is strictly required anymore -- `--unattended` with no other
+    flags will auto-resolve everything:
+      * password   -- generated and printed (silenceable with --password[-env])
+      * driver URL -- queried from nvidia-smi, falls back to a pinned version
+      * ISO        -- auto-downloaded via Fido in cmd_vm_build
+      * runner     -- skipped if --runner-url / --runner-token-env not provided
+                      (unless --require-runner is set)
+    """
+    # --- Password: generate if not provided.
     password = _resolve_secret(args.password, args.password_env, what="password")
+    password_was_generated = False
     if not password:
-        missing.append("--password / --password-env")
+        password = _generate_password()
+        password_was_generated = True
 
+    # --- NVIDIA driver URL: auto-resolve.
+    nvidia_url: Optional[str] = args.nvidia_driver_url
+    if not nvidia_url:
+        try:
+            nvidia_url = _resolve_nvidia_driver_url(
+                explicit_url=None,
+                explicit_version=args.nvidia_driver_version,
+            )
+        except RuntimeError as e:
+            print(f"[vm] {e}", file=sys.stderr)
+            sys.exit(2)
+
+    # --- GHA runner: optional. Only validate if at least one runner flag
+    # was provided OR --require-runner is set.
     runner_token = _resolve_secret(
         args.runner_token, args.runner_token_env, what="runner-token"
     )
-    if not runner_token:
-        missing.append("--runner-token / --runner-token-env")
+    skip_runner = args.no_runner or (
+        not args.require_runner and not args.runner_url and not runner_token
+    )
 
-    if not args.runner_url:
-        missing.append("--runner-url")
-    if not args.nvidia_driver_url:
-        missing.append("--nvidia-driver-url")
-    if not args.iso:
-        missing.append("--iso (required for --unattended)")
-
-    if missing:
-        print(f"[vm] --unattended needs: {', '.join(missing)}", file=sys.stderr)
+    runner_missing = []
+    if not skip_runner:
+        if not runner_token:
+            runner_missing.append("--runner-token / --runner-token-env")
+        if not args.runner_url:
+            runner_missing.append("--runner-url")
+    if runner_missing:
+        print(f"[vm] runner setup needs: {', '.join(runner_missing)}\n"
+              f"     (or pass --no-runner to skip runner registration)",
+              file=sys.stderr)
         sys.exit(2)
 
+    if password_was_generated:
+        print()
+        print("=" * 64)
+        print("[vm] GENERATED PASSWORD for in-VM 'ci-runner' account:")
+        print(f"     {password}")
+        print("[vm] SAVE THIS NOW. You'll need it to log into the VM,")
+        print("     or pass --password-env to silence this banner.")
+        print("=" * 64)
+        print()
+
     return {
-        "password":          password,
-        "runner_url":        args.runner_url,
-        "runner_token":      runner_token,
-        "nvidia_driver_url": args.nvidia_driver_url,
-        "python_url":        args.python_url,
-        "comfy_desktop_url": args.comfy_desktop_url,
-        "runner_version":    args.runner_version,
-        "win_edition":       args.windows_edition,
-        "computer_name":     args.vm_name.upper().replace("-", "")[:15],
-        "timezone":          args.timezone,
+        "password":           password,
+        "password_generated": password_was_generated,
+        "runner_url":         args.runner_url    if not skip_runner else "",
+        "runner_token":       runner_token       if not skip_runner else "",
+        "skip_runner":        skip_runner,
+        "nvidia_driver_url":  nvidia_url,
+        "python_url":         args.python_url,
+        "comfy_desktop_url":  args.comfy_desktop_url,
+        "runner_version":     args.runner_version,
+        "win_edition":        args.windows_edition,
+        "computer_name":      args.vm_name.upper().replace("-", "")[:15],
+        "timezone":           args.timezone,
     }
+
+
+def _ensure_share_for_vm(args, password: str) -> Optional[str]:
+    """If --shared-folder is requested, ensure the host SMB share exists and
+    return the UNC the VM should mount (or None if disabled)."""
+    if args.no_shared_folder:
+        return None
+
+    folder = Path(args.shared_folder).resolve()
+    name = args.shared_folder_name
+
+    print(f"[vm] ensuring shared folder {folder} (SMB share '{name}')")
+    folder.mkdir(parents=True, exist_ok=True)
+
+    if _smb_share_exists(name):
+        print(f"[vm]   SMB share '{name}' already exists; reusing")
+    else:
+        # FullAccess needs the local account to exist. The unattended flow
+        # creates 'ci-runner' on first boot; until then, grant Everyone
+        # (we replace this with a tighter ACL once ci-runner exists --
+        # post-install can re-run New-SmbShare scoped to ci-runner).
+        # For simplicity: grant the user we'll create. New-SmbShare accepts
+        # account names that don't yet exist (resolved at access time).
+        print(f"[vm]   creating SMB share '{name}' -> {folder} "
+              f"(full access for 'ci-runner')")
+        _ps(
+            f"New-SmbShare -Name '{name}' -Path '{folder}' "
+            f"-FullAccess 'ci-runner' "
+            f"-Description 'comfy-test VM persistent storage'",
+            check=False,
+        )
+
+    ip = _default_switch_host_ip()
+    if not ip:
+        print(f"[vm]   couldn't read 'vEthernet (Default Switch)' IP; "
+              f"skipping share UNC", file=sys.stderr)
+        return None
+    return f"\\\\{ip}\\{name}"
 
 
 def _attach_iso(vm_name: str, iso_path: Path) -> None:
@@ -185,12 +309,12 @@ def _enable_vtpm(vm_name: str) -> None:
     )
 
 
-def _provision_unattended(args, windows_iso: Path) -> int:
+def _provision_unattended(args, windows_iso: Path, resolved: dict,
+                          shared_unc: Optional[str]) -> int:
     """Generate setup.iso, attach + start VM, wait for shutdown, snapshot."""
     # Imported here so non-Windows (e.g. CI lint runs) can still import build.
     from . import _unattend
 
-    resolved = _validate_unattended_args(args)
     vm_name = args.vm_name
     vm_root = Path(args.vm_root)
 
@@ -209,6 +333,9 @@ def _provision_unattended(args, windows_iso: Path) -> int:
         win_edition=resolved["win_edition"],
         computer_name=resolved["computer_name"],
         timezone=resolved["timezone"],
+        shared_folder_unc=shared_unc,
+        shared_folder_user="ci-runner" if shared_unc else None,
+        shared_folder_password=resolved["password"] if shared_unc else None,
     )
     setup_iso = _unattend.build_setup_iso(vm_root, params)
 
@@ -273,6 +400,17 @@ def cmd_vm_build(args) -> int:
     vm_root = Path(args.vm_root)
 
     # ---------------------------------------------------------------------
+    # 0. Fail-fast validation BEFORE any side-effects.
+    # ---------------------------------------------------------------------
+    # This used to live inside _provision_unattended (called at step 5),
+    # which meant a missing --password / --runner-url etc. only surfaced
+    # AFTER we'd already enabled Hyper-V, created the VM, and DDA'd the
+    # GPU. Now we check up front so the user can re-run safely.
+    resolved: Optional[dict] = None
+    if args.unattended:
+        resolved = _validate_unattended_args(args)
+
+    # ---------------------------------------------------------------------
     # 1. Hyper-V
     # ---------------------------------------------------------------------
     print("[vm] checking Hyper-V")
@@ -316,74 +454,119 @@ def cmd_vm_build(args) -> int:
         )
 
     # ---------------------------------------------------------------------
-    # 3. GPU DDA passthrough
+    # 3. GPU DDA passthrough (idempotent)
     # ---------------------------------------------------------------------
     if args.skip_dda:
         print("[vm] --skip-dda: not touching GPU passthrough")
     else:
-        print(f"[vm] identifying NVIDIA GPU (filter: '{args.gpu_filter}')")
-        r = _ps(
-            "Get-PnpDevice -Class Display -PresentOnly | "
-            f"Where-Object {{ $_.FriendlyName -like '*{args.gpu_filter}*' }} | "
-            "Select-Object -First 1 -ExpandProperty InstanceId",
-            capture=True,
-        )
-        gpu_id = (r.stdout or "").strip()
-        if not gpu_id:
-            print(f"[vm] no GPU matched filter '{args.gpu_filter}'. "
-                  f"Available display devices:", file=sys.stderr)
-            _ps("Get-PnpDevice -Class Display -PresentOnly | "
-                "Format-Table FriendlyName,InstanceId -AutoSize")
-            return 1
-        print(f"[vm] GPU InstanceId: {gpu_id}")
+        already = _gpu_attached_to_vm(vm_name, args.gpu_filter)
+        if already:
+            print(f"[vm] GPU already attached to VM '{vm_name}' at {already}; "
+                  f"skipping passthrough setup")
+        else:
+            limbo = _gpu_in_host_limbo(args.gpu_filter)
+            if limbo:
+                # Host already dismounted it but never assigned. Common after
+                # a previous half-finished build run.
+                print(f"[vm] GPU is host-detached at {limbo}; assigning to "
+                      f"VM '{vm_name}'")
+                _ps(f"Add-VMAssignableDevice -VMName '{vm_name}' "
+                    f"-LocationPath '{limbo}'")
+                print(f"[vm] GPU now attached to VM via DDA")
+            else:
+                instance_id = _gpu_on_host(args.gpu_filter)
+                if not instance_id:
+                    print(f"[vm] no GPU matching filter '{args.gpu_filter}' "
+                          f"on host or in host-detached limbo. Available "
+                          f"display devices:", file=sys.stderr)
+                    _ps("Get-PnpDevice -Class Display -PresentOnly | "
+                        "Format-Table FriendlyName,InstanceId -AutoSize")
+                    print(f"\n[vm] tip: pass --gpu-filter <substring> to match "
+                          f"a different vendor (default: "
+                          f"'{DEFAULT_GPU_FILTER}'), or --skip-dda to build "
+                          f"the VM without GPU passthrough.", file=sys.stderr)
+                    return 1
+                print(f"[vm] GPU InstanceId: {instance_id}")
 
-        # WARNING: this detaches the GPU from the host. Confirm before doing it.
-        print("[vm] *** about to dismount the GPU from the host ***")
-        print("[vm] *** the host loses display until VM stops + GPU re-mounted ***")
-        if not args.yes:
-            ans = input("[vm] type 'yes' to proceed: ").strip().lower()
-            if ans != "yes":
-                print("[vm] aborted")
-                return 1
+                location = _gpu_location_path_for_instance(instance_id)
+                if not location:
+                    print(f"[vm] couldn't read DEVPKEY_Device_LocationPaths "
+                          f"for {instance_id}", file=sys.stderr)
+                    return 1
+                print(f"[vm] LocationPath: {location}")
 
-        loc_r = _ps(
-            f"(Get-PnpDeviceProperty -InstanceId '{gpu_id}' "
-            f"-KeyName DEVPKEY_Device_LocationPaths).Data[0]",
-            capture=True,
-        )
-        loc = (loc_r.stdout or "").strip()
-        print(f"[vm] LocationPath: {loc}")
+                # WARNING: this detaches the GPU from the host. Confirm.
+                print("[vm] *** about to dismount the GPU from the host ***")
+                print("[vm] *** the host loses display until the VM is shut "
+                      "down AND `comfy-test vm gpu detach` runs ***")
+                if not args.yes:
+                    ans = input("[vm] type 'yes' to proceed: ").strip().lower()
+                    if ans != "yes":
+                        print("[vm] aborted")
+                        return 1
 
-        _ps(f"Disable-PnpDevice -InstanceId '{gpu_id}' -Confirm:$false")
-        _ps(f"Dismount-VMHostAssignableDevice -LocationPath '{loc}' -Force")
-        _ps(f"Add-VMAssignableDevice -VMName '{vm_name}' -LocationPath '{loc}'")
-        print("[vm] GPU now attached to VM via DDA")
+                _ps(f"Disable-PnpDevice -InstanceId '{instance_id}' -Confirm:$false")
+                _ps(f"Dismount-VMHostAssignableDevice -LocationPath '{location}' -Force")
+                _ps(f"Add-VMAssignableDevice -VMName '{vm_name}' "
+                    f"-LocationPath '{location}'")
+                print("[vm] GPU now attached to VM via DDA")
 
     # ---------------------------------------------------------------------
-    # 4. Mount Windows ISO if provided
+    # 4. Resolve / download Windows ISO
     # ---------------------------------------------------------------------
-    windows_iso: Path | None = None
+    windows_iso: Optional[Path] = None
     if args.iso:
         windows_iso = Path(args.iso).resolve()
         if not windows_iso.exists():
             print(f"[vm] ISO not found at {windows_iso}", file=sys.stderr)
             return 1
-        print(f"[vm] mounting ISO {windows_iso} as first-boot device")
-        _attach_iso(vm_name, windows_iso)
-        _set_first_boot_to_dvd_with_path(vm_name, windows_iso)
+        print(f"[vm] using provided ISO {windows_iso}")
+    elif args.unattended and not args.no_iso_download:
+        # Auto-download (cached under vm_root/iso/Win<release>_<lang>_<arch>.iso).
+        print(f"[vm] no --iso provided; auto-downloading via Fido")
+        windows_iso = download_windows_iso(
+            vm_root,
+            release=args.iso_release,
+            lang=args.iso_lang,
+            arch=args.iso_arch,
+        )
+    elif args.unattended:
+        print("[vm] --unattended needs an ISO. Pass --iso PATH or remove "
+              "--no-iso-download to auto-fetch.", file=sys.stderr)
+        return 2
+
+    if windows_iso is not None:
+        # Idempotency: if the ISO is already attached, don't double-attach.
+        # Get-VMDvdDrive -VMName | Where Path -eq <iso>
+        r = _ps(
+            f"if (Get-VMDvdDrive -VMName '{vm_name}' | "
+            f"  Where-Object {{ $_.Path -eq '{windows_iso}' }}) "
+            f"{{ 'yes' }} else {{ 'no' }}",
+            capture=True, check=False,
+        )
+        if (r.stdout or "").strip() == "yes":
+            print(f"[vm] ISO already attached to VM; skipping mount")
+        else:
+            print(f"[vm] mounting ISO {windows_iso} as first-boot device")
+            _attach_iso(vm_name, windows_iso)
+            _set_first_boot_to_dvd_with_path(vm_name, windows_iso)
     else:
-        print("[vm] no --iso passed; skipping install-media mount")
+        print("[vm] no ISO; skipping install-media mount")
         print("[vm]   (you can re-run with --iso PATH or attach manually)")
 
     # ---------------------------------------------------------------------
-    # 5. Branch: unattended provisioning vs. manual checklist
+    # 5. Optional shared folder (host -> VM SMB share)
+    # ---------------------------------------------------------------------
+    shared_unc: Optional[str] = None
+    if args.unattended:
+        shared_unc = _ensure_share_for_vm(args, resolved["password"] if resolved else "")
+
+    # ---------------------------------------------------------------------
+    # 6. Branch: unattended provisioning vs. manual checklist
     # ---------------------------------------------------------------------
     if args.unattended:
-        if windows_iso is None:
-            # Already handled by _validate_unattended_args, but defensive.
-            print("[vm] --unattended requires --iso", file=sys.stderr)
-            return 2
-        return _provision_unattended(args, windows_iso)
+        assert resolved is not None  # validated at step 0
+        return _provision_unattended(args, windows_iso, resolved, shared_unc)
 
     print(_GUEST_CHECKLIST.format(vm_name=vm_name))
     return 0
@@ -410,10 +593,12 @@ def add_vm_build_parser(subparsers):
                    help=f"Hyper-V virtual switch (default: '{DEFAULT_VIRTUAL_SWITCH}')")
     p.add_argument("--iso", default=None, metavar="PATH",
                    help="Windows ISO to mount as first-boot media. "
-                        "Required for --unattended.")
-    p.add_argument("--gpu-filter", default="NVIDIA",
-                   help="Substring to match against display device FriendlyName "
-                        "for DDA passthrough (default: 'NVIDIA')")
+                        "If omitted in --unattended mode, auto-downloads via "
+                        "Fido (cached under <vm-root>/iso/).")
+    p.add_argument("--gpu-filter", default=DEFAULT_GPU_FILTER,
+                   help=f"GPU vendor filter; matches PCI vendor for "
+                        f"nvidia/amd/intel or a literal substring otherwise "
+                        f"(default: '{DEFAULT_GPU_FILTER}')")
     p.add_argument("--skip-dda", action="store_true",
                    help="Skip GPU passthrough (e.g. for testing the VM "
                         "creation flow without committing the host's GPU)")
@@ -427,27 +612,48 @@ def add_vm_build_parser(subparsers):
                    help="After host setup, generate an answer ISO + run the "
                         "Windows install + post-install (NVIDIA driver, "
                         "Python, comfy-test, ComfyUI Desktop, autologon, "
-                        "GHA runner) end-to-end, then snapshot. "
-                        "Requires --iso, --password[-env], --runner-url, "
-                        "--runner-token[-env], --nvidia-driver-url.")
+                        "optional GHA runner) end-to-end, then snapshot. "
+                        "Everything auto-resolves with sensible defaults: "
+                        "ISO via Fido, password generated, NVIDIA driver via "
+                        "nvidia-smi (or pinned fallback), runner registration "
+                        "skipped unless --runner-url + --runner-token-env are "
+                        "passed.")
     g.add_argument("--password", default=None, metavar="TEXT",
-                   help="Local 'ci-runner' password. Prefer --password-env "
-                        "to keep secrets out of shell history.")
+                   help="Local 'ci-runner' password. If omitted, a strong "
+                        "random password is generated and printed once. "
+                        "Prefer --password-env to keep secrets out of shell "
+                        "history.")
     g.add_argument("--password-env", default=None, metavar="VAR",
                    help="Read 'ci-runner' password from this env var.")
     g.add_argument("--runner-url", default=None, metavar="URL",
                    help="GHA runner registration URL "
-                        "(https://github.com/<org>/<repo>).")
+                        "(https://github.com/<org>/<repo>). If omitted, "
+                        "runner registration is skipped (configure manually "
+                        "later or re-run with --require-runner to fail "
+                        "fast on missing flags).")
     g.add_argument("--runner-token", default=None, metavar="TOKEN",
                    help="GHA runner registration token. Expires ~1h after "
                         "generation; grab a fresh one from the repo's runner "
                         "page right before running. Prefer --runner-token-env.")
     g.add_argument("--runner-token-env", default=None, metavar="VAR",
                    help="Read GHA runner token from this env var.")
+    g.add_argument("--no-runner", action="store_true",
+                   help="Force-skip GHA runner registration even if runner "
+                        "flags are provided.")
+    g.add_argument("--require-runner", action="store_true",
+                   help="Fail the build if runner flags are missing instead "
+                        "of silently skipping registration.")
     g.add_argument("--nvidia-driver-url", default=None, metavar="URL",
-                   help="Direct download URL for the NVIDIA driver .exe "
-                        "(look up the matching driver for your GPU on "
-                        "nvidia.com once and pass it in).")
+                   help="Direct download URL for the NVIDIA driver .exe. If "
+                        "omitted, auto-resolved from --nvidia-driver-version "
+                        "or nvidia-smi or the pinned fallback "
+                        f"({DEFAULT_NVIDIA_DRIVER_VERSION}).")
+    g.add_argument("--nvidia-driver-version", default=None, metavar="VER",
+                   help="NVIDIA driver version to fetch (e.g. '581.57'). "
+                        "Used when --nvidia-driver-url isn't given AND "
+                        "nvidia-smi can't be queried (e.g. host's GPU is "
+                        "DDA'd to the VM). Default: probe nvidia-smi, else "
+                        f"{DEFAULT_NVIDIA_DRIVER_VERSION}.")
     g.add_argument("--python-url", default=DEFAULT_PYTHON_URL, metavar="URL",
                    help=f"Python installer URL (default: pinned 3.12.7 amd64)")
     g.add_argument("--comfy-desktop-url", default=DEFAULT_COMFY_DESKTOP_URL,
@@ -471,5 +677,35 @@ def add_vm_build_parser(subparsers):
     g.add_argument("--no-snapshot", action="store_true",
                    help="Skip the auto-snapshot after unattended provisioning "
                         "(debug; run `comfy-test vm snapshot` manually)")
+
+    # Auto-ISO-download flags
+    iso_g = p.add_argument_group("Windows ISO download (when --iso not provided)")
+    iso_g.add_argument("--iso-release", default=DEFAULT_WIN_RELEASE, metavar="VER",
+                      help=f"Windows release passed to Fido "
+                           f"(default: '{DEFAULT_WIN_RELEASE}')")
+    iso_g.add_argument("--iso-lang", default=DEFAULT_WIN_LANG, metavar="LANG",
+                      help=f"Windows ISO language "
+                           f"(default: '{DEFAULT_WIN_LANG}')")
+    iso_g.add_argument("--iso-arch", default=DEFAULT_WIN_ARCH, metavar="ARCH",
+                      help=f"Windows ISO architecture "
+                           f"(default: '{DEFAULT_WIN_ARCH}')")
+    iso_g.add_argument("--no-iso-download", action="store_true",
+                      help="Disable ISO auto-download. With --unattended this "
+                           "makes --iso PATH mandatory (no implicit fetch).")
+
+    # Shared-folder flags (host SMB share -> VM Z:)
+    sf_g = p.add_argument_group("shared folder (host -> VM persistent storage)")
+    sf_g.add_argument("--shared-folder", default=str(DEFAULT_SHARED_FOLDER),
+                      metavar="PATH",
+                      help=f"Host folder shared into the VM as Z:. Created if "
+                           f"missing. Survives snapshot-restores. "
+                           f"(default: {DEFAULT_SHARED_FOLDER})")
+    sf_g.add_argument("--shared-folder-name", default=DEFAULT_SHARE_NAME,
+                      metavar="NAME",
+                      help=f"SMB share name on host "
+                           f"(default: {DEFAULT_SHARE_NAME})")
+    sf_g.add_argument("--no-shared-folder", action="store_true",
+                      help="Skip shared-folder setup entirely (no SMB share, "
+                           "no Z: mount inside VM).")
 
     p.set_defaults(func=cmd_vm_build)

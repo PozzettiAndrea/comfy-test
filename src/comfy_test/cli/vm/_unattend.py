@@ -20,6 +20,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from xml.sax.saxutils import escape as xml_escape
 
 from ._root import _ps
@@ -40,6 +41,11 @@ class Params:
     win_edition: str = "Windows 11 Pro"
     computer_name: str = "COMFYDESKTOPGPU"
     timezone: str = "UTC"
+    # Optional persistent-storage SMB share. If unc is None, the
+    # post-install script's mount step is a no-op.
+    shared_folder_unc: Optional[str] = None
+    shared_folder_user: Optional[str] = None
+    shared_folder_password: Optional[str] = None
 
 
 def _substitute(template: str, mapping: dict) -> str:
@@ -62,12 +68,15 @@ def _render_autounattend(p: Params) -> str:
 def _render_post_install(p: Params) -> str:
     src = (_TEMPLATE_DIR / "post-install.ps1").read_text(encoding="utf-8")
     return _substitute(src, {
-        "RUNNER_URL":         p.runner_url,
-        "RUNNER_TOKEN":       p.runner_token,
-        "NVIDIA_DRIVER_URL":  p.nvidia_driver_url,
-        "PYTHON_URL":         p.python_url,
-        "COMFY_DESKTOP_URL":  p.comfy_desktop_url,
-        "RUNNER_VERSION":     p.runner_version,
+        "RUNNER_URL":              p.runner_url,
+        "RUNNER_TOKEN":            p.runner_token,
+        "NVIDIA_DRIVER_URL":       p.nvidia_driver_url,
+        "PYTHON_URL":              p.python_url,
+        "COMFY_DESKTOP_URL":       p.comfy_desktop_url,
+        "RUNNER_VERSION":          p.runner_version,
+        "SHARED_FOLDER_UNC":       p.shared_folder_unc      or "",
+        "SHARED_FOLDER_USER":      p.shared_folder_user     or "",
+        "SHARED_FOLDER_PASSWORD":  p.shared_folder_password or "",
     })
 
 

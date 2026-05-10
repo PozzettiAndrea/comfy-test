@@ -7,7 +7,13 @@ the GPU is currently attached to it (vs the host).
 
 from __future__ import annotations
 
-from ._root import _require_windows, _ps, DEFAULT_VM_NAME
+from ._root import (
+    DEFAULT_SHARE_NAME,
+    DEFAULT_VM_NAME,
+    _default_switch_host_ip,
+    _ps,
+    _require_windows,
+)
 
 
 def cmd_vm_list(args) -> int:
@@ -58,6 +64,15 @@ def cmd_vm_list(args) -> int:
     print(f"\n[vm] === Host-detached PnP devices waiting for DDA ===")
     _ps("Get-VMHostAssignableDevice | Format-Table InstanceID,LocationPath "
         "-AutoSize")
+
+    print(f"\n[vm] === SMB shares (host -> VM persistent storage) ===")
+    _ps("Get-SmbShare | Where-Object { $_.Name -notmatch '^(ADMIN|IPC|[A-Z])\\$$' } | "
+        "Format-Table Name,Path,Description -AutoSize", check=False)
+    ip = _default_switch_host_ip()
+    if ip:
+        print(f"[vm] Default Switch host IP: {ip}")
+        print(f"[vm] VMs reach the '{DEFAULT_SHARE_NAME}' share at "
+              f"\\\\{ip}\\{DEFAULT_SHARE_NAME}")
 
     return 0
 

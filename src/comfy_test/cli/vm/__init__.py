@@ -17,11 +17,17 @@ Subcommands:
     snapshot  -- Take a Hyper-V checkpoint (after the in-VM setup is complete).
     restore   -- Revert the baseline VM to its clean snapshot
                  (per-test-run cleanup; called from dispatch-test.yml).
+    gpu       -- Show / swap the GPU between host and VM (manual escape
+                 hatch when you want your workstation GPU back).
+    share     -- Manage the host SMB share that gives the VM persistent
+                 storage outside the VHDX (model files, output dumps).
 """
 
 from .build import add_vm_build_parser, cmd_vm_build
+from .gpu import add_vm_gpu_parser, cmd_vm_gpu
 from .list import add_vm_list_parser, cmd_vm_list
 from .restore import add_vm_restore_parser, cmd_vm_restore
+from .share import add_vm_share_parser, cmd_vm_share
 from .snapshot import add_vm_snapshot_parser, cmd_vm_snapshot
 
 
@@ -38,12 +44,16 @@ def add_vm_parser(subparsers):
     add_vm_build_parser(sp)
     add_vm_snapshot_parser(sp)
     add_vm_restore_parser(sp)
+    add_vm_gpu_parser(sp)
+    add_vm_share_parser(sp)
 
 
 __all__ = [
     "add_vm_parser",
     "cmd_vm_build",
+    "cmd_vm_gpu",
     "cmd_vm_list",
     "cmd_vm_restore",
+    "cmd_vm_share",
     "cmd_vm_snapshot",
 ]
