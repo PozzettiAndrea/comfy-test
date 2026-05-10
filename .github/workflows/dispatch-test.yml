@@ -242,22 +242,18 @@ jobs:
           if-no-files-found: ignore
 
   # =========================================================================
-  # Desktop (macos-desktop, windows-desktop, windows-desktop-gpu) -- drives
-  # ComfyUI Desktop (Electron + Chromium + CDP). All run native (no docker):
-  # ComfyUI Desktop is an Electron app and process-isolated Windows
-  # containers can't run Electron with GPU + display the way bare-metal can.
-  #   * macos-desktop      -> github-hosted macos-latest (Apple Silicon)
-  #   * windows-desktop    -> github-hosted windows-latest
-  #   * windows-desktop-gpu-> self-hosted [windows, cuda] (same pool as the
-  #                           gpu job; that's where the NVIDIA driver lives)
+  # Desktop CPU variants (macos-desktop, windows-desktop) -- drives ComfyUI
+  # Desktop (Electron + Chromium + CDP) on GHA-hosted runners. No GPU.
+  # windows-desktop-gpu has its OWN job (`desktop_gpu` below) since it
+  # needs a real GPU + an interactive desktop session, which means running
+  # inside a Hyper-V baseline VM on a self-hosted runner -- not a container.
+  # See `comfy-test vm --help` for the VM lifecycle commands.
   # =========================================================================
   desktop:
-    if: ${{ contains(inputs.platform, 'desktop') }}
+    if: ${{ contains(inputs.platform, 'desktop') && inputs.platform != 'windows-desktop-gpu' }}
     name: ${{ inputs.platform }}
     runs-on: >-
-      ${{ (startsWith(inputs.platform, 'macos') && 'macos-latest')
-          || (inputs.platform == 'windows-desktop-gpu' && fromJson('["self-hosted","windows","cuda"]'))
-          || 'windows-latest' }}
+      ${{ startsWith(inputs.platform, 'macos') && 'macos-latest' || 'windows-latest' }}
     timeout-minutes: 300
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
@@ -316,8 +312,45 @@ jobs:
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --desktop
 
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ inputs.platform }}
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+
+  # =========================================================================
+  # windows-desktop-gpu -- own job, runs INSIDE a Hyper-V baseline VM on a
+  # self-hosted runner. Why a VM and not docker: ComfyUI Desktop is Electron
+  # + chromium, needs an interactive desktop session AND CUDA. Windows
+  # process containers have no Session 0 desktop (chromium can't open
+  # windows). Hyper-V isolated containers don't accept --device for GPU
+  # passthrough. Container GPU passthrough is DirectX/DirectML only, no
+  # CUDA. So the production-grade isolation primitive on Windows for
+  # Electron+CUDA is a Hyper-V VM with DDA, snapshotted to a clean baseline.
+  # See `comfy-test vm --help` for the lifecycle commands.
+  # =========================================================================
+  desktop_gpu:
+    if: ${{ inputs.platform == 'windows-desktop-gpu' }}
+    name: ${{ inputs.platform }}
+    # Self-hosted runner registered INSIDE the baseline VM (under the
+    # autologon user, NOT SYSTEM). The "vm" label is set by the runner
+    # registration in the VM (see `comfy-test vm build`'s in-VM checklist).
+    runs-on: [self-hosted, windows, cuda, vm]
+    timeout-minutes: 300
+    env:
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      PYTHONUNBUFFERED: "1"
+      PIP_NO_COMPILE: "1"
+      UV_COMPILE_BYTECODE: "0"
+      UV_LINK_MODE: hardlink
+    steps:
+      # The Defender / IO tweaks are baked into the VM snapshot itself
+      # (applied during `comfy-test vm build`'s in-VM checklist) so we
+      # don't repeat them per-run -- snapshot restore brings them back.
+
       - name: Run desktop test (GPU)
-        if: ${{ inputs.platform == 'windows-desktop-gpu' }}
         shell: bash
         run: |
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
@@ -330,6 +363,14 @@ jobs:
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
 
+      # Per-run snapshot revert is handled by the HOST runner via a
+      # post-job hook (or scheduled cleanup) -- the in-VM runner can't
+      # restore its own checkpoint. Document expected pattern:
+      #   On host: `comfy-test vm restore` runs after every test job
+      #   (e.g. via a separate "vm-cleanup" runner with the "vm-host" label
+      #   targeting `runs-on: [self-hosted, windows, vm-host]`, gated on
+      #   `if: always()` and `needs: desktop_gpu`).
+
   # =========================================================================
   # Publish (separate job so a flaky publish can be re-run from the GHA UI
   # without re-running the test job). Downloads the test job's artifact,
@@ -337,7 +378,7 @@ jobs:
   # `comfy-test publish` to push to <node-repo>:gh-pages/<branch>/<platform>/.
   # =========================================================================
   publish:
-    needs: [cpu, gpu, desktop]
+    needs: [cpu, gpu, desktop, desktop_gpu]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
