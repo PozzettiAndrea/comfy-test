@@ -164,29 +164,43 @@ jobs:
           $logs = "$env:RUNNER_TEMP\comfy-test-logs"
           "COMFY_TEST_LOGS_DIR=$logs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Pick Python version
-        id: python
+      # Both branches write COMFY_TEST_PYTHON_VERSION to $GITHUB_ENV so the
+      # downstream "Run docker test" steps just read it from env, no
+      # steps.<id>.outputs juggling. GHA forbids duplicate step IDs even
+      # when only one runs.
+      - name: Pick Python version (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           versions=(3.10 3.11 3.12 3.13)
           chosen=${versions[$RANDOM % ${#versions[@]}]}
-          echo "version=$chosen" >> $GITHUB_OUTPUT
-          echo "Picked Python $chosen (forwarded into container via COMFY_TEST_PYTHON_VERSION)"
+          echo "COMFY_TEST_PYTHON_VERSION=$chosen" >> "$GITHUB_ENV"
+          echo "Picked Python $chosen"
 
-      - name: Install comfy-test
-        shell: bash
+      - name: Pick Python version (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            sudo pip install --upgrade --break-system-packages comfy-test
-          else
-            pip install --upgrade comfy-test
-          fi
+          $versions = @('3.10','3.11','3.12','3.13')
+          $chosen = $versions[(Get-Random -Maximum $versions.Length)]
+          "COMFY_TEST_PYTHON_VERSION=$chosen" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Picked Python $chosen"
 
+      - name: Install comfy-test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo pip install --upgrade --break-system-packages comfy-test
+
+      - name: Install comfy-test (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: pip install --upgrade comfy-test
+
+      # COMFY_TEST_PYTHON_VERSION is already in env (set via $GITHUB_ENV
+      # by the earlier Pick Python steps), so no per-step env: override.
       - name: Run docker test (Linux)
         if: runner.os == 'Linux'
         shell: bash
-        env:
-          COMFY_TEST_PYTHON_VERSION: ${{ steps.python.outputs.version }}
         run: |
           PORTABLE_FLAG=""
           if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
@@ -196,8 +210,6 @@ jobs:
       - name: Run docker test (Windows)
         if: runner.os == 'Windows'
         shell: cmd
-        env:
-          COMFY_TEST_PYTHON_VERSION: ${{ steps.python.outputs.version }}
         run: |
           set "PORTABLE_FLAG="
           if /I "${{ inputs.platform }}"=="windows-portable-gpu" set "PORTABLE_FLAG=--portable"
