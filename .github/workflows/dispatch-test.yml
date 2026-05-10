@@ -88,6 +88,31 @@ jobs:
             --branch "${{ inputs.branch }}" \
             $PORTABLE_FLAG
 
+      # Push results.json + screenshots to <node-repo>:gh-pages/<branch>/<platform>/
+      # so https://<owner>.github.io/<node>/<branch>/ shows the new run.
+      # Mirrors the gpu job's Linux publish step; comfy-test run writes to
+      # ${COMFY_TEST_LOGS_DIR}/<short>-<HHMM>/<branch>/<platform>/ so the same
+      # find -path glob works.
+      - name: Publish results
+        if: always()
+        shell: bash
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
+        run: |
+          if [ -z "${NODE_PAT:-}" ]; then echo "No NODE_PAT, skipping publish"; exit 0; fi
+          git config --global user.email "ci@scan2wall.com"
+          git config --global user.name "comfy-test"
+          git config --global credential.helper store
+          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
+          NODE_BASE="${{ inputs.node_repo }}"
+          NODE_BASE="${NODE_BASE##*/}"
+          SHORT_NAME="${NODE_BASE#ComfyUI-}"
+          RESULTS=$(find "$COMFY_TEST_LOGS_DIR" \
+            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" \
+            2>/dev/null | head -1)
+          if [ -z "$RESULTS" ]; then echo "No results found, skipping publish"; exit 0; fi
+          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
+
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -240,6 +265,29 @@ jobs:
         run: |
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --desktop --gpu
+
+      # Push results.json + screenshots to <node-repo>:gh-pages/<branch>/<platform>/.
+      # _desktop_runner writes to <COMFY_TEST_LOGS_DIR>/<short>-<HHMM>/<branch>/<platform>/
+      # (aligned with cpu/gpu run.py shape), so the same find -path glob works.
+      - name: Publish results
+        if: always()
+        shell: bash
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
+        run: |
+          if [ -z "${NODE_PAT:-}" ]; then echo "No NODE_PAT, skipping publish"; exit 0; fi
+          git config --global user.email "ci@scan2wall.com"
+          git config --global user.name "comfy-test"
+          git config --global credential.helper store
+          echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
+          NODE_BASE="${{ inputs.node_repo }}"
+          NODE_BASE="${NODE_BASE##*/}"
+          SHORT_NAME="${NODE_BASE#ComfyUI-}"
+          RESULTS=$(find "$COMFY_TEST_LOGS_DIR" \
+            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" \
+            2>/dev/null | head -1)
+          if [ -z "$RESULTS" ]; then echo "No results found, skipping publish"; exit 0; fi
+          comfy-test publish "$(dirname "$RESULTS")" --repo "${{ inputs.node_repo }}"
 
       - if: always()
         uses: actions/upload-artifact@v4

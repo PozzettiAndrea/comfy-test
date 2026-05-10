@@ -672,13 +672,20 @@ def _run_named_card(page_arg, target_name):
 
 
 def _fetch_workflow_list_from_repo():
-    """Authoritative list of template workflow names -- fetched from the
-    node repo's `workflows/` directory contents on GitHub. Each `.json`
-    file's stem matches the data-testid suffix the Templates panel
-    renders (`template-workflow-<stem>`). Used as the source of truth
-    for the per-workflow loop so we don't depend on which cards the GUI
-    happens to have rendered/scrolled-into-view at enumeration time.
-    Returns empty list on any failure."""
+    """Authoritative list of template workflow names -- preferred source is
+    the COMFY_TEST_WORKFLOWS env var (pre-enumerated from a local clone by
+    _desktop_runner.run_desktop), falling back to the GitHub contents API
+    when invoked outside that wrapper. Each `.json` stem matches the
+    data-testid suffix the Templates panel renders
+    (`template-workflow-<stem>`). Used as the source of truth for the
+    per-workflow loop so we don't depend on which cards the GUI happens to
+    have rendered/scrolled-into-view at enumeration time. Returns empty
+    list on any failure."""
+    env_list = os.environ.get('COMFY_TEST_WORKFLOWS', '').strip()
+    if env_list:
+        names = [n for n in env_list.split(',') if n]
+        log(f'  loop: workflows/ from $COMFY_TEST_WORKFLOWS -> {names}')
+        return names
     try:
         node_repo = os.environ.get('NODE_REPO', '')
         node_branch = os.environ.get('NODE_BRANCH', 'main')

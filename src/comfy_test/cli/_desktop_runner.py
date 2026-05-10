@@ -20,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime
@@ -741,27 +742,49 @@ def run_desktop(args, desktop_mode: str) -> int:
         try: signal.signal(signal.SIGTERM, _sig_cleanup)
         except Exception: pass
 
-    # Desktop mode: NO local clone. Manager installs from main of the URL,
-    # and cdp_driver fetches all metadata it needs (pyproject.toml ->
-    # DisplayName/PublisherId/version, comfy-test.toml -> workflow spec,
-    # GitHub contents API -> workflows/ list) directly from
-    # raw.githubusercontent.com / api.github.com pinned to main.
-    from comfy_test.cli._nodelink import expand_nodelink
+    # Manager installs from main of the URL via the in-app GUI flow. We
+    # still shallow-clone the node locally so we can enumerate workflows/*.json
+    # from disk (avoids hitting api.github.com/repos/.../contents which the
+    # macOS hosted-runner pool's NAT'd egress IPs frequently 403 with anon
+    # rate-limit). cdp_driver picks up the list via COMFY_TEST_WORKFLOWS env.
+    from comfy_test.cli._nodelink import clone_node, expand_nodelink
 
     url = expand_nodelink(args.nodelink).rstrip(".git")
     node_name = url.rsplit("/", 1)[-1]
-    print(f"[desktop] node: {node_name}  (URL: {url}, branch: main)")
 
-    # Logs dir mirrors run.py's <short_name>-<HHMM> shape.
+    clone_root = Path(tempfile.mkdtemp(prefix="comfy-test-desktop-clone-"))
+    atexit.register(lambda: shutil.rmtree(clone_root, ignore_errors=True))
+    workflow_names: list[str] = []
+    try:
+        clone_node(url, "main", clone_root, log_prefix="[desktop]")
+        workflows_dir = clone_root / node_name / "workflows"
+        if workflows_dir.is_dir():
+            workflow_names = sorted(p.stem for p in workflows_dir.glob("*.json"))
+    except Exception as e:
+        print(f"[desktop] clone failed (workflow enumeration will fall back "
+              f"to api.github.com): {e}", file=sys.stderr)
+    print(f"[desktop] node: {node_name}  (URL: {url}, branch: main, "
+          f"workflows: {workflow_names})")
+
+    # Logs dir matches the cli/run.py shape: <run_id>/<branch>/<platform>/
+    # so dispatch-test.yml's publish step finds results.json with the same
+    # `find -path "*/<short>-*/<branch>/<platform>/results.json"` glob it
+    # uses for cpu / gpu jobs.
     short = node_name.removeprefix("ComfyUI-")
     timestamp = datetime.now().strftime("%H%M")
     run_id = f"{short}-{timestamp}"
+    branch_dir = getattr(args, "branch", None) or "main"
+    platform_dir = {
+        "mac":         "macos-desktop",
+        "windows":     "windows-desktop",
+        "windows_gpu": "windows-desktop-gpu",
+    }.get(desktop_mode, desktop_mode)
     # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
     # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
     # finds the run dir). Fall back to ~/comfy-test-logs for local use.
     _env_logs = os.environ.get("COMFY_TEST_LOGS_DIR")
     logs_root = Path(_env_logs) if _env_logs else Path.home() / "comfy-test-logs"
-    logs_dir = logs_root / run_id
+    logs_dir = logs_root / run_id / branch_dir / platform_dir
     debug_dir = logs_dir / "debug"
     for d in (logs_dir, debug_dir,
               logs_dir / "logs", logs_dir / "screenshots", logs_dir / "videos"):
@@ -812,6 +835,11 @@ def run_desktop(args, desktop_mode: str) -> int:
         "NODE_REPO": url.rsplit("github.com/", 1)[-1],
         "NODE_BRANCH": "main",  # Desktop only ever installs from main.
         "NODE_NAME": node_name,
+        # Pre-enumerated from the local clone above. cdp_driver's
+        # _fetch_workflow_list_from_repo short-circuits on this and skips
+        # the api.github.com call (which the macOS hosted-runner pool
+        # frequently 403s with anonymous rate-limit).
+        "COMFY_TEST_WORKFLOWS": ",".join(workflow_names),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.
         "COMFY_DESKTOP_APP_EXE": str(_APP_EXE),
