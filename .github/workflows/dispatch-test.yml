@@ -78,7 +78,7 @@ jobs:
         # caches, enable long paths, and exit 0 so individual cmdlet
         # failures don't fail the step.
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           function Try-Run($cmd) { try { & $cmd } catch { Write-Host "  (skip) $($_.Exception.Message)" } }
           Try-Run { Set-MpPreference -DisableRealtimeMonitoring $true }
@@ -159,7 +159,7 @@ jobs:
 
       - name: Set COMFY_TEST_LOGS_DIR (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $logs = "$env:RUNNER_TEMP\comfy-test-logs"
           "COMFY_TEST_LOGS_DIR=$logs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -285,7 +285,7 @@ jobs:
         # caches, enable long paths, and exit 0 so individual cmdlet
         # failures don't fail the step.
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           function Try-Run($cmd) { try { & $cmd } catch { Write-Host "  (skip) $($_.Exception.Message)" } }
           Try-Run { Set-MpPreference -DisableRealtimeMonitoring $true }
