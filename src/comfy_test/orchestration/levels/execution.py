@@ -288,7 +288,11 @@ def run(ctx: LevelContext) -> LevelContext:
     # Only read if .git exists directly in node_dir -- don't let git walk
     # up to a parent repo (e.g., ComfyUI) and return the wrong hash.
     commit_hash = None
-    if (ctx.node_dir / ".git").exists():
+    _git_dir_exists = (ctx.node_dir / ".git").exists()
+    print(f"[commit_hash debug] platform={ctx.platform_name} "
+          f"node_dir={ctx.node_dir} .git exists={_git_dir_exists}",
+          flush=True)
+    if _git_dir_exists:
         try:
             # Mark dir as safe (Docker bind mounts have different ownership)
             subprocess.run(
@@ -299,10 +303,14 @@ def run(ctx: LevelContext) -> LevelContext:
                 ["git", "rev-parse", "HEAD"],
                 cwd=ctx.node_dir, capture_output=True, text=True, timeout=5,
             )
+            print(f"[commit_hash debug] git rev-parse rc={hash_result.returncode} "
+                  f"stdout={hash_result.stdout.strip()!r} "
+                  f"stderr={hash_result.stderr.strip()!r}",
+                  flush=True)
             if hash_result.returncode == 0:
                 commit_hash = hash_result.stdout.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[commit_hash debug] exception: {e!r}", flush=True)
 
     results_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
