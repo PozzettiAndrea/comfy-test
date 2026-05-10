@@ -216,9 +216,12 @@ class MacOSPlatform(TestPlatform):
             "--port", str(port),
         ]
 
-        # Use CPU mode unless GPU mode is explicitly enabled
-        if not self.is_gpu_mode():
-            cmd.append("--cpu")
+        # Don't pass --cpu on macOS: the hosted macos-latest runner is Apple
+        # Silicon with usable MPS, and that's what real macOS users hit. Forcing
+        # CPU here misses MPS-specific bugs (e.g. torch's stricter empty-tensor
+        # asserts in the MPS backend) that only surface in production. ComfyUI
+        # auto-selects MPS via torch.backends.mps.is_available() in
+        # comfy/model_management.py when no --cpu flag is passed.
 
         if extra_args:
             cmd.extend(extra_args)
