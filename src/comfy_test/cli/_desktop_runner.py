@@ -76,19 +76,10 @@ def _validate_host(desktop_mode: str) -> Optional[str]:
         return f"--desktop_mac requires a macOS host, got {host}"
     if desktop_mode in ("windows", "windows_gpu") and host != "windows":
         return f"--{desktop_mode.replace('_', '-')} requires a Windows host, got {host}"
-    # On macOS, GUI apps can only launch in the user's `gui/<uid>` launchd
-    # session. Running this command from an SSH session puts us in a
-    # `Background` session where ComfyUI Desktop silently zombies (32-KB
-    # RSS, no children, no ports, no stdout -- nothing). Detect and bail
-    # with a clear explanation rather than the 60s CDP-poll timeout.
-    if desktop_mode == "mac" and os.environ.get("SSH_CONNECTION"):
-        return (
-            "--desktop_mac doesn't work from an SSH session -- macOS GUI apps\n"
-            "  can't launch in the Background launchd session that SSH gives you.\n"
-            "  Run from Terminal.app on the physical Mac console, OR re-run with\n"
-            "  `sudo launchctl asuser <uid> python -m comfy_test dockertest ... --desktop_mac`.\n"
-            f"  Detected SSH_CONNECTION={os.environ['SSH_CONNECTION']!r}."
-        )
+    # SSH-spawned shells (incl. loopback ones, like the one limactl/colima
+    # holds open against the host's own sshd) put the process in a Background
+    # launchd session, where `open <app>` silently zombies. We auto-bridge at
+    # the launch site via `sudo launchctl asuser <uid>`, so don't bail here.
     return None
 
 
@@ -326,17 +317,100 @@ def _launch(app_path: Path, desktop_mode: str, stdout_log: Path) -> None:
     out_fh = open(stdout_log, "wb")
     flag = "--remote-debugging-port=0"
     if desktop_mode == "mac":
-        # `open --args` forwards flags to the Electron main process argv.
-        subprocess.Popen(
-            ["open", str(app_path), "--args", flag],
-            stdout=out_fh, stderr=out_fh,
-        )
+        _open_mac_app(app_path, flag, out_fh)
     else:
         subprocess.Popen(
             [str(app_path), flag],
             stdout=out_fh, stderr=out_fh,
             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
         )
+
+
+def _open_mac_app(app_path: Path, flag: str, out_fh) -> None:
+    """`open <app> --args <flag>`, bridged into the user's aqua session via
+    `sudo launchctl asuser <uid>` if we're in any SSH-spawned shell (incl.
+    the loopback session limactl/colima keeps to the host's own sshd).
+    Without the bridge, `open` succeeds but the app zombies in the Background
+    launchd session: no Window Server, no CDP, no stdout."""
+    cmd = ["open", str(app_path), "--args", flag]
+    if not os.environ.get("SSH_CONNECTION"):
+        # `open --args` forwards flags to the Electron main process argv.
+        subprocess.Popen(cmd, stdout=out_fh, stderr=out_fh)
+        return
+    uid = str(os.getuid())
+    # Try cached-creds sudo first so back-to-back runs are silent.
+    probe = subprocess.run(
+        ["sudo", "-n", "launchctl", "asuser", uid] + cmd,
+        capture_output=True,
+    )
+    if probe.returncode == 0:
+        return
+    # Cached creds expired (or never set): fall through to interactive sudo.
+    print("[desktop] SSH_CONNECTION detected; bridging into aqua session "
+          "via `sudo launchctl asuser`. Sudo may prompt for password.",
+          file=sys.stderr)
+    subprocess.run(
+        ["sudo", "launchctl", "asuser", uid] + cmd,
+        stdout=out_fh, stderr=out_fh, check=False,
+    )
+
+
+def _start_host_screencap(logs_dir: Path, desktop_mode: str):
+    """macOS host-screen capture loop. Runs alongside ComfyUI Desktop from
+    launch onward so the live monitor shows what's on the Mac screen
+    (typically the first-run install wizard) before CDP comes up. Drops
+    `host_NNNNNN.jpg` into the same frames dir cdp_driver.py writes to;
+    monitor JS picks max index across both prefixes. Returns a Popen
+    handle (or None) for cleanup."""
+    if desktop_mode != "mac":
+        return None
+    frames_dir = logs_dir / "debug" / "electron_inspect" / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    debug_log = logs_dir / "debug" / "host-screencap.log"
+    needs_bridge = bool(os.environ.get("SSH_CONNECTION"))
+    uid = str(os.getuid())
+
+    def _wrap(argv):
+        """Wrap argv with the asuser bridge if we're SSH-spawned. Use plain
+        `sudo` (NOT -n) so an expired-creds case prompts on the user's tty
+        instead of silently failing."""
+        if needs_bridge:
+            return ["sudo", "launchctl", "asuser", uid] + argv
+        return argv
+
+    # Synchronous probe: one screencapture, fail loudly if it errors. This
+    # is far easier to debug than a daemon loop with DEVNULL'd stderr.
+    probe_path = frames_dir / "host_000000.jpg"
+    probe = subprocess.run(
+        _wrap(["/usr/sbin/screencapture", "-x", "-t", "jpg", "-T", "0",
+               str(probe_path)]),
+        capture_output=True, text=True,
+    )
+    if probe.returncode != 0 or not probe_path.exists():
+        print(f"[desktop] host-screencap: probe failed (rc={probe.returncode}). "
+              f"stderr: {(probe.stderr or '').strip() or '(empty)'}",
+              file=sys.stderr)
+        return None
+
+    # Probe worked -- start the loop, indices from 1. Any future failure goes
+    # to debug_log so the user can read it.
+    inner = (
+        f'i=1; while sleep 1.5; do '
+        f'/usr/sbin/screencapture -x -t jpg -T 0 '
+        f'"{frames_dir}/host_$(printf %06d $i).jpg"; '
+        f'i=$((i+1)); done'
+    )
+    cmd = _wrap(["/bin/bash", "-c", inner])
+    try:
+        log_fh = open(debug_log, "wb")
+        p = subprocess.Popen(cmd, stdout=log_fh, stderr=log_fh)
+        atexit.register(lambda: p.terminate() if p.poll() is None else None)
+        print(f"[desktop] host-screencap: writing host_*.jpg to {frames_dir} "
+              f"(loop log: {debug_log})")
+        return p
+    except Exception as e:
+        print(f"[desktop] host-screencap: skip ({e})", file=sys.stderr)
+        return None
 
 
 def _wait_for_cdp(desktop_mode: str, timeout_s: int = 240) -> Optional[int]:
@@ -470,15 +544,16 @@ async function tick(){
     const r=await fetch(FRAMES,{cache:"no-store"});
     if(r.ok){
       const t=await r.text();
-      let m=-1;
-      for(const x of t.matchAll(/frame_(\\d+)\\.png/g)){
-        const n=parseInt(x[1],10); if(n>m) m=n;
+      let m=-1, bestPrefix="frame", bestExt="png";
+      for(const x of t.matchAll(/(frame|host)_(\\d+)\\.(png|jpg)/g)){
+        const n=parseInt(x[2],10);
+        if(n>m){ m=n; bestPrefix=x[1]; bestExt=x[3]; }
       }
       if(m>last){
-        img.src=FRAMES+"frame_"+String(m).padStart(6,"0")+".png?t="+Date.now();
+        img.src=FRAMES+bestPrefix+"_"+String(m).padStart(6,"0")+"."+bestExt+"?t="+Date.now();
         last=m;
       }
-      meta.textContent=`frame ${m<0?"--":m} * ${new Date().toLocaleTimeString()}`;
+      meta.textContent=`${bestPrefix} ${m<0?"--":m} * ${new Date().toLocaleTimeString()}`;
     }else{
       meta.textContent="frames dir not yet available (HTTP "+r.status+")";
     }
@@ -704,14 +779,23 @@ def run_desktop(args, desktop_mode: str) -> int:
 
     # Bootstrap Desktop install + launch. (kill/wipe already ran up-front.)
     # Launch with --remote-debugging-port=0 so chromium picks a fresh
-    # ephemeral port — no fight with stale Windows orphan-LISTEN sockets
+    # ephemeral port -- no fight with stale Windows orphan-LISTEN sockets
     # from prior killed runs. We read the chosen port from
     # <userData>/DevToolsActivePort.
     app_path = _ensure_desktop_app(desktop_mode)
     stdout_log = debug_dir / "electron_stdout.log"
     _launch(app_path, desktop_mode, stdout_log)
+    screencap_proc = _start_host_screencap(logs_dir, desktop_mode)
     print(f"[desktop] launched {app_path}, waiting for DevToolsActivePort...")
-    cdp_port = _wait_for_cdp(desktop_mode, 240)
+    try:
+        cdp_port = _wait_for_cdp(desktop_mode, 240)
+    finally:
+        # Stop host capture as soon as cdp_driver takes over (or we bail).
+        # cdp_driver writes higher-indexed frame_*.png that the monitor JS
+        # picks over our host_*.jpg from this point on.
+        if screencap_proc is not None:
+            try: screencap_proc.terminate()
+            except Exception: pass
     if cdp_port is None:
         print(f"[desktop] CDP didn't come up within 240s "
               f"(no DevToolsActivePort)", file=sys.stderr)
