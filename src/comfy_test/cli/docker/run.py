@@ -285,6 +285,12 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
     py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
     if py_pin:
         docker_cmd += ["-e", f"COMFY_TEST_PYTHON_VERSION={py_pin}"]
+    # Propagate the GHA run URL so results.json's `run_url` field gets a real
+    # value (the dashboard's Goto-mode reads it to deep-link cells back to the
+    # run that produced them). Without this, the field stamps as null.
+    run_url = os.environ.get("COMFY_TEST_RUN_URL", "").strip()
+    if run_url:
+        docker_cmd += ["-e", f"COMFY_TEST_RUN_URL={run_url}"]
     docker_cmd += [DOCKER_IMAGE_WINDOWS] + ct_args
 
     print(f"[docker run] Running: {' '.join(docker_cmd)}")
@@ -377,6 +383,9 @@ def _run_linux(args, docker_exe: str, gpu: bool,
     py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
     if py_pin:
         docker_cmd += ["-e", f"COMFY_TEST_PYTHON_VERSION={py_pin}"]
+    run_url = os.environ.get("COMFY_TEST_RUN_URL", "").strip()
+    if run_url:
+        docker_cmd += ["-e", f"COMFY_TEST_RUN_URL={run_url}"]
     docker_cmd += [DOCKER_IMAGE_LINUX] + ct_args
 
     print(f"[docker run] Running: {' '.join(docker_cmd)}")
