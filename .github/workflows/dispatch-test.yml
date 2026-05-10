@@ -58,6 +58,10 @@ jobs:
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      # Stamped into results.json so the dashboard's Goto-mode can deep-link
+      # cells back to the GHA run that produced them. github.* is valid at
+      # job-level env (unlike runner.*).
+      COMFY_TEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # Without this, comfy-test's stdout block-buffers (CI step is a pipe,
       # not a TTY), so [desktop]/[comfy-test] prints are invisible until
       # process exit.
@@ -145,12 +149,15 @@ jobs:
           && fromJson('["self-hosted","linux","cuda"]')
           || fromJson('["self-hosted","windows","cuda"]') }}
     timeout-minutes: 300
-    # NOTE: no job-level `env:` block here. `runner.*` is not valid at
-    # job-level (the runner isn't allocated yet at job-definition parse time)
-    # and GitHub rejects the whole workflow with 422 if you try. We set
-    # COMFY_TEST_LOGS_DIR via $GITHUB_ENV in the first step instead.
-    # Split per-OS because the self-hosted Windows runner (andrew) doesn't
-    # have bash on PATH (Git\bin removed to avoid the sh.exe PATH leak).
+    # NOTE: `runner.*` is not valid at job-level env (runner isn't allocated
+    # yet at job-definition parse time) -- COMFY_TEST_LOGS_DIR is set via
+    # $GITHUB_ENV in the first step instead. github.* IS valid here, so the
+    # run-URL stamp lives at job-level. Split per-OS because the self-hosted
+    # Windows runner (andrew) doesn't have bash on PATH.
+    env:
+      # Stamped into results.json so the dashboard's Goto-mode can deep-link
+      # cells back to the GHA run that produced them.
+      COMFY_TEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Set COMFY_TEST_LOGS_DIR (Linux)
         if: runner.os == 'Linux'
@@ -280,6 +287,9 @@ jobs:
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
       COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}/test_workspaces
+      # Stamped into results.json so dashboard Goto-mode deep-links cells
+      # to the GHA run that produced them.
+      COMFY_TEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       PYTHONUNBUFFERED: "1"
       # Speed up pip/uv installs by skipping per-file .pyc compilation
       # (slows install, never read in one-shot CI runs) and by hard-linking

@@ -317,6 +317,10 @@ def run(ctx: LevelContext) -> LevelContext:
         "platform": ctx.platform_name,
         "hardware": hardware,
         "commit_hash": commit_hash,
+        # GHA run that produced this result. Dashboard's Goto-mode reads it
+        # to deep-link cells back to the run. Set by dispatch-test.yml's
+        # job-level env (github.* expansion).
+        "run_url": os.environ.get("COMFY_TEST_RUN_URL") or None,
         "success": all(r["status"] == "pass" for r in results if r["status"] != "skipped"),
         "summary": {
             "total": len(results),

@@ -266,6 +266,8 @@ def run(ctx: LevelContext) -> LevelContext:
         "platform": ctx.platform_name,
         "hardware": hardware,
         "commit_hash": commit_hash,
+        # GHA run URL for Goto-mode in the dashboard (see execution.py).
+        "run_url": os.environ.get("COMFY_TEST_RUN_URL") or None,
         "success": all(r["status"] == "pass" for r in results if r["status"] != "skipped"),
         "summary": {
             "total": len(results),

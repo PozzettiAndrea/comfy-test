@@ -1789,6 +1789,9 @@ _results_data = {
     "platform":    os.environ.get("COMFY_TEST_DESKTOP_PLATFORM", "unknown_desktop"),
     "hardware":    _hardware_info(),
     "commit_hash": os.environ.get("COMFY_TEST_NODE_SHA") or None,
+    # GHA run URL for Goto-mode in the dashboard. Set by dispatch-test.yml's
+    # job-level env (github.* expansion).
+    "run_url":     os.environ.get("COMFY_TEST_RUN_URL") or None,
     "success":     _failed == 0 and _passed > 0,
     "summary":     {"total": len(_workflow_results), "passed": _passed, "failed": _failed},
     "workflows":   _workflow_results,
