@@ -1760,18 +1760,44 @@ with sync_playwright() as p:
     log(f'Captured {fi[0]} frames')
     browser.close()
 
-# Write results.json at the run root (mirrors the path cpu's
-# `comfy-test run` writes to). generate_html_report() reads this to
-# build the per-platform index.html. Schema matches cpu's:
-#   {"workflows": [{name, status, duration_seconds, error}, ...]}
-# A synthetic 'system' row is prepended by the platform YML's
-# "Synthetic system workflow" step (with hardware metadata), so we
-# don't add one here.
+# Write results.json at the run root. Schema matches cpu's
+# orchestration/levels/execution.py: timestamp, platform, hardware,
+# commit_hash, success, summary, workflows. The dashboard's
+# comfy_ci.py:_check_ghpages_result reads success+commit_hash to
+# decide pass/fail/stale -- writing only `workflows` makes it render
+# as a stale-empty cell even on a green run.
+import platform as _platform
+from datetime import datetime as _dt, timezone as _tz
+
+def _hardware_info():
+    info = {"os": _platform.platform(), "cpu": _platform.processor() or "Unknown"}
+    try:
+        gpu = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if gpu.returncode == 0 and gpu.stdout.strip():
+            info["gpu"] = gpu.stdout.strip().splitlines()[0]
+    except Exception:
+        pass
+    return info
+
+_passed = sum(1 for w in _workflow_results if w.get("status") == "pass")
+_failed = sum(1 for w in _workflow_results if w.get("status") == "fail")
+_results_data = {
+    "timestamp":   _dt.now(_tz.utc).isoformat(),
+    "platform":    os.environ.get("COMFY_TEST_DESKTOP_PLATFORM", "unknown_desktop"),
+    "hardware":    _hardware_info(),
+    "commit_hash": os.environ.get("COMFY_TEST_NODE_SHA") or None,
+    "success":     _failed == 0 and _passed > 0,
+    "summary":     {"total": len(_workflow_results), "passed": _passed, "failed": _failed},
+    "workflows":   _workflow_results,
+}
 _results_path = _RUN_DIR / 'results.json'
 try:
-    _results_path.write_text(json.dumps({'workflows': _workflow_results}, indent=2),
-                             encoding='utf-8')
-    log(f'Wrote {_results_path} ({len(_workflow_results)} workflow(s))')
+    _results_path.write_text(json.dumps(_results_data, indent=2), encoding='utf-8')
+    log(f'Wrote {_results_path} ({len(_workflow_results)} workflow(s), '
+        f'sha={_results_data["commit_hash"][:12] if _results_data["commit_hash"] else "none"})')
 except Exception as e:
     log(f'results.json write failed: {e}')
 

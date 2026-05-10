@@ -755,15 +755,30 @@ def run_desktop(args, desktop_mode: str) -> int:
     clone_root = Path(tempfile.mkdtemp(prefix="comfy-test-desktop-clone-"))
     atexit.register(lambda: shutil.rmtree(clone_root, ignore_errors=True))
     workflow_names: list[str] = []
+    node_sha: Optional[str] = None
     try:
         clone_node(url, "main", clone_root, log_prefix="[desktop]")
         workflows_dir = clone_root / node_name / "workflows"
         if workflows_dir.is_dir():
             workflow_names = sorted(p.stem for p in workflows_dir.glob("*.json"))
+        # Capture HEAD SHA so cdp_driver can write it as commit_hash in
+        # results.json. Manager installs from main, so this is the SHA the
+        # test actually ran against -- the dashboard compares it against
+        # the node's main HEAD (not the dispatched branch).
+        try:
+            sha_proc = subprocess.run(
+                ["git", "-C", str(clone_root / node_name), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if sha_proc.returncode == 0:
+                node_sha = sha_proc.stdout.strip() or None
+        except Exception:
+            pass
     except Exception as e:
         print(f"[desktop] clone failed (workflow enumeration will fall back "
               f"to api.github.com): {e}", file=sys.stderr)
     print(f"[desktop] node: {node_name}  (URL: {url}, branch: main, "
+          f"sha: {node_sha[:12] if node_sha else 'unknown'}, "
           f"workflows: {workflow_names})")
 
     # Logs dir matches the cli/run.py shape: <run_id>/<branch>/<platform>/
@@ -840,6 +855,14 @@ def run_desktop(args, desktop_mode: str) -> int:
         # the api.github.com call (which the macOS hosted-runner pool
         # frequently 403s with anonymous rate-limit).
         "COMFY_TEST_WORKFLOWS": ",".join(workflow_names),
+        # cdp_driver writes these into results.json so the dashboard can
+        # render the cell colored by pass/fail and match the cpu schema.
+        "COMFY_TEST_NODE_SHA": node_sha or "",
+        "COMFY_TEST_DESKTOP_PLATFORM": {
+            "mac":         "macos_desktop",
+            "windows":     "windows_desktop",
+            "windows_gpu": "windows_desktop_gpu",
+        }.get(desktop_mode, "unknown_desktop"),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.
         "COMFY_DESKTOP_APP_EXE": str(_APP_EXE),
