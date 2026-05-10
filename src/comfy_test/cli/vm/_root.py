@@ -70,3 +70,30 @@ def _snapshot_exists(vm_name: str, snapshot_name: str) -> bool:
         capture=True,
     )
     return r.stdout.strip() == "yes"
+
+
+def _vm_state(vm_name: str) -> str:
+    r = _ps(f"(Get-VM -Name '{vm_name}').State", capture=True)
+    return (r.stdout or "").strip()
+
+
+def _wait_for_vm_state(
+    vm_name: str,
+    target: str,
+    timeout_seconds: int,
+    poll_seconds: int = 10,
+    on_tick=None,
+) -> bool:
+    """Block until `Get-VM | State` equals `target` or timeout. Returns True on
+    success, False on timeout. `on_tick` (optional) is called each poll with
+    the current state — handy for surfacing progress."""
+    import time
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        state = _vm_state(vm_name)
+        if on_tick is not None:
+            on_tick(state)
+        if state == target:
+            return True
+        time.sleep(poll_seconds)
+    return False
