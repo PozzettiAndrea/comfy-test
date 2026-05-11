@@ -238,17 +238,8 @@ jobs:
         if: always() && runner.os == 'Linux'
         shell: bash
         run: |
-          mkdir -p "$COMFY_TEST_LOGS_DIR"
-          LOGS_BASE="${COMFY_TEST_DOCKER_ROOT:-$HOME/.comfy-test/docker}/logs"
-          NODE_BASE="${{ inputs.node_repo }}"; SHORT_NAME="${NODE_BASE##*/}"; SHORT_NAME="${SHORT_NAME#ComfyUI-}"
-          # Latest run dir matching <SHORT>-<HHMM>
-          LATEST=$(find "$LOGS_BASE" -maxdepth 1 -type d -name "${SHORT_NAME}-*" 2>/dev/null | sort | tail -1)
-          if [ -n "$LATEST" ]; then
-            sudo cp -r "$LATEST" "$COMFY_TEST_LOGS_DIR/"
+          if [ -d "$COMFY_TEST_LOGS_DIR" ]; then
             sudo chown -R "$USER" "$COMFY_TEST_LOGS_DIR"
-            echo "Staged $LATEST -> $COMFY_TEST_LOGS_DIR"
-          else
-            echo "No <SHORT_NAME>-* dir found under $LOGS_BASE"
           fi
 
       - name: Stage results (Windows)
