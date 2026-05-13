@@ -152,15 +152,18 @@ jobs:
           # Write the wrapped command to a .ps1 on disk and invoke via -File.
           # Start-Process -Credential with -RedirectStandardOutput / -Std-
           # Error is flaky on Windows runners (CreateProcessAsUser returns
-          # ERROR_INVALID_PARAMETER depending on token / handle config).
-          # Writing the script to disk and letting it tee its own output to
-          # a log file avoids Start-Process redirection entirely.
+          # ERROR_INVALID_PARAMETER depending on token / handle config), so we
+          # use native PowerShell `*>` redirect at the call site instead of
+          # `| Tee-Object` because the Tee-Object pipeline on Windows holds
+          # the parent shell open after an external EXE exits, leaving the
+          # outer Start-Process -Wait stuck even after the test workflow
+          # completed successfully.
           $wrapped = @"
           `$ErrorActionPreference = 'Continue'
           try {
               & {
           $Command
-              } *>&1 | Tee-Object -FilePath '$logPath'
+              } *> '$logPath'
               exit `$LASTEXITCODE
           } catch {
               `$_ | Out-File -FilePath '$logPath' -Append -Encoding utf8
