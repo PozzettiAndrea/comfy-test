@@ -370,18 +370,35 @@ class WindowsPortablePlatform(TestPlatform):
         if extra_env:
             env.update(extra_env)
 
+        # Redirect server stdout/stderr to a file rather than capturing via
+        # subprocess.PIPE. The portable bundle ships many pre-installed custom
+        # nodes that flood stdout during startup; with PIPE and no draining,
+        # the ~64 KB Windows pipe buffer fills, the server blocks on its next
+        # write, never reaches "server ready", and the whole test driver
+        # stalls (terminate/kill on a process blocked in pipe-write doesn't
+        # unwedge it cleanly on Windows).
+        server_log = paths.work_dir / "server.log"
+        self._server_log_fh = open(server_log, "w", encoding="utf-8", errors="replace")
+        self._log(f"Server stdout/stderr -> {server_log}")
         process = subprocess.Popen(
             cmd,
             cwd=paths.comfyui_dir,
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            stdout=self._server_log_fh,
+            stderr=subprocess.STDOUT,
         )
 
         return process
+
+    def stop_server(self, process: subprocess.Popen) -> None:
+        """Stop the server and close the redirected log file handle."""
+        super().stop_server(process)
+        fh = getattr(self, "_server_log_fh", None)
+        if fh is not None and not fh.closed:
+            try:
+                fh.close()
+            finally:
+                self._server_log_fh = None
 
     def cleanup(self, paths: TestPaths) -> None:
         """Clean up test environment."""

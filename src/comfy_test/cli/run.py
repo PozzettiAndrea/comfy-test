@@ -196,6 +196,16 @@ def cmd_run(args) -> int:
             vram_debug=vram_debug,
         )]
 
+        # Copy per-platform server.log into output_dir so it ships with the
+        # artifact upload (work_dir lives under COMFY_TEST_WORKSPACE_DIR which
+        # is NOT part of the CI artifact path; only COMFY_TEST_LOGS_DIR is).
+        server_log_src = work_dir / "server.log"
+        if server_log_src.exists():
+            try:
+                shutil.copy2(server_log_src, output_dir / "server.log")
+            except OSError:
+                pass
+
         # Report results
         flags = []
         if args.gpu:
