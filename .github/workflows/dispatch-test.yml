@@ -73,6 +73,13 @@ jobs:
       PIP_NO_COMPILE: "1"
       UV_COMPILE_BYTECODE: "0"
       UV_LINK_MODE: hardlink
+      # On Windows the actual `comfy-test run` invocation drops privileges
+      # from `runneradmin` (the default GHA user, in Administrators) to this
+      # freshly-created standard user. Catches the class of bug "code
+      # accidentally requires admin on Windows" before it ships. No-op on
+      # Linux/macOS where the default `runner` user is already non-root.
+      STD_USER: stduser
+      STD_PWD: "ComfyTestNoAdmin_2026!"
     steps:
       - name: Tune Windows runner for IO-heavy installs
         # Beyond just disabling Defender realtime: also turn off scanning
@@ -121,7 +128,61 @@ jobs:
         shell: bash
         run: pip install --upgrade comfy-test
 
-      - name: Run tests
+      # On Windows: create a non-admin user, grant it access to the workspace +
+      # hosted Python toolcache, and stage a Start-Process -Credential wrapper.
+      # The `Run tests (Windows as stduser)` step then drops privileges from
+      # `runneradmin` to `stduser` for the actual `comfy-test run` invocation.
+      - name: Create standard user + helper (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $pwd = ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force
+          New-LocalUser -Name $env:STD_USER -Password $pwd -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          $admins = Get-LocalGroupMember -Group Administrators | Where-Object { $_.Name -like "*\$env:STD_USER" }
+          if ($admins) { throw "stduser ended up in Administrators -- aborting." }
+          icacls "${{ github.workspace }}" /grant "${env:STD_USER}:(OI)(CI)F" /T /Q | Out-Null
+          icacls "$env:pythonLocation" /grant "${env:STD_USER}:(OI)(CI)RX" /T /Q | Out-Null
+          $helper = @'
+          param([Parameter(Mandatory)][string]$Command)
+          $cred = [PSCredential]::new($env:STD_USER,
+              (ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force))
+          $ts = [DateTime]::Now.Ticks
+          $out = "$env:GITHUB_WORKSPACE\runas-$ts.out"
+          $err = "$env:GITHUB_WORKSPACE\runas-$ts.err"
+          $p = Start-Process powershell -Credential $cred -Wait -PassThru `
+              -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$Command `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out -ErrorAction SilentlyContinue
+          $errOut = Get-Content $err -ErrorAction SilentlyContinue
+          if ($errOut) { Write-Host "STDERR:`n$errOut" }
+          Remove-Item $out, $err -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "Non-admin command failed (exit $($p.ExitCode))" }
+          '@
+          Set-Content -Path "${{ github.workspace }}\run-as-stduser.ps1" -Value $helper
+
+      - name: Run tests (Windows as stduser)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $exe = (Get-Command comfy-test).Source
+          Write-Host "comfy-test exe: $exe"
+          $cmd = @"
+          `$me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          Write-Host "[ci] running as `$(`$me.Name)"
+          if (`$me.Name -notlike '*\stduser') { throw "expected stduser, got `$(`$me.Name)" }
+          `$role = New-Object System.Security.Principal.WindowsPrincipal(`$me)
+          if (`$role.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+              throw 'test step is somehow running as Administrator'
+          }
+          `$comfyArgs = @('run', 'https://github.com/${{ inputs.node_repo }}.git', '--branch', '${{ inputs.branch }}')
+          if ('${{ inputs.platform }}' -like '*portable*') { `$comfyArgs += '--portable' }
+          & '$exe' @comfyArgs
+          exit `$LASTEXITCODE
+          "@
+          & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd
+
+      - name: Run tests (Linux/macOS)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           PORTABLE_FLAG=""
