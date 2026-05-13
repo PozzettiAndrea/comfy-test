@@ -165,8 +165,24 @@ jobs:
         shell: powershell
         run: |
           $exe = (Get-Command comfy-test).Source
+          $pyExe = (Get-Command python).Source
+          $pyRoot = Split-Path $pyExe -Parent
+          $scriptsDir = Split-Path $exe -Parent
           Write-Host "comfy-test exe: $exe"
+          # Start-Process -Credential gives stduser a FRESH logon session, so
+          # GHA's job-level env vars are NOT visible. Re-export them inside
+          # the child command. Also prepend the hosted-Python paths so child
+          # subprocesses (pip, uv, python) resolve without PATH lookups
+          # against stduser's empty user-PATH.
           $cmd = @"
+          `$env:COMFY_TEST_LOGS_DIR = '$env:COMFY_TEST_LOGS_DIR'
+          `$env:COMFY_TEST_WORKSPACE_DIR = '$env:COMFY_TEST_WORKSPACE_DIR'
+          `$env:COMFY_TEST_RUN_URL = '$env:COMFY_TEST_RUN_URL'
+          `$env:PYTHONUNBUFFERED = '$env:PYTHONUNBUFFERED'
+          `$env:PIP_NO_COMPILE = '$env:PIP_NO_COMPILE'
+          `$env:UV_COMPILE_BYTECODE = '$env:UV_COMPILE_BYTECODE'
+          `$env:UV_LINK_MODE = '$env:UV_LINK_MODE'
+          `$env:PATH = '$pyRoot;$scriptsDir;' + `$env:PATH
           `$me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
           Write-Host "[ci] running as `$(`$me.Name)"
           if (`$me.Name -notlike '*\stduser') { throw "expected stduser, got `$(`$me.Name)" }
