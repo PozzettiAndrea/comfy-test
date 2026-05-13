@@ -178,10 +178,20 @@ jobs:
               `$_ | Out-File -FilePath '$logPath' -Append -Encoding utf8
               `$ec = 1
           }
-          [IO.File]::WriteAllText('$markerPath', `$ec.ToString())
+          # Guard against $LASTEXITCODE being $null (e.g. when no external EXE
+          # ran in the block). PowerShell's $null.ToString() throws, which would
+          # leave the marker unwritten and the parent's elseif-on-HasExited
+          # fallback path firing with an unpopulated $p.ExitCode.
+          if (`$null -eq `$ec) { `$ec = 0 }
+          try {
+              [IO.File]::WriteAllText('$markerPath', "`$ec")
+          } catch { }
           exit `$ec
           "@
           Set-Content -Path $scriptPath -Value $wrapped -Encoding UTF8
+          Write-Host "[wrapper] script: $scriptPath"
+          Write-Host "[wrapper] log:    $logPath"
+          Write-Host "[wrapper] marker: $markerPath"
 
           $p = Start-Process powershell -Credential $cred -PassThru `
               -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath
@@ -215,15 +225,25 @@ jobs:
           Stop-Job $tailJob -ErrorAction SilentlyContinue
           Remove-Job $tailJob -Force -ErrorAction SilentlyContinue
 
+          # WaitForExit() refresh: with Start-Process -PassThru (no -Wait), the
+          # Process object's ExitCode property requires an explicit WaitForExit
+          # call to populate even after HasExited flips true. Without this the
+          # elseif-on-HasExited fallback below sees ExitCode as $null.
+          if ($p.HasExited) { try { $p.WaitForExit() | Out-Null } catch { } }
+
           # Prefer the marker's recorded exit code (set explicitly by the wrapped
           # script). Fall back to the process exit code if we force-killed.
-          $exitCode = if (Test-Path $markerPath) {
-              [int]([IO.File]::ReadAllText($markerPath).Trim())
-          } elseif ($p.HasExited) {
-              $p.ExitCode
+          $markerContent = if (Test-Path $markerPath) {
+              try { [IO.File]::ReadAllText($markerPath).Trim() } catch { '' }
+          } else { '' }
+          $exitCode = if ($markerContent -match '^-?\d+$') {
+              [int]$markerContent
+          } elseif ($p.HasExited -and $null -ne $p.ExitCode) {
+              [int]$p.ExitCode
           } else {
               124
           }
+          Write-Host "[wrapper] exitCode=$exitCode  marker='$markerContent'  HasExited=$($p.HasExited)  Process.ExitCode=$($p.ExitCode)"
 
           Remove-Item $scriptPath, $logPath, $markerPath -ErrorAction SilentlyContinue
           if ($exitCode -ne 0) { throw "Non-admin command failed (exit $exitCode)" }
@@ -262,9 +282,16 @@ jobs:
           }
           `$comfyArgs = @('run', 'https://github.com/${{ inputs.node_repo }}.git', '--branch', '${{ inputs.branch }}')
           if ('${{ inputs.platform }}' -like '*portable*') { `$comfyArgs += '--portable' }
+          Write-Host "[ci] invoking: $exe `$(`$comfyArgs -join ' ')"
           & '$exe' @comfyArgs
-          exit `$LASTEXITCODE
+          # Intentionally NOT `exit $LASTEXITCODE` here -- that exits the whole
+          # wrapped PowerShell before run-as-stduser.ps1 can write the marker
+          # file with the real exit code. The wrapper captures $LASTEXITCODE
+          # after this script block returns naturally.
           "@
+          Write-Host "=== wrapped stduser command (begin) ==="
+          $cmd -split "`n" | ForEach-Object { Write-Host "  $_" }
+          Write-Host "=== wrapped stduser command (end) ==="
           & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd
 
       - name: Run tests (Linux/macOS)
