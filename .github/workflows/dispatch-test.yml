@@ -147,22 +147,31 @@ jobs:
           $cred = [PSCredential]::new($env:STD_USER,
               (ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force))
           $ts = [DateTime]::Now.Ticks
-          $out = "$env:GITHUB_WORKSPACE\runas-$ts.out"
-          $err = "$env:GITHUB_WORKSPACE\runas-$ts.err"
-          # Pass the script via -EncodedCommand instead of -Command. Multi-line
-          # scripts forwarded through Start-Process -ArgumentList trip Windows'
-          # CreateProcessAsUser parameter validation ("parameter is incorrect")
-          # because newlines in command-line args get mangled during the
-          # System.Diagnostics.Process serialization. Base64-UTF16LE encoding
-          # is the canonical way to pass arbitrary PowerShell scripts.
-          $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Command))
+          $scriptPath = "$env:GITHUB_WORKSPACE\runas-$ts.ps1"
+          $logPath    = "$env:GITHUB_WORKSPACE\runas-$ts.log"
+          # Write the wrapped command to a .ps1 on disk and invoke via -File.
+          # Start-Process -Credential with -RedirectStandardOutput / -Std-
+          # Error is flaky on Windows runners (CreateProcessAsUser returns
+          # ERROR_INVALID_PARAMETER depending on token / handle config).
+          # Writing the script to disk and letting it tee its own output to
+          # a log file avoids Start-Process redirection entirely.
+          $wrapped = @"
+          `$ErrorActionPreference = 'Continue'
+          try {
+              & {
+          $Command
+              } *>&1 | Tee-Object -FilePath '$logPath'
+              exit `$LASTEXITCODE
+          } catch {
+              `$_ | Out-File -FilePath '$logPath' -Append -Encoding utf8
+              exit 1
+          }
+          "@
+          Set-Content -Path $scriptPath -Value $wrapped -Encoding UTF8
           $p = Start-Process powershell -Credential $cred -Wait -PassThru `
-              -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded `
-              -RedirectStandardOutput $out -RedirectStandardError $err
-          Get-Content $out -ErrorAction SilentlyContinue
-          $errOut = Get-Content $err -ErrorAction SilentlyContinue
-          if ($errOut) { Write-Host "STDERR:`n$errOut" }
-          Remove-Item $out, $err -ErrorAction SilentlyContinue
+              -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath
+          Get-Content $logPath -ErrorAction SilentlyContinue
+          Remove-Item $scriptPath, $logPath -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "Non-admin command failed (exit $($p.ExitCode))" }
           '@
           Set-Content -Path "${{ github.workspace }}\run-as-stduser.ps1" -Value $helper
