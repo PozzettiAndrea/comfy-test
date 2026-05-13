@@ -27,29 +27,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libegl1 libgl1 libgles2 && \
     rm -rf /var/lib/apt/lists/*
 
-# uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
+# Non-root user for everything below. Running tests as root inside the
+# container papers over permission bugs that real users hit (e.g. the
+# `mkdir C:\ce` admin-required bug that went undetected for months because
+# CI was effectively privileged on every platform).
+RUN useradd -m -u 1000 -s /bin/bash comfytest && \
+    mkdir -p /workspaces /logs /node && \
+    chown comfytest:comfytest /workspaces /logs /node
 
-# Python 3.10–3.14 via uv: pre-install all candidates so per-test venv
+# Stage entrypoint with broad read+exec while we're still root.
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod 0755 /entrypoint.sh
+
+USER comfytest
+WORKDIR /home/comfytest
+
+# uv (installs into ~/.local/bin for the current user)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/comfytest/.local/bin:$PATH"
+
+# Python 3.10–3.13 via uv: pre-install all candidates so per-test venv
 # creation (uv venv --python 3.X) is fast regardless of which version
 # `_random_python_version()` picks for the run.
 RUN uv python install 3.10 3.11 3.12 3.13
+
+# Trust bind-mounted repos (different ownership in container vs host).
+# Per-user git config now, since we're no longer root.
+RUN git config --global --add safe.directory '*'
 
 # Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
     COMFY_TEST_LOGS_DIR=/logs \
     COMFY_TEST_GPU=1 \
     NVIDIA_DRIVER_CAPABILITIES=all
-
-# Trust bind-mounted repos (different ownership in container vs host)
-RUN git config --global --add safe.directory '*'
-
-RUN mkdir -p /workspaces /logs
-
-# Install comfy-test from PyPI at container start (same pattern as Windows image)
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--help"]
