@@ -427,6 +427,13 @@ jobs:
         run: |
           $nodeDir = "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
           $cmd = @"
+          `$me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          Write-Host "[ci] running as `$(`$me.Name)"
+          if (`$me.Name -notlike '*\stduser') { throw "expected stduser, got `$(`$me.Name)" }
+          `$role = New-Object System.Security.Principal.WindowsPrincipal(`$me)
+          if (`$role.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+              throw 'non-admin lane is somehow running as Administrator'
+          }
           Set-Location '$nodeDir'
           & '$env:VENV\Scripts\python' -m comfy_test run --server-url http://127.0.0.1:8188 --level execution
           exit `$LASTEXITCODE

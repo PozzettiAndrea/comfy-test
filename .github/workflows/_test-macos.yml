@@ -171,6 +171,17 @@ jobs:
           exit 1
 
       # --- Run tests ---
+      - name: Assert non-root identity
+        shell: bash
+        run: |
+          actual_uid=$(id -u)
+          actual_user=$(id -un)
+          echo "[ci] running test as $actual_user (uid=$actual_uid)"
+          if [ "$actual_uid" -eq 0 ]; then
+            echo "[ci] ERROR: test step is running as root; this masks permission bugs"
+            exit 1
+          fi
+
       - name: Run tests
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: $VENV/bin/python -m comfy_test run --server-url http://127.0.0.1:8188 --level execution
