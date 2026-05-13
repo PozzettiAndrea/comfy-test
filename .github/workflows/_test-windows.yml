@@ -190,3 +190,266 @@ jobs:
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
           include-hidden-files: true
+
+  # ===========================================================================
+  # Non-admin lane: runs the install + ComfyUI server + test execution as a
+  # freshly-created local user that is NOT in the Administrators group, so we
+  # catch the class of bug "code accidentally requires admin on Windows"
+  # before it ships. The default `runneradmin` user on windows-latest is in
+  # Administrators, which masks `HKLM`-write / symlink-create / ACL-inheritance
+  # failures that real users hit.
+  #
+  # Setup phases (Python, ComfyUI clone, ComfyUI reqs, Playwright, comfy-test)
+  # stay as runneradmin because they're idempotent + cached. The non-admin
+  # user only runs (a) `install.py` -- where comfy-env builds isolation envs
+  # under that user's %LOCALAPPDATA%, (b) the ComfyUI server, (c) the test
+  # driver. That's the surface where standard-user-vs-admin bugs actually live.
+  # ===========================================================================
+  windows-test-nonadmin:
+    name: windows-test-nonadmin
+    runs-on: windows-latest
+    timeout-minutes: 300
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      PW_TEST_SCREENSHOT_NO_FONTS_READY: "1"
+      COMFY_ENV_DEBUG: "1"
+      COMFY_TEST_GPU: "0"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}\comfy-test-logs
+      COMFY_TEST_WORKSPACE_DIR: ${{ github.workspace }}\test_workspaces
+      COMFYUI_DIR: ${{ github.workspace }}\ComfyUI
+      VENV: ${{ github.workspace }}\.venv
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}\.playwright
+      STD_USER: stduser
+      # Hardcoded password is fine here: the GHA runner VM is ephemeral
+      # (destroyed within a few hours), and stduser exists only inside it.
+      STD_PWD: "ComfyTestNoAdmin_2026!"
+    steps:
+      - name: Resolve target node
+        shell: bash
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+        run: |
+          if [ -n "$INPUT_REPO" ]; then
+            echo "NODE_NAME=${INPUT_REPO##*/}" >> $GITHUB_ENV
+          else
+            echo "NODE_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Pick Python version
+        id: python
+        shell: bash
+        run: |
+          versions=(3.10 3.11 3.12 3.13)
+          chosen=${versions[$RANDOM % ${#versions[@]}]}
+          echo "version=$chosen" >> $GITHUB_OUTPUT
+          echo "Picked Python $chosen"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.python.outputs.version }}
+
+      # --- Restore cache ---
+      - uses: actions/cache/restore@v4
+        id: setup-cache
+        with:
+          path: |
+            ${{ env.VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+          key: setup-windows-cpu-py${{ steps.python.outputs.version }}
+
+      # --- Setup as admin (cached) ---
+      - name: Create venv and install uv
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          python -m venv $env:VENV
+          & "$env:VENV\Scripts\pip" install uv
+
+      - name: Clone ComfyUI
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        run: git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ${{ env.COMFYUI_DIR }}
+
+      - name: Install ComfyUI requirements
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install -r "$env:COMFYUI_DIR\requirements.txt"
+
+      - name: Install Playwright
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          & "$env:VENV\Scripts\uv" pip install playwright
+          & "$env:VENV\Scripts\python" -m playwright install chromium
+
+      - uses: actions/cache/save@v4
+        if: steps.setup-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ env.VENV }}
+            ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+            ${{ env.COMFYUI_DIR }}
+          key: setup-windows-cpu-py${{ steps.python.outputs.version }}
+
+      - name: Install comfy-test
+        shell: powershell
+        run: |
+          $version = if ($env:GITHUB_WORKFLOW_REF -match '@refs/tags/v(.+)$') { $Matches[1] } else { $null }
+          if ($version) {
+            & "$env:VENV\Scripts\uv" pip install "comfy-test==$version"
+          } else {
+            & "$env:VENV\Scripts\uv" pip install comfy-test
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.node_repo || github.repository }}
+          ref: ${{ inputs.node_branch || github.ref }}
+          token: ${{ secrets.NODE_PAT || github.token }}
+          path: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
+
+      - name: Install validate endpoint
+        shell: powershell
+        run: |
+          git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
+          $true
+
+      # --- Create the non-admin user; everything below runs as them ---
+      - name: Create standard user + helper
+        shell: powershell
+        run: |
+          $pwd = ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force
+          New-LocalUser -Name $env:STD_USER -Password $pwd -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          # Explicitly NOT adding to Administrators -- this is the whole point.
+          # Verify it's a plain Users member only.
+          $admins = Get-LocalGroupMember -Group Administrators | Where-Object { $_.Name -like "*\$env:STD_USER" }
+          if ($admins) { throw "stduser ended up in Administrators -- aborting non-admin test." }
+
+          # Grant stduser read+execute on the workspace + cached venv/ComfyUI.
+          # /T traverses; /Q silent. (OI)(CI)RX inherits to files+dirs.
+          icacls "${{ github.workspace }}" /grant "${env:STD_USER}:(OI)(CI)F" /T /Q | Out-Null
+          # Python lives in the hosted toolcache, outside the workspace.
+          icacls "$env:pythonLocation" /grant "${env:STD_USER}:(OI)(CI)RX" /T /Q | Out-Null
+
+          # Helper used by every subsequent step. Wraps a script block in
+          # Start-Process -Credential, captures stdout/stderr, propagates
+          # exit code as a thrown exception so the GHA step fails correctly.
+          $helper = @'
+          param(
+              [Parameter(Mandatory)][string]$Command,
+              [switch]$Async,
+              [string]$PidFile
+          )
+          $cred = [PSCredential]::new($env:STD_USER,
+              (ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force))
+          $ts = [DateTime]::Now.Ticks
+          $out = "$env:GITHUB_WORKSPACE\runas-$ts.out"
+          $err = "$env:GITHUB_WORKSPACE\runas-$ts.err"
+          $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$Command)
+          if ($Async) {
+              $p = Start-Process powershell -Credential $cred -PassThru `
+                  -WindowStyle Hidden -ArgumentList $argList `
+                  -RedirectStandardOutput $out -RedirectStandardError $err
+              if ($PidFile) { $p.Id | Out-File $PidFile }
+              return
+          }
+          $p = Start-Process powershell -Credential $cred -Wait -PassThru `
+              -ArgumentList $argList `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out -ErrorAction SilentlyContinue
+          $errOut = Get-Content $err -ErrorAction SilentlyContinue
+          if ($errOut) { Write-Host "STDERR:`n$errOut" }
+          Remove-Item $out, $err -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "Non-admin command failed (exit $($p.ExitCode))" }
+          '@
+          Set-Content -Path "${{ github.workspace }}\run-as-stduser.ps1" -Value $helper
+          Write-Host "stduser created; helper script staged."
+          Get-LocalUser -Name $env:STD_USER | Format-List
+
+      - name: Install node dependencies (as stduser)
+        shell: powershell
+        run: |
+          $nodeDir = "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
+          # Single-quoted here-string so $LASTEXITCODE / Set-Location resolve
+          # in the CHILD shell, while $nodeDir / $env:VENV are expanded HERE
+          # (parent shell, before sending to the child).
+          $cmd = @"
+          Set-Location '$nodeDir'
+          if (Test-Path 'requirements.txt') {
+              & '$env:VENV\Scripts\uv' pip install -r requirements.txt
+              if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+          }
+          if (Test-Path 'install.py') {
+              & '$env:VENV\Scripts\python' install.py
+              if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+          }
+          exit 0
+          "@
+          & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd
+
+      - name: Start ComfyUI server (as stduser)
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:COMFY_TEST_LOGS_DIR | Out-Null
+          icacls $env:COMFY_TEST_LOGS_DIR /grant "${env:STD_USER}:(OI)(CI)F" /T /Q | Out-Null
+          $cmd = @"
+          Set-Location '$env:COMFYUI_DIR'
+          & '$env:VENV\Scripts\python' -u main.py --listen 127.0.0.1 --port 8188 --cpu *>&1 |
+              Out-File -FilePath '$env:COMFY_TEST_LOGS_DIR\server.log' -Encoding utf8
+          "@
+          & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd -Async `
+              -PidFile "${{ github.workspace }}\server.pid"
+          Write-Host "Server PID file: ${{ github.workspace }}\server.pid"
+
+      - name: Wait for server
+        shell: powershell
+        run: |
+          for ($i = 1; $i -le 300; $i++) {
+              try {
+                  Invoke-WebRequest -Uri http://127.0.0.1:8188/system_stats `
+                      -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
+                  Write-Host "Server ready after ${i}s"
+                  Write-Host "=== Server startup log ==="
+                  Get-Content "$env:COMFY_TEST_LOGS_DIR\server.log" -ErrorAction SilentlyContinue
+                  exit 0
+              } catch {
+                  Start-Sleep -Seconds 1
+              }
+          }
+          Write-Host "Server failed to start"
+          Get-Content "$env:COMFY_TEST_LOGS_DIR\server.log" -ErrorAction SilentlyContinue
+          exit 1
+
+      - name: Run tests (as stduser)
+        shell: powershell
+        run: |
+          $nodeDir = "$env:COMFYUI_DIR\custom_nodes\$env:NODE_NAME"
+          $cmd = @"
+          Set-Location '$nodeDir'
+          & '$env:VENV\Scripts\python' -m comfy_test run --server-url http://127.0.0.1:8188 --level execution
+          exit `$LASTEXITCODE
+          "@
+          & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd
+
+      # --- Cleanup ---
+      - name: Stop server
+        if: always()
+        shell: powershell
+        run: |
+          $pidFile = "${{ github.workspace }}\server.pid"
+          if (Test-Path $pidFile) {
+              $serverPid = (Get-Content $pidFile).Trim()
+              if ($serverPid) {
+                  Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue
+              }
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-windows-cpu-nonadmin
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+          include-hidden-files: true
