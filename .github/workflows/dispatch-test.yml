@@ -149,33 +149,84 @@ jobs:
           $ts = [DateTime]::Now.Ticks
           $scriptPath = "$env:GITHUB_WORKSPACE\runas-$ts.ps1"
           $logPath    = "$env:GITHUB_WORKSPACE\runas-$ts.log"
-          # Write the wrapped command to a .ps1 on disk and invoke via -File.
-          # Start-Process -Credential with -RedirectStandardOutput / -Std-
-          # Error is flaky on Windows runners (CreateProcessAsUser returns
-          # ERROR_INVALID_PARAMETER depending on token / handle config), so we
-          # use native PowerShell `*>` redirect at the call site instead of
-          # `| Tee-Object` because the Tee-Object pipeline on Windows holds
-          # the parent shell open after an external EXE exits, leaving the
-          # outer Start-Process -Wait stuck even after the test workflow
-          # completed successfully.
+          $markerPath = "$env:GITHUB_WORKSPACE\runas-$ts.done"
+          # Write the wrapped command to a .ps1 and invoke via -File. The
+          # wrapped script redirects all output streams to $logPath via `*>`
+          # (no PowerShell pipeline / Tee-Object — those don't reliably
+          # detect external-EXE EOF and hold the shell open). After the
+          # inner command returns, the script writes its exit code to
+          # $markerPath and then `exit`s.
+          #
+          # The PARENT side (us) doesn't use Start-Process -Wait — instead:
+          #   * background a Get-Content -Wait job so log lines stream to
+          #     our stdout in real time as the child writes them;
+          #   * poll for $markerPath. Once it appears, the inner command
+          #     has finished and any further wait is the child's exit-time
+          #     hang (Python teardown, PowerShell pipeline drain, etc.);
+          #   * if the child PowerShell is still alive 60s after the marker
+          #     was written, Stop-Process -Force it. This is the watchdog
+          #     for the "test passed but powershell.exe won't exit" pattern
+          #     we kept hitting on the stduser lane.
           $wrapped = @"
           `$ErrorActionPreference = 'Continue'
           try {
               & {
           $Command
               } *> '$logPath'
-              exit `$LASTEXITCODE
+              `$ec = `$LASTEXITCODE
           } catch {
               `$_ | Out-File -FilePath '$logPath' -Append -Encoding utf8
-              exit 1
+              `$ec = 1
           }
+          [IO.File]::WriteAllText('$markerPath', `$ec.ToString())
+          exit `$ec
           "@
           Set-Content -Path $scriptPath -Value $wrapped -Encoding UTF8
-          $p = Start-Process powershell -Credential $cred -Wait -PassThru `
+
+          $p = Start-Process powershell -Credential $cred -PassThru `
               -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath
-          Get-Content $logPath -ErrorAction SilentlyContinue
-          Remove-Item $scriptPath, $logPath -ErrorAction SilentlyContinue
-          if ($p.ExitCode -ne 0) { throw "Non-admin command failed (exit $($p.ExitCode))" }
+
+          # Tail the log file in a background job and pump its lines to our stdout.
+          $tailJob = Start-Job -ScriptBlock {
+              param($path)
+              while (-not (Test-Path $path)) { Start-Sleep -Milliseconds 200 }
+              Get-Content $path -Wait -ErrorAction SilentlyContinue
+          } -ArgumentList $logPath
+
+          $KILL_GRACE_SEC = 60
+          $markerTime = $null
+          while (-not $p.HasExited) {
+              Receive-Job $tailJob -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+              if ($null -eq $markerTime -and (Test-Path $markerPath)) {
+                  $markerTime = Get-Date
+                  Write-Host "[wrapper] inner script wrote marker; waiting up to ${KILL_GRACE_SEC}s for graceful child exit..."
+              }
+              if ($null -ne $markerTime -and ((Get-Date) - $markerTime).TotalSeconds -gt $KILL_GRACE_SEC) {
+                  Write-Host "[wrapper] grace period exceeded; force-killing stalled child PowerShell (pid $($p.Id))"
+                  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                  $p.WaitForExit(10000) | Out-Null
+                  break
+              }
+              Start-Sleep -Seconds 2
+          }
+
+          # Final output drain + tail cleanup.
+          Receive-Job $tailJob -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+          Stop-Job $tailJob -ErrorAction SilentlyContinue
+          Remove-Job $tailJob -Force -ErrorAction SilentlyContinue
+
+          # Prefer the marker's recorded exit code (set explicitly by the wrapped
+          # script). Fall back to the process exit code if we force-killed.
+          $exitCode = if (Test-Path $markerPath) {
+              [int]([IO.File]::ReadAllText($markerPath).Trim())
+          } elseif ($p.HasExited) {
+              $p.ExitCode
+          } else {
+              124
+          }
+
+          Remove-Item $scriptPath, $logPath, $markerPath -ErrorAction SilentlyContinue
+          if ($exitCode -ne 0) { throw "Non-admin command failed (exit $exitCode)" }
           '@
           Set-Content -Path "${{ github.workspace }}\run-as-stduser.ps1" -Value $helper
 
