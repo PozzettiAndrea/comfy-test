@@ -8,7 +8,11 @@
 # defaults to latest.
 
 $ErrorActionPreference = 'Stop'
-$env:PATH = "C:\Users\ContainerAdministrator\.local\bin;$env:PATH"
+$env:PATH = "C:\Users\ContainerUser\.local\bin;$env:PATH"
+# Diagnostic: surface the runtime identity at every container start so a
+# regression to admin (e.g. someone adds `--user ContainerAdministrator` at
+# `docker run` time) is visible in CI logs at the top of the log.
+Write-Host "[entrypoint] running as $env:USERNAME"
 
 if ($env:COMFY_TEST_VERSION) {
     uv tool install --reinstall "comfy-test==$env:COMFY_TEST_VERSION"

@@ -241,6 +241,21 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         if env_cache_dir is not None:
             env_cache_mount_src = env_cache_dir
 
+    # Grant the host's `Users` group Modify on every bind-mount source dir.
+    # The Windows GPU container now runs as `ContainerUser` (non-admin) — see
+    # docker/windows-gpu/Dockerfile. Windows containers project the host's
+    # NTFS ACLs through bind mounts; ContainerUser inside maps to the host's
+    # `Users` / `Authenticated Users` SID. Without an explicit grant, dirs
+    # created with default creator-only ACLs cause `[WinError 5] Access is
+    # denied` from inside the container at the first write attempt.
+    for _src in (logs_mount_src, node_mount_src, workspace_mount_src, env_cache_mount_src):
+        if _src is None:
+            continue
+        subprocess.run(
+            ["icacls", str(_src), "/grant", "Users:(OI)(CI)F", "/T", "/Q"],
+            capture_output=True, text=True,
+        )
+
     # Build comfy-test args inside the container
     # Inner `comfy-test run` derives platform from the container's host OS.
     # We pass --portable / --gpu / --workflow / --branch through.
