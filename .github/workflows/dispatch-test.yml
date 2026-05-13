@@ -149,8 +149,15 @@ jobs:
           $ts = [DateTime]::Now.Ticks
           $out = "$env:GITHUB_WORKSPACE\runas-$ts.out"
           $err = "$env:GITHUB_WORKSPACE\runas-$ts.err"
+          # Pass the script via -EncodedCommand instead of -Command. Multi-line
+          # scripts forwarded through Start-Process -ArgumentList trip Windows'
+          # CreateProcessAsUser parameter validation ("parameter is incorrect")
+          # because newlines in command-line args get mangled during the
+          # System.Diagnostics.Process serialization. Base64-UTF16LE encoding
+          # is the canonical way to pass arbitrary PowerShell scripts.
+          $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Command))
           $p = Start-Process powershell -Credential $cred -Wait -PassThru `
-              -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$Command `
+              -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded `
               -RedirectStandardOutput $out -RedirectStandardError $err
           Get-Content $out -ErrorAction SilentlyContinue
           $errOut = Get-Content $err -ErrorAction SilentlyContinue
