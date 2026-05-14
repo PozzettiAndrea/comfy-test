@@ -156,6 +156,15 @@ def cmd_run(args) -> int:
         branch = getattr(args, 'branch', None)
         gpu = args.gpu or os.environ.get("COMFY_TEST_GPU") == "1"
         gpu_suffix = "gpu" if gpu else "cpu"
+        # Propagate args.gpu into COMFY_TEST_GPU so the platform layer's
+        # is_gpu_mode() (which only reads the env var) sees it. Without this,
+        # `comfy-test run --gpu` silently runs ComfyUI in CPU mode.
+        if gpu:
+            os.environ["COMFY_TEST_GPU"] = "1"
+        # Propagate --torch-version (CLI > env var > config TOML > default).
+        torch_version_override = getattr(args, "torch_version", None)
+        if torch_version_override:
+            config.torch_version = torch_version_override
         # External naming uses hyphens (gh-pages URLs, CI workflow inputs, artifact
         # names). The internal `platform` string is `windows_portable` for valid Python
         # identifier purposes; normalize the on-disk dir name to hyphens so e.g.
@@ -357,6 +366,17 @@ def add_run_parser(subparsers):
         "--novram",
         action="store_true",
         help="Pass --novram to ComfyUI (no VRAM reservation)",
+    )
+    run_parser.add_argument(
+        "--torch-version",
+        default=None,
+        metavar="VERSION",
+        help="Override torch_version in TestConfig. Accepts 'X.Y.Z' (auto-derives "
+             "torchvision/torchaudio from common.config.TORCH_TRIPLES), 'latest' "
+             "(opt out of pinning), or a slash-separated triple "
+             "'torch/torchvision/torchaudio'. Default comes from TestConfig "
+             "(comfy-test.toml) -> common.config.DEFAULT_TORCH_VERSION. "
+             "Also reads $COMFY_TEST_TORCH_VERSION as an override.",
     )
     run_parser.add_argument(
         "--vram-debug",

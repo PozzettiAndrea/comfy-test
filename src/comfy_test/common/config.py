@@ -4,10 +4,65 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 # Supported Python versions for random selection
 PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
+
+# Pinned torch family. Default tracks the most recent fully-aligned set on
+# PyPI -- torch, torchvision, torchaudio released in lockstep with matching
+# CUDA-bundle versions. We pin this explicitly because torch's release
+# cadence has pulled ahead of torchaudio's (e.g. torch 2.12.0 shipped
+# 2026-05-13 with CUDA 13 but torchaudio is still at 2.11.0 with CUDA 12.8,
+# producing skewed venvs when uv resolves freely). Bump this constant
+# whenever a new fully-aligned set is published.
+#
+# To opt out of pinning (use whatever uv resolves), set torch_version to
+# "latest" via CLI flag, env var, or comfy-test.toml. To override the auto-
+# derived auxiliary versions, pass a slash-separated triple like
+# "2.13.0/0.28.0/2.13.0".
+DEFAULT_TORCH_VERSION = "2.11.0"
+
+# Known-good torch / torchvision / torchaudio triples available on PyPI as
+# cp310/cp311/cp312/cp313 manylinux + win + macos wheels. Verify wheel
+# availability on pypi.org (or pytorch.org/whl/cu128) before adding entries.
+TORCH_TRIPLES: dict = {
+    "2.11.0": ("0.26.0", "2.11.0"),
+    "2.10.0": ("0.25.0", "2.10.0"),
+    "2.9.1":  ("0.24.1", "2.9.1"),
+    "2.9.0":  ("0.24.0", "2.9.0"),
+    "2.8.0":  ("0.23.0", "2.8.0"),
+}
+
+
+def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str]]:
+    """Resolve a torch_version specifier to a (torch, torchvision, torchaudio) triple.
+
+    Accepts:
+      None or ""    -> use DEFAULT_TORCH_VERSION
+      "latest"      -> None (opt out of pinning; let uv resolve freely)
+      "X.Y.Z"       -> auto-derive from TORCH_TRIPLES; raises if unknown
+      "T/V/A"       -> slash-separated explicit triple (escape hatch for
+                       versions not in TORCH_TRIPLES yet)
+    """
+    if version is None or version == "":
+        version = DEFAULT_TORCH_VERSION
+    if version == "latest":
+        return None
+    if "/" in version:
+        parts = version.split("/")
+        if len(parts) != 3:
+            raise ValueError(
+                f"torch_version slash-form must have 3 parts (torch/torchvision/torchaudio), got {version!r}"
+            )
+        return (parts[0], parts[1], parts[2])
+    if version not in TORCH_TRIPLES:
+        raise ValueError(
+            f"torch_version {version!r} not in TORCH_TRIPLES. Known: {sorted(TORCH_TRIPLES)}. "
+            f"Pass a slash-separated triple ('2.13.0/0.28.0/2.13.0') to override."
+        )
+    tv, ta = TORCH_TRIPLES[version]
+    return (version, tv, ta)
 
 
 def _random_python_version() -> str:
@@ -190,6 +245,7 @@ class TestConfig:
     name: str
     comfyui_version: str = "latest"
     python_version: str = field(default_factory=_random_python_version)
+    torch_version: str = DEFAULT_TORCH_VERSION
     timeout: int = 600
     res: int = 1080  # Viewport height (width = height * 16/9)
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))

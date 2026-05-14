@@ -5,9 +5,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Callable, TYPE_CHECKING
+from typing import Optional, Callable, Tuple, TYPE_CHECKING
 
 from ...common.base_platform import TestPlatform, TestPaths
+from ...common.config import resolve_torch_triple
 
 if TYPE_CHECKING:
     from ...common.config import TestConfig
@@ -24,6 +25,9 @@ class WindowsPlatform(TestPlatform):
     def __init__(self, log_callback=None):
         super().__init__(log_callback)
         self._venv_python: Optional[Path] = None
+        # Pinned torch triple for the current run, set by setup_comfyui from
+        # the TestConfig. None = no pin (use whatever uv resolves freely).
+        self._torch_triple: Optional[Tuple[str, str, str]] = None
 
     @property
     def name(self) -> str:
@@ -50,6 +54,26 @@ class WindowsPlatform(TestPlatform):
         for line in text.splitlines():
             self._log(f"    {line}")
 
+    def _pip_install_torch_family(self, cwd: Path) -> None:
+        """Install the pinned (torch, torchvision, torchaudio) triple before any
+        other requirements. Skips if no triple is configured (free resolution)."""
+        if not self._torch_triple:
+            return
+        if not self._venv_python:
+            return
+        t, tv, ta = self._torch_triple
+        cmd = ["uv", "pip", "install", "--python", str(self._venv_python)]
+        local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
+        if local_wheels and Path(local_wheels).exists():
+            cmd.extend(["--find-links", local_wheels])
+        if self.is_gpu_mode():
+            cmd.extend(["--index-url", PYTORCH_CUDA_INDEX])
+            cmd.extend(["--extra-index-url", PYPI_INDEX])
+            cmd.extend(["--index-strategy", "first-index"])
+        cmd.extend([f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"])
+        self._log(f"Pinning torch family: torch=={t} torchvision=={tv} torchaudio=={ta}")
+        self._run_command(cmd, cwd=cwd)
+
     def _pip_install_requirements(self, requirements_file: Path, cwd: Path) -> None:
         """Install requirements with proper PyTorch index for GPU/CPU mode."""
         # Use venv python if available, otherwise fallback to system
@@ -64,12 +88,12 @@ class WindowsPlatform(TestPlatform):
             cmd.extend(["--find-links", local_wheels])
 
         if self.is_gpu_mode():
-            # GPU mode: prioritize CUDA index, fallback to PyPI
-            # unsafe-best-match ensures torch+cu128 from primary index wins
-            # over CPU-only torch from PyPI at the same version
+            # GPU mode: prioritize CUDA index, fallback to PyPI.
+            # first-index (not unsafe-best-match) so PyPI can't sneak in a
+            # higher torch version when torch_family is pinned.
             cmd.extend(["--index-url", PYTORCH_CUDA_INDEX])
             cmd.extend(["--extra-index-url", PYPI_INDEX])
-            cmd.extend(["--index-strategy", "unsafe-best-match"])
+            cmd.extend(["--index-strategy", "first-index"])
         cmd.extend(["-r", str(requirements_file)])
 
         self._run_command(cmd, cwd=cwd)
@@ -95,6 +119,16 @@ class WindowsPlatform(TestPlatform):
         python = venv_dir / "Scripts" / "python.exe"
         self._venv_python = python
 
+        # Resolve the pinned torch triple from the config (or env override).
+        env_torch = os.environ.get("COMFY_TEST_TORCH_VERSION", "").strip()
+        torch_spec = env_torch or getattr(config, "torch_version", None)
+        self._torch_triple = resolve_torch_triple(torch_spec)
+        if self._torch_triple:
+            t, tv, ta = self._torch_triple
+            self._log(f"torch_version={torch_spec!r} -> pinning torch=={t} torchvision=={tv} torchaudio=={ta}")
+        else:
+            self._log(f"torch_version={torch_spec!r} -> no pin (uv will resolve freely)")
+
         # Clone ComfyUI
         self._log(f"Cloning ComfyUI ({config.comfyui_version}) to {comfyui_dir}...")
         if comfyui_dir.exists():
@@ -110,6 +144,11 @@ class WindowsPlatform(TestPlatform):
         # Create custom_nodes directory
         custom_nodes_dir = comfyui_dir / "custom_nodes"
         custom_nodes_dir.mkdir(exist_ok=True)
+
+        # Install the pinned torch family FIRST so subsequent requirements.txt
+        # install sees it satisfied and doesn't try to upgrade (which is what
+        # produced the 2.12+cu130 vs 2.11+cu128 torchaudio skew).
+        self._pip_install_torch_family(work_dir)
 
         # Install ComfyUI requirements (uses CUDA index in GPU mode)
         self._log(f"Installing ComfyUI requirements into {venv_dir}...")
