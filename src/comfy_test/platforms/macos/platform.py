@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Callable, TYPE_CHECKING
 
 from ...common.base_platform import TestPlatform, TestPaths
+from ...common.config import resolve_torch_triple
 
 if TYPE_CHECKING:
     from ...common.config import TestConfig
@@ -98,9 +99,29 @@ class MacOSPlatform(TestPlatform):
             cwd=work_dir,
         )
 
-        # Install PyTorch (standard PyTorch works for both CPU and MPS on macOS)
+        # Install PyTorch (standard PyTorch works for both CPU and MPS on macOS).
+        # Pin the family to a known-good version (default 2.11.0 from
+        # TORCH_TRIPLES). Without the pin, uv pulls torch 2.12.0 latest --
+        # whose only osx-arm64 wheel is tagged `macosx_14_0_arm64`, while
+        # downstream pixi targets macOS 13 in `osx-arm64` by default, so
+        # the pixi solve for isolation envs (sharp-nodes, geometrypack-nodes,
+        # ...) fails with "torch==2.12.0 has no wheels with a matching
+        # platform tag (e.g., `macosx_13_0_arm64`)". Mirrors the linux +
+        # windows pattern from commit 840e7c6.
+        env_torch = os.environ.get("COMFY_TEST_TORCH_VERSION", "").strip()
+        torch_spec = env_torch or getattr(config, "torch_version", None)
+        triple = resolve_torch_triple(torch_spec)
         self._log("Installing PyTorch...")
-        self._uv_install(python, ["torch", "torchvision", "torchaudio"], work_dir)
+        if triple:
+            t, tv, ta = triple
+            self._log(f"Pinning torch family: torch=={t} torchvision=={tv} torchaudio=={ta}")
+            self._uv_install(
+                python,
+                [f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"],
+                work_dir,
+            )
+        else:
+            self._uv_install(python, ["torch", "torchvision", "torchaudio"], work_dir)
 
         # Install ComfyUI requirements
         self._log("Installing ComfyUI requirements...")
