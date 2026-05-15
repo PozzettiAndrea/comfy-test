@@ -12,6 +12,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from ._git_auth import authenticated_github_url, git_env
+
 
 def expand_nodelink(nodelink: str) -> str:
     """Expand `owner/repo` shorthand to a full GitHub URL. Pass-through otherwise."""
@@ -46,12 +48,14 @@ def clone_node(nodelink: str, branch: Optional[str], dest: Path,
     if target.exists():
         shutil.rmtree(target)
     branch_desc = f"branch={branch}" if branch else "default branch"
+    # Log the un-tokenised URL so any embedded PAT does not leak into CI logs.
     print(f"{log_prefix} clone {expanded} ({branch_desc}) -> {target}")
+    fetch_url = authenticated_github_url(expanded)
     cmd = ["git", "clone", "--depth", "1"]
     if branch:
         cmd.extend(["--branch", branch])
-    cmd.extend([expanded, str(target)])
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    cmd.extend([fetch_url, str(target)])
+    r = subprocess.run(cmd, capture_output=True, text=True, env=git_env())
     if r.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{r.stderr}")
     sha = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"],

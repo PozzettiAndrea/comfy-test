@@ -1,6 +1,5 @@
 """INSTALL level - Setup ComfyUI and install custom node."""
 
-import sys
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,9 +34,7 @@ def get_platform(platform_name: str, log_callback=None) -> "TestPlatform":
 def run(ctx: LevelContext) -> LevelContext:
     """Run INSTALL level.
 
-    Sets up ComfyUI and installs the custom node. This level handles two cases:
-    1. comfyui_dir set: Use existing ComfyUI but install node fresh
-    2. Neither: Full setup - clone ComfyUI and install node
+    Clones ComfyUI, sets up the venv/pixi envs, and installs the custom node.
 
     Args:
         ctx: Level context
@@ -48,7 +45,7 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If setup fails
     """
-    ctx.log(f"\n[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
+    ctx.log(f"\n[DEBUG] server={ctx.server}, api={ctx.api}")
     platform = get_platform(ctx.platform_name, ctx.log)
 
     # Determine work directory
@@ -59,11 +56,7 @@ def run(ctx: LevelContext) -> LevelContext:
         # Create temporary directory - caller is responsible for cleanup
         work_path = Path(tempfile.mkdtemp(prefix="comfy_test_"))
 
-    # Setup based on mode
-    if ctx.comfyui_dir:
-        paths = _setup_existing_with_install(ctx, platform, work_path)
-    else:
-        paths = _setup_full(ctx, platform, work_path)
+    paths = _setup_full(ctx, platform, work_path)
 
     # Install validation endpoint (always needed for VALIDATION level)
     ctx.log("Installing validation endpoint...")
@@ -110,32 +103,6 @@ def run(ctx: LevelContext) -> LevelContext:
     )
 
 
-def _setup_existing_with_install(
-    ctx: LevelContext,
-    platform: "TestPlatform",
-    work_path: Path,
-) -> TestPaths:
-    """Use existing ComfyUI but install node."""
-    ctx.log(f"Using existing ComfyUI: {ctx.comfyui_dir}")
-    comfyui_path = Path(ctx.comfyui_dir).resolve()
-
-    python_exe = _find_python(ctx.platform_name, comfyui_path)
-
-    paths = TestPaths(
-        work_dir=work_path,
-        comfyui_dir=comfyui_path,
-        python=python_exe,
-        custom_nodes_dir=comfyui_path / "custom_nodes",
-    )
-
-    ctx.log("\nInstalling custom node...")
-    platform.install_node(paths, ctx.node_dir, deps_installed=ctx.deps_installed)
-
-    _install_node_dependencies(ctx, platform, paths)
-
-    return paths
-
-
 def _setup_full(
     ctx: LevelContext,
     platform: "TestPlatform",
@@ -146,7 +113,7 @@ def _setup_full(
     paths = platform.setup_comfyui(ctx.config, work_path)
 
     ctx.log("\nInstalling custom node...")
-    platform.install_node(paths, ctx.node_dir, deps_installed=ctx.deps_installed)
+    platform.install_node(paths, ctx.node_dir)
 
     _install_node_dependencies(ctx, platform, paths)
 
@@ -189,18 +156,6 @@ def _cuda_wheel_present(comfyui_dir: Path, pkg: str) -> bool:
                     if base.replace("-", "_") in candidate_names:
                         return True
     return False
-
-
-def _find_python(platform_name: str, comfyui_path: Path) -> Path:
-    """Find Python executable for the platform."""
-    if platform_name == "windows_portable":
-        # For portable, find embedded Python
-        python_embeded = comfyui_path.parent / "python_embeded"
-        if not python_embeded.exists():
-            python_embeded = comfyui_path.parent.parent / "python_embeded"
-        return python_embeded / "python.exe"
-    else:
-        return Path(sys.executable)
 
 
 def _install_vram_debug(ctx: LevelContext, paths: TestPaths) -> None:

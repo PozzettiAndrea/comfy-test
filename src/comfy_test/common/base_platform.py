@@ -74,18 +74,17 @@ class TestPlatform(ABC):
         pass
 
     @abstractmethod
-    def install_node(self, paths: TestPaths, node_dir: Path, deps_installed: bool = False) -> None:
+    def install_node(self, paths: TestPaths, node_dir: Path) -> None:
         """
         Install the custom node into ComfyUI.
 
         - Copy/symlink to custom_nodes/
-        - Run install.py if present (unless deps_installed)
-        - Install requirements.txt (unless deps_installed)
+        - Run install.py if present
+        - Install requirements.txt
 
         Args:
             paths: TestPaths from setup_comfyui
             node_dir: Path to custom node source directory
-            deps_installed: If True, skip requirements.txt and install.py
         """
         pass
 

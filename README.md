@@ -165,9 +165,6 @@ comfy-test run --platform linux
 # Run specific level only
 comfy-test run --level registration
 
-# Dry run (show what would happen)
-comfy-test run --dry-run
-
 # Publish results to GitHub Pages
 comfy-test publish ./results --repo owner/repo
 ```

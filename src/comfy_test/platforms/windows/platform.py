@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
 PYTORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYPI_INDEX = "https://pypi.org/simple"
 
 
@@ -66,12 +67,16 @@ class WindowsPlatform(TestPlatform):
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
         if local_wheels and Path(local_wheels).exists():
             cmd.extend(["--find-links", local_wheels])
-        if self.is_gpu_mode():
-            cmd.extend(["--index-url", PYTORCH_CUDA_INDEX])
-            cmd.extend(["--extra-index-url", PYPI_INDEX])
-            cmd.extend(["--index-strategy", "first-index"])
+        # Always route torch through the PyTorch wheel server (cu128 for GPU,
+        # cpu for CPU lanes) -- never leave it to default PyPI. first-index
+        # makes uv stop at the first index that has the package, so later
+        # wheel-resolution for requirements.txt won't sneak in a newer torch.
+        torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
+        cmd.extend(["--index-url", torch_index])
+        cmd.extend(["--extra-index-url", PYPI_INDEX])
+        cmd.extend(["--index-strategy", "first-index"])
         cmd.extend([f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"])
-        self._log(f"Pinning torch family: torch=={t} torchvision=={tv} torchaudio=={ta}")
+        self._log(f"Pinning torch family from {torch_index}: torch=={t} torchvision=={tv} torchaudio=={ta}")
         self._run_command(cmd, cwd=cwd)
 
     def _pip_install_requirements(self, requirements_file: Path, cwd: Path) -> None:
@@ -87,13 +92,14 @@ class WindowsPlatform(TestPlatform):
         if local_wheels and Path(local_wheels).exists():
             cmd.extend(["--find-links", local_wheels])
 
-        if self.is_gpu_mode():
-            # GPU mode: prioritize CUDA index, fallback to PyPI.
-            # first-index (not unsafe-best-match) so PyPI can't sneak in a
-            # higher torch version when torch_family is pinned.
-            cmd.extend(["--index-url", PYTORCH_CUDA_INDEX])
-            cmd.extend(["--extra-index-url", PYPI_INDEX])
-            cmd.extend(["--index-strategy", "first-index"])
+        # Prioritize the PyTorch wheel server (cu128 for GPU, cpu for CPU lanes)
+        # so torch and torch ecosystem deps resolve from the same source the
+        # explicit pin came from. first-index (not unsafe-best-match) so PyPI
+        # can't sneak in a higher torch version when torch_family is pinned.
+        torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
+        cmd.extend(["--index-url", torch_index])
+        cmd.extend(["--extra-index-url", PYPI_INDEX])
+        cmd.extend(["--index-strategy", "first-index"])
         cmd.extend(["-r", str(requirements_file)])
 
         self._run_command(cmd, cwd=cwd)
@@ -176,13 +182,13 @@ class WindowsPlatform(TestPlatform):
             custom_nodes_dir=custom_nodes_dir,
         )
 
-    def install_node(self, paths: TestPaths, node_dir: Path, deps_installed: bool = False) -> None:
+    def install_node(self, paths: TestPaths, node_dir: Path) -> None:
         """
         Install custom node into ComfyUI.
 
         1. Copy to custom_nodes/
-        2. Install requirements.txt if present - unless deps_installed
-        3. Run install.py if present - unless deps_installed
+        2. Install requirements.txt if present
+        3. Run install.py if present
         """
         # Take .name BEFORE .resolve(): inside a Windows container, bind mount filters
         # (bindflt/wcifs) return the resolved path with case folded to lowercase, which breaks
@@ -191,10 +197,6 @@ class WindowsPlatform(TestPlatform):
         node_dir = Path(node_dir).resolve()
 
         target_dir = paths.custom_nodes_dir / node_name
-
-        if deps_installed:
-            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
-            return
 
         # Copy node (not symlink) for full isolation
         self._log(f"Copying {node_name} to {target_dir}...")
@@ -326,7 +328,10 @@ class WindowsPlatform(TestPlatform):
         3. Run install.py if present
         """
         target_dir = paths.custom_nodes_dir / name
-        git_url = f"https://github.com/{repo}.git"
+        # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
+        # so private node deps clone the same way the public ones do.
+        from ...cli._git_auth import authenticated_github_url, git_env
+        git_url = authenticated_github_url(repo)
 
         # Skip if already installed
         if target_dir.exists():
@@ -338,6 +343,7 @@ class WindowsPlatform(TestPlatform):
         self._run_command(
             ["git", "clone", "--depth", "1", git_url, str(target_dir)],
             cwd=paths.custom_nodes_dir,
+            env=git_env(),
         )
 
         # Install requirements.txt first

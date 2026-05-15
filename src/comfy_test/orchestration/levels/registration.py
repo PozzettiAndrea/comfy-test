@@ -19,25 +19,20 @@ def run(ctx: LevelContext) -> LevelContext:
     Raises:
         TestError: If node import fails
     """
-    ctx.log(f"\n[DEBUG] server={ctx.server}, server_url={ctx.server_url}, api={ctx.api}")
-    from ...comfyui.server import ComfyUIServer, ExternalComfyUIServer
+    ctx.log(f"\n[DEBUG] server={ctx.server}, api={ctx.api}")
+    from ...comfyui.server import ComfyUIServer
 
-    # Start or connect to server
-    if ctx.server_url:
-        ctx.log(f"\nConnecting to existing server at {ctx.server_url}...")
-        server = ExternalComfyUIServer(ctx.server_url, log_callback=ctx.log)
-    else:
-        ctx.log("\nStarting ComfyUI server...")
-        server = ComfyUIServer(
-            ctx.platform,
-            ctx.paths,
-            ctx.config,
-            cuda_mock_packages=list(ctx.cuda_packages),
-            log_callback=ctx.log,
-            env_vars=ctx.env_vars,
-            novram=ctx.novram,
-            vram_debug=ctx.vram_debug,
-        )
+    ctx.log("\nStarting ComfyUI server...")
+    server = ComfyUIServer(
+        ctx.platform,
+        ctx.paths,
+        ctx.config,
+        cuda_mock_packages=list(ctx.cuda_packages),
+        log_callback=ctx.log,
+        env_vars=ctx.env_vars,
+        novram=ctx.novram,
+        vram_debug=ctx.vram_debug,
+    )
 
     # Start the server (enters context manager)
     server.start()

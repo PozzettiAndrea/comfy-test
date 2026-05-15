@@ -16,7 +16,6 @@ def run_tests(
     config: Optional[TestConfig | Path | str] = None,
     node_dir: Optional[Path] = None,
     platform: Optional[str] = None,
-    dry_run: bool = False,
 ) -> List[TestResult]:
     """Run installation tests.
 
@@ -24,7 +23,6 @@ def run_tests(
         config: TestConfig, path to config file, or None to auto-discover
         node_dir: Path to custom node directory (default: current directory)
         platform: Specific platform to test, or None for all enabled
-        dry_run: If True, only show what would be done
 
     Returns:
         List of TestResult
@@ -44,6 +42,6 @@ def run_tests(
 
     # Run tests
     if platform:
-        return [manager.run_platform(platform, dry_run)]
+        return [manager.run_platform(platform)]
     else:
-        return manager.run_all(dry_run)
+        return manager.run_all()

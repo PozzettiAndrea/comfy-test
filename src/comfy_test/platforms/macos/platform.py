@@ -100,6 +100,10 @@ class MacOSPlatform(TestPlatform):
         )
 
         # Install PyTorch (standard PyTorch works for both CPU and MPS on macOS).
+        # No --index-url override on macOS: PyTorch publishes no `/whl/*`
+        # subindex with macOS wheels (cpu/cu*/rocm are Linux+Windows only),
+        # so default PyPI is the authoritative source and ships the MPS-capable
+        # `macosx_*_arm64` wheel.
         # Pin the family to a known-good version (default 2.11.0 from
         # TORCH_TRIPLES). Without the pin, uv pulls torch 2.12.0 latest --
         # whose only osx-arm64 wheel is tagged `macosx_14_0_arm64`, while
@@ -136,22 +140,18 @@ class MacOSPlatform(TestPlatform):
             custom_nodes_dir=custom_nodes_dir,
         )
 
-    def install_node(self, paths: TestPaths, node_dir: Path, deps_installed: bool = False) -> None:
+    def install_node(self, paths: TestPaths, node_dir: Path) -> None:
         """
         Install custom node into ComfyUI.
 
         1. Copy to custom_nodes/
-        2. Install requirements.txt if present - unless deps_installed
-        3. Run install.py if present - unless deps_installed
+        2. Install requirements.txt if present
+        3. Run install.py if present
         """
         node_dir = Path(node_dir).resolve()
         node_name = node_dir.name
 
         target_dir = paths.custom_nodes_dir / node_name
-
-        if deps_installed:
-            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
-            return
 
         # Copy node (not symlink) for proper isolation and correct path resolution
         self._log(f"Copying {node_name} to custom_nodes/...")
@@ -281,7 +281,10 @@ class MacOSPlatform(TestPlatform):
         3. Run install.py if present
         """
         target_dir = paths.custom_nodes_dir / name
-        git_url = f"https://github.com/{repo}.git"
+        # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
+        # so private node deps clone the same way the public ones do.
+        from ...cli._git_auth import authenticated_github_url, git_env
+        git_url = authenticated_github_url(repo)
 
         # Skip if already installed
         if target_dir.exists():
@@ -293,6 +296,7 @@ class MacOSPlatform(TestPlatform):
         self._run_command(
             ["git", "clone", "--depth", "1", git_url, str(target_dir)],
             cwd=paths.custom_nodes_dir,
+            env=git_env(),
         )
 
         # Install requirements.txt first

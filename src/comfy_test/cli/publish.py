@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ._git_auth import authenticated_github_url, git_env as _shared_git_env
+
 
 def _detect_repo() -> str | None:
     """Detect owner/repo from git remote origin URL."""
@@ -38,25 +40,17 @@ _GIT_TIMEOUT_SECONDS = 300
 
 
 def _git_env() -> dict:
-    """Env for git subprocesses: never block on a credential prompt."""
-    return {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    return _shared_git_env()
 
 
 def _git_remote_url(repo: str) -> str:
     """HTTPS URL for the repo, with embedded token if one is in env.
 
-    On self-hosted Windows runners the credential helper often doesn't resolve
-    (e.g. the user account has no .git-credentials in the expected location),
-    so we bake the token into the URL when available.
+    Delegates to the shared helper so the test path (cloning node repos) and
+    the publish path (pushing gh-pages) use one URL-rewrite. The shared helper
+    accepts 'owner/repo' shorthand; we forward verbatim.
     """
-    token = (
-        os.environ.get("GH_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
-        or os.environ.get("NODE_PAT")
-    )
-    if token:
-        return f"https://x-access-token:{token}@github.com/{repo}.git"
-    return f"https://github.com/{repo}.git"
+    return authenticated_github_url(repo)
 
 
 def _publish_platforms(

@@ -139,24 +139,16 @@ class TestManager:
 
     def run_all(
         self,
-        dry_run: bool = False,
         level: Optional[TestLevel] = None,
         workflow_filter: Optional[str] = None,
-        comfyui_dir: Optional[Path] = None,
-        server_url: Optional[str] = None,
-        deps_installed: bool = False,
         novram: bool = False,
         vram_debug: bool = False,
     ) -> List[TestResult]:
         """Run tests on all enabled platforms.
 
         Args:
-            dry_run: If True, only show what would be done
             level: Maximum test level to run
             workflow_filter: If specified, only run this workflow
-            comfyui_dir: Use existing ComfyUI directory
-            server_url: If provided, connect to existing server
-            deps_installed: If True, skip requirements.txt and install.py
 
         Returns:
             List of TestResult for each platform
@@ -176,10 +168,7 @@ class TestManager:
                 continue
 
             result = self.run_platform(
-                platform_name, dry_run, level, workflow_filter,
-                comfyui_dir=comfyui_dir,
-                server_url=server_url,
-                deps_installed=deps_installed,
+                platform_name, level, workflow_filter,
                 novram=novram,
                 vram_debug=vram_debug,
             )
@@ -190,13 +179,9 @@ class TestManager:
     def run_platform(
         self,
         platform_name: str,
-        dry_run: bool = False,
         level: Optional[TestLevel] = None,
         workflow_filter: Optional[str] = None,
-        comfyui_dir: Optional[Path] = None,
-        server_url: Optional[str] = None,
         work_dir: Optional[Path] = None,
-        deps_installed: bool = False,
         novram: bool = False,
         vram_debug: bool = False,
     ) -> TestResult:
@@ -204,13 +189,9 @@ class TestManager:
 
         Args:
             platform_name: Platform to test
-            dry_run: If True, only show what would be done
             level: Maximum test level to run
             workflow_filter: If specified, only run this workflow
-            comfyui_dir: Use existing ComfyUI directory
-            server_url: If provided, connect to existing server
             work_dir: Use this directory for work
-            deps_installed: If True, skip requirements.txt and install.py
 
         Returns:
             TestResult for the platform
@@ -245,10 +226,6 @@ class TestManager:
         # Resolve dependencies
         config_levels = TestLevel.resolve_dependencies(requested_levels)
 
-        # Skip INSTALL and SYNTAX levels when connecting to existing server
-        if server_url:
-            config_levels = [l for l in config_levels if l not in (TestLevel.SYNTAX, TestLevel.INSTALL)]
-
         # Calculate total levels for progress
         self._level_index = 0
         self._total_levels = len([l for l in ALL_LEVELS if l in config_levels])
@@ -268,9 +245,6 @@ class TestManager:
             pass
         self._log(f"{'='*60}")
 
-        if dry_run:
-            return self._dry_run(platform_name, config_levels, requested_levels)
-
         # Initialize session
         self._session_log = []
         self._session_start_time = time.time()
@@ -286,26 +260,6 @@ class TestManager:
         faulthandler.enable(file=crash_log_file)
         self._log(f"Crash dump logging enabled: {crash_log_path}")
 
-        # Infer paths when using external server (INSTALL level is skipped)
-        inferred_paths = None
-        if server_url:
-            from ..common.base_platform import TestPaths
-            custom_nodes_dir = self.node_dir.parent
-            inferred_comfyui_dir = comfyui_dir or custom_nodes_dir.parent
-            # Try to find Python executable
-            import sys
-            python_path = Path(sys.executable)
-            # On Windows portable, Python is in python_embeded/
-            portable_python = inferred_comfyui_dir.parent / "python_embeded" / "python.exe"
-            if portable_python.exists():
-                python_path = portable_python
-            inferred_paths = TestPaths(
-                work_dir=output_base,
-                comfyui_dir=inferred_comfyui_dir,
-                python=python_path,
-                custom_nodes_dir=custom_nodes_dir,
-            )
-
         # Create initial context
         ctx = LevelContext(
             config=self.config,
@@ -314,11 +268,7 @@ class TestManager:
             log=self._log,
             output_base=output_base,
             work_dir=work_dir,
-            comfyui_dir=comfyui_dir,
-            server_url=server_url,
             workflow_filter=workflow_filter,
-            paths=inferred_paths,
-            deps_installed=deps_installed,
             novram=novram,
             vram_debug=vram_debug,
         )
@@ -360,58 +310,3 @@ class TestManager:
                     pass
             self._save_session_log()
             crash_log_file.close()
-
-    def _dry_run(
-        self,
-        platform_name: str,
-        levels: List[TestLevel],
-        requested_levels: List[TestLevel],
-    ) -> TestResult:
-        """Show what would be done without doing it."""
-        self._log("\n[DRY RUN] Would execute the following levels:\n")
-
-        level_num = 0
-        total = len([l for l in ALL_LEVELS if l in levels])
-
-        for test_level in ALL_LEVELS:
-            level_name = test_level.value.upper()
-            if test_level in levels:
-                level_num += 1
-                self._log(f"[{level_num}/{total}] {level_name}")
-                self._log("-" * 40)
-
-                if test_level == TestLevel.SYNTAX:
-                    self._log("  Check pyproject.toml vs requirements.txt")
-                    self._log("  Check for non-CP1252 characters")
-                elif test_level == TestLevel.INSTALL:
-                    self._log(f"  Setup ComfyUI ({self.config.comfyui_version})")
-                    self._log(f"  Install node: {self.node_dir.name}")
-                    self._log("  Install node dependencies (from comfy-env.toml)")
-                elif test_level == TestLevel.REGISTRATION:
-                    self._log("  Start ComfyUI server")
-                    self._log("  Check for import errors")
-                    self._log("  Verify nodes in object_info")
-                elif test_level == TestLevel.INSTANTIATION:
-                    self._log("  Test node constructors")
-                elif test_level == TestLevel.STATIC_CAPTURE:
-                    if self.config.workflow.workflows:
-                        self._log(f"  Capture {len(self.config.workflow.workflows)} static screenshot(s)")
-                    else:
-                        self._log("  No workflows configured")
-                elif test_level == TestLevel.VALIDATION:
-                    if self.config.workflow.workflows:
-                        self._log(f"  Validate {len(self.config.workflow.workflows)} workflow(s)")
-                    else:
-                        self._log("  No workflows configured")
-                elif test_level == TestLevel.EXECUTION:
-                    if self.config.workflow.workflows:
-                        self._log(f"  Run {len(self.config.workflow.workflows)} workflow(s):")
-                        for wf in self.config.workflow.workflows:
-                            self._log(f"    - {wf}")
-                    else:
-                        self._log("  No workflows configured for execution")
-                self._log("")
-            else:
-                self._log(f"[ ] {level_name}: SKIPPED\n")
-
-        return TestResult(platform_name, True, details="Dry run")

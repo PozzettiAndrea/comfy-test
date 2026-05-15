@@ -273,6 +273,11 @@ jobs:
           `$env:UV_COMPILE_BYTECODE = '$env:UV_COMPILE_BYTECODE'
           `$env:UV_LINK_MODE = '$env:UV_LINK_MODE'
           `$env:PATH = '$pyRoot;$scriptsDir;' + `$env:PATH
+          # Start-Process -Credential gives stduser a fresh logon session, so the
+          # job-level NODE_PAT secret isn't visible. Forward it explicitly so
+          # comfy-test's git clones (cli/_git_auth.authenticated_github_url) can
+          # auth against PRIVATE node repos. Skips cleanly when no PAT is set.
+          `$env:NODE_PAT = '${{ secrets.NODE_PAT }}'
           `$me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
           Write-Host "[ci] running as `$(`$me.Name)"
           if (`$me.Name -notlike '*\stduser') { throw "expected stduser, got `$(`$me.Name)" }
@@ -297,6 +302,10 @@ jobs:
       - name: Run tests (Linux/macOS)
         if: runner.os != 'Windows'
         shell: bash
+        # Forward NODE_PAT so comfy-test's git clones can auth against private
+        # node repos (cli/_git_auth.authenticated_github_url reads this).
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           PORTABLE_FLAG=""
           if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
@@ -391,6 +400,10 @@ jobs:
       - name: Run docker test (Linux)
         if: runner.os == 'Linux'
         shell: bash
+        # Forward NODE_PAT so comfy-test docker run can `-e NODE_PAT=...` it
+        # into the container for private node clones. `sudo -E` preserves env.
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           PORTABLE_FLAG=""
           if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
@@ -400,6 +413,10 @@ jobs:
       - name: Run docker test (Windows)
         if: runner.os == 'Windows'
         shell: cmd
+        # Forward NODE_PAT into the host env so comfy-test docker run can
+        # propagate it into the container for private node clones.
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           set "PORTABLE_FLAG="
           if /I "${{ inputs.platform }}"=="windows-portable-gpu" set "PORTABLE_FLAG=--portable"
@@ -514,6 +531,10 @@ jobs:
       - name: Run desktop test (CPU)
         if: ${{ inputs.platform == 'macos-desktop' || inputs.platform == 'windows-desktop' }}
         shell: bash
+        # Forward NODE_PAT so comfy-test's git clones can auth against private
+        # node repos (cli/_git_auth.authenticated_github_url reads this).
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --desktop
@@ -558,6 +579,10 @@ jobs:
 
       - name: Run desktop test (GPU)
         shell: bash
+        # Forward NODE_PAT so comfy-test's git clones can auth against private
+        # node repos (cli/_git_auth.authenticated_github_url reads this).
+        env:
+          NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --desktop --gpu

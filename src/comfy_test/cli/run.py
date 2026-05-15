@@ -186,21 +186,14 @@ def cmd_run(args) -> int:
         level = TestLevel(args.level) if args.level else None
         workflow_filter = getattr(args, 'workflow', None)
 
-        server_url = getattr(args, 'server_url', None)
-        comfyui_dir = Path(args.comfyui_dir) if getattr(args, 'comfyui_dir', None) else None
-        deps_installed = getattr(args, 'deps_installed', False)
         novram = getattr(args, 'novram', False)
         vram_debug = getattr(args, 'vram_debug', False)
 
         results = [manager.run_platform(
             platform,
-            args.dry_run,
             level,
             workflow_filter,
             work_dir=work_dir,
-            server_url=server_url,
-            comfyui_dir=comfyui_dir,
-            deps_installed=deps_installed,
             novram=novram,
             vram_debug=vram_debug,
         )]
@@ -225,10 +218,6 @@ def cmd_run(args) -> int:
             flags.append("--vram-debug")
         if getattr(args, 'portable', False):
             flags.append("--portable")
-        if getattr(args, 'server_url', None):
-            flags.append("--server-url")
-        if getattr(args, 'comfyui_dir', None):
-            flags.append("--comfyui-dir")
         if level:
             flags.append(f"--level={level}")
         if workflow_filter:
@@ -316,11 +305,6 @@ def add_run_parser(subparsers):
         help="Run only up to this level (overrides config)",
     )
     run_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be done without doing it",
-    )
-    run_parser.add_argument(
         "--gpu",
         action="store_true",
         help="Enable GPU mode (uses real CUDA instead of mocking)",
@@ -333,25 +317,12 @@ def add_run_parser(subparsers):
     run_parser.add_argument(
         "--desktop",
         action="store_true",
-        help="Drive ComfyUI Desktop via CDP instead of running a server "
-             "(macOS or Windows; --gpu on Windows means Electron + CUDA)",
+        help="macOS or Windows only: drive ComfyUI Desktop via CDP instead of "
+             "running a server (--gpu on Windows means Electron + CUDA)",
     )
     run_parser.add_argument(
         "--workflow", "-W",
         help="Run only this specific workflow",
-    )
-    run_parser.add_argument(
-        "--server-url",
-        help="Connect to existing ComfyUI server instead of starting one",
-    )
-    run_parser.add_argument(
-        "--comfyui-dir",
-        help="Use existing ComfyUI directory instead of cloning",
-    )
-    run_parser.add_argument(
-        "--deps-installed",
-        action="store_true",
-        help="Skip requirements.txt and install.py (deps already installed)",
     )
     run_parser.add_argument(
         "--branch", "-b",

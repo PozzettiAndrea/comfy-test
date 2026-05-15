@@ -306,6 +306,12 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
     run_url = os.environ.get("COMFY_TEST_RUN_URL", "").strip()
     if run_url:
         docker_cmd += ["-e", f"COMFY_TEST_RUN_URL={run_url}"]
+    # Forward github auth tokens so the in-container `comfy-test run` can clone
+    # private node repos. cli/_git_auth.authenticated_github_url reads these.
+    for _var in ("NODE_PAT", "GH_TOKEN", "GITHUB_TOKEN"):
+        _val = os.environ.get(_var, "").strip()
+        if _val:
+            docker_cmd += ["-e", f"{_var}={_val}"]
     docker_cmd += [DOCKER_IMAGE_WINDOWS] + ct_args
 
     print(f"[docker run] Running: {' '.join(docker_cmd)}")
@@ -401,6 +407,12 @@ def _run_linux(args, docker_exe: str, gpu: bool,
     run_url = os.environ.get("COMFY_TEST_RUN_URL", "").strip()
     if run_url:
         docker_cmd += ["-e", f"COMFY_TEST_RUN_URL={run_url}"]
+    # Forward github auth tokens so the in-container `comfy-test run` can clone
+    # private node repos. cli/_git_auth.authenticated_github_url reads these.
+    for _var in ("NODE_PAT", "GH_TOKEN", "GITHUB_TOKEN"):
+        _val = os.environ.get(_var, "").strip()
+        if _val:
+            docker_cmd += ["-e", f"{_var}={_val}"]
     docker_cmd += [DOCKER_IMAGE_LINUX] + ct_args
 
     print(f"[docker run] Running: {' '.join(docker_cmd)}")

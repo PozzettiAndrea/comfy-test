@@ -280,7 +280,7 @@ class WindowsPortablePlatform(TestPlatform):
             custom_nodes_dir=custom_nodes_dir,
         )
 
-    def install_node(self, paths: TestPaths, node_dir: Path, deps_installed: bool = False) -> None:
+    def install_node(self, paths: TestPaths, node_dir: Path) -> None:
         """Install custom node into ComfyUI Portable."""
         # Take .name BEFORE .resolve(): inside a Windows container, bind mount filters
         # (bindflt/wcifs) return the resolved path with case folded to lowercase, which breaks
@@ -288,10 +288,6 @@ class WindowsPortablePlatform(TestPlatform):
         node_name = node_dir.name
         node_dir = Path(node_dir).resolve()
         target_dir = paths.custom_nodes_dir / node_name
-
-        if deps_installed:
-            self._log("Skipping copy, requirements.txt, and install.py (--deps-installed)")
-            return
 
         self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
@@ -430,7 +426,10 @@ class WindowsPortablePlatform(TestPlatform):
     def install_node_from_repo(self, paths: TestPaths, repo: str, name: str) -> None:
         """Install a custom node from a GitHub repository."""
         target_dir = paths.custom_nodes_dir / name
-        git_url = f"https://github.com/{repo}.git"
+        # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
+        # so private node deps clone the same way the public ones do.
+        from ...cli._git_auth import authenticated_github_url, git_env
+        git_url = authenticated_github_url(repo)
 
         if target_dir.exists():
             self._log(f"  {name} already exists, skipping...")
@@ -440,6 +439,7 @@ class WindowsPortablePlatform(TestPlatform):
         self._run_command(
             ["git", "clone", "--depth", "1", git_url, str(target_dir)],
             cwd=paths.custom_nodes_dir,
+            env=git_env(),
         )
 
         requirements_file = target_dir / "requirements.txt"
