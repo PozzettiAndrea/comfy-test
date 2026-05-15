@@ -57,9 +57,15 @@ class LinuxPlatform(TestPlatform):
         # Always route torch through the PyTorch wheel server (cu128 for GPU,
         # cpu for CPU lanes) -- never leave it to default PyPI, where the
         # Linux torch wheel is CUDA-built (~800 MB) even in CPU-only CI.
-        # first-index makes uv stop at the first index that has the package, so
-        # later wheel-resolution for requirements.txt won't sneak in a newer
-        # torch from PyPI.
+        # unsafe-best-match (NOT first-index) is required: uv parses `==2.10.0`
+        # as `>=2.10.0, <2.10.0+`, which excludes local-versioned wheels like
+        # `2.10.0+cu128`. With first-index uv stops at PyPI (where bare 2.10.0
+        # is found) and never falls through to cu128 -- ending up with CPU
+        # torch on Windows (where PyPI's torch has no sibling CUDA libs).
+        # unsafe-best-match considers candidates from every index and picks
+        # the highest-versioned wheel, which is the +cu128 / +cpu local
+        # variant. "unsafe" only matters across mutually-untrusted indexes;
+        # PyTorch's wheel server + PyPI are both trusted here.
         cmd = ["uv", "pip", "install", "--python", str(self._venv_python)]
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
         if local_wheels and Path(local_wheels).exists():
@@ -67,7 +73,7 @@ class LinuxPlatform(TestPlatform):
         torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
-        cmd.extend(["--index-strategy", "first-index"])
+        cmd.extend(["--index-strategy", "unsafe-best-match"])
         cmd.extend([f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"])
         self._log(f"Pinning torch family from {torch_index}: torch=={t} torchvision=={tv} torchaudio=={ta}")
         self._run_command(cmd, cwd=cwd)
@@ -87,12 +93,12 @@ class LinuxPlatform(TestPlatform):
 
         # Prioritize the PyTorch wheel server (cu128 for GPU, cpu for CPU lanes)
         # so torch and torch ecosystem deps resolve from the same source the
-        # explicit pin came from. first-index (not unsafe-best-match) so PyPI
-        # can't sneak in a higher torch version when torch_family is pinned.
+        # explicit pin came from. unsafe-best-match required for the same
+        # reason as _pip_install_torch_family above (local-version wheels).
         torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
-        cmd.extend(["--index-strategy", "first-index"])
+        cmd.extend(["--index-strategy", "unsafe-best-match"])
         cmd.extend(["-r", str(requirements_file)])
 
         self._run_command(cmd, cwd=cwd)
