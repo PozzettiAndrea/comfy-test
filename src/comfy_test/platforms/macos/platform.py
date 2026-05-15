@@ -104,14 +104,18 @@ class MacOSPlatform(TestPlatform):
         # subindex with macOS wheels (cpu/cu*/rocm are Linux+Windows only),
         # so default PyPI is the authoritative source and ships the MPS-capable
         # `macosx_*_arm64` wheel.
-        # Pin the family to a known-good version (default 2.11.0 from
-        # TORCH_TRIPLES). Without the pin, uv pulls torch 2.12.0 latest --
-        # whose only osx-arm64 wheel is tagged `macosx_14_0_arm64`, while
-        # downstream pixi targets macOS 13 in `osx-arm64` by default, so
-        # the pixi solve for isolation envs (sharp-nodes, geometrypack-nodes,
-        # ...) fails with "torch==2.12.0 has no wheels with a matching
-        # platform tag (e.g., `macosx_13_0_arm64`)". Mirrors the linux +
-        # windows pattern from commit 840e7c6.
+        # Pin the family to a known-good version (default 2.10.0 from
+        # TORCH_TRIPLES). Why 2.10.0 specifically:
+        # - 2.12.0's only osx-arm64 wheel is tagged `macosx_14_0_arm64`, while
+        #   pixi targets macOS 13 in osx-arm64 by default, so the pixi solve
+        #   for isolation envs fails with "no wheels with a matching platform
+        #   tag (e.g., `macosx_13_0_arm64`)".
+        # - 2.11.0 has no `+cu128` wheel on PyTorch's index, so the GPU lane
+        #   silently fell through to PyPI's CPU-only Windows torch -- ComfyUI
+        #   then crashed at startup with "Torch not compiled with CUDA enabled".
+        # - 2.10.0 publishes the full triple on cu128 (Linux + Windows) AND
+        #   ships an osx-arm64 wheel tagged `macosx_11_0_arm64`, well below
+        #   pixi's macOS 13 floor.
         env_torch = os.environ.get("COMFY_TEST_TORCH_VERSION", "").strip()
         torch_spec = env_torch or getattr(config, "torch_version", None)
         triple = resolve_torch_triple(torch_spec)

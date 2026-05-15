@@ -21,7 +21,7 @@ PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
 # "latest" via CLI flag, env var, or comfy-test.toml. To override the auto-
 # derived auxiliary versions, pass a slash-separated triple like
 # "2.13.0/0.28.0/2.13.0".
-DEFAULT_TORCH_VERSION = "2.11.0"
+DEFAULT_TORCH_VERSION = "2.10.0"
 
 # Known-good torch / torchvision / torchaudio triples available on PyPI as
 # cp310/cp311/cp312/cp313 manylinux + win + macos wheels. Verify wheel
