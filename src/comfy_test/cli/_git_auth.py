@@ -28,6 +28,19 @@ def _token_from_env() -> str | None:
     )
 
 
+def tokens_to_redact() -> list[str]:
+    """Every github-auth token currently in env. Pass to _run_command(redact=...)
+    so the embedded `x-access-token:<pat>@github.com` URL doesn't leak into
+    session.log -- GitHub Push Protection blocks the publish to gh-pages when
+    an active PAT appears in a tracked file.
+    """
+    return [v for v in (
+        os.environ.get("GH_TOKEN"),
+        os.environ.get("GITHUB_TOKEN"),
+        os.environ.get("NODE_PAT"),
+    ) if v]
+
+
 def authenticated_github_url(url_or_repo: str) -> str:
     """Return an HTTPS github.com URL, with embedded `x-access-token:<token>` auth
     when a token is set in env. Otherwise returns the plain URL.

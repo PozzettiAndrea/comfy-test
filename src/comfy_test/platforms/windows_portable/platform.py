@@ -428,18 +428,20 @@ class WindowsPortablePlatform(TestPlatform):
         target_dir = paths.custom_nodes_dir / name
         # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
         # so private node deps clone the same way the public ones do.
-        from ...cli._git_auth import authenticated_github_url, git_env
+        from ...cli._git_auth import authenticated_github_url, git_env, tokens_to_redact
         git_url = authenticated_github_url(repo)
 
         if target_dir.exists():
             self._log(f"  {name} already exists, skipping...")
             return
 
+        # redact= keeps the PAT out of session.log; see linux/platform.py.
         self._log(f"  Cloning {repo}...")
         self._run_command(
             ["git", "clone", "--depth", "1", git_url, str(target_dir)],
             cwd=paths.custom_nodes_dir,
             env=git_env(),
+            redact=tokens_to_redact(),
         )
 
         requirements_file = target_dir / "requirements.txt"

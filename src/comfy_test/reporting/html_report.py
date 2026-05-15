@@ -269,8 +269,17 @@ def _render_report(
     svg_cpu = '<svg viewBox="0 0 16 16"><path d="M5 0a.5.5 0 01.5.5V2h1V.5a.5.5 0 011 0V2h1V.5a.5.5 0 011 0V2h.5A2.5 2.5 0 0112.5 4.5H14v1h-1.5v1H14v1h-1.5v1H14v1h-1.5A2.5 2.5 0 0110 12h-.5v1.5a.5.5 0 01-1 0V12h-1v1.5a.5.5 0 01-1 0V12H6v1.5a.5.5 0 01-1 0V12h-.5A2.5 2.5 0 012 9.5H.5v-1H2v-1H.5v-1H2v-1H.5v-1H2A2.5 2.5 0 014.5 2V.5A.5.5 0 015 0zm-.5 4A1.5 1.5 0 003 5.5v4A1.5 1.5 0 004.5 11h6a1.5 1.5 0 001.5-1.5v-4A1.5 1.5 0 0010.5 4h-6z"/></svg>'
     svg_gpu = '<svg viewBox="0 0 16 16"><path d="M4 8a1.5 1.5 0 113 0 1.5 1.5 0 01-3 0zm7.5-1.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM3 2a2 2 0 00-2 2v8a2 2 0 002 2h10a2 2 0 002-2V4a2 2 0 00-2-2H3z"/></svg>'
     svg_os = '<svg viewBox="0 0 16 16"><path d="M2.5 4a.5.5 0 100 1 .5.5 0 000-1zM4 4.5a.5.5 0 01.5-.5h7a.5.5 0 010 1h-7a.5.5 0 01-.5-.5zM2.5 7a.5.5 0 100 1 .5.5 0 000-1zM4 7.5a.5.5 0 01.5-.5h7a.5.5 0 010 1h-7A.5.5 0 014 7.5zM2.5 10a.5.5 0 100 1 .5.5 0 000-1zM4 10.5a.5.5 0 01.5-.5h7a.5.5 0 010 1h-7a.5.5 0 01-.5-.5z"/></svg>'
+    # Octocat-style "play" glyph for the run-URL chip -- distinguishes the
+    # CI deep-link from the static hardware metadata chips beside it.
+    svg_run = '<svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM6.5 4.5l5 3.5-5 3.5v-7z"/></svg>'
     if timestamp_display:
         meta_chips_parts.append(f'<span class="meta-chip">{svg_clock} {html.escape(timestamp_display)}</span>')
+    run_url = results.get("run_url")
+    if run_url:
+        meta_chips_parts.append(
+            f'<a class="meta-chip" href="{html.escape(run_url, quote=True)}" '
+            f'target="_blank" rel="noopener noreferrer">{svg_run} Test run</a>'
+        )
     if hardware.get("os"):
         meta_chips_parts.append(f'<span class="meta-chip">{svg_os} {html.escape(hardware["os"])}</span>')
     if hardware.get("cpu"):

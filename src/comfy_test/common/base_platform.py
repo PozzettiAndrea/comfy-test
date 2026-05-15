@@ -159,6 +159,7 @@ class TestPlatform(ABC):
         env: Optional[dict] = None,
         check: bool = True,
         verbose: Optional[bool] = None,
+        redact: Optional[list[str]] = None,
     ) -> subprocess.CompletedProcess:
         """
         Run a command with logging.
@@ -178,13 +179,26 @@ class TestPlatform(ABC):
             verbose: If True, stream stdout live regardless of env vars.
                 If False, suppress streaming even if env vars are set.
                 If None (default), follow env vars.
+            redact: Substrings to mask as `***` in the logged "Running: ..."
+                line AND in captured stdout/stderr printed on failure. Use
+                this for secrets that legitimately appear in the actual cmd
+                argv (e.g. PAT-embedded https://x-access-token:<pat>@...
+                clone URLs) so they don't leak into session.log or CI logs.
 
         Returns:
             CompletedProcess result
         """
         import os
 
-        self._log(f"Running: {' '.join(str(c) for c in cmd)}")
+        def _mask(text: str) -> str:
+            if not redact:
+                return text
+            for secret in redact:
+                if secret:
+                    text = text.replace(secret, "***")
+            return text
+
+        self._log(f"Running: {_mask(' '.join(str(c) for c in cmd))}")
 
         run_env = os.environ.copy()
         if env:
@@ -222,7 +236,7 @@ class TestPlatform(ABC):
             line_text = line.rstrip("\n")
             stdout_lines.append(line_text)
             if verbose:
-                self._log(f"  {line_text}")
+                self._log(f"  {_mask(line_text)}")
 
         proc.wait()
         stderr_thread.join(timeout=5)
@@ -235,9 +249,9 @@ class TestPlatform(ABC):
             # visible even when we suppressed live streaming.
             self._log(f"Command failed with code {proc.returncode}")
             if not verbose and stdout_text:
-                self._log(f"stdout: {stdout_text}")
+                self._log(f"stdout: {_mask(stdout_text)}")
             if stderr_text:
-                self._log(f"stderr: {stderr_text}")
+                self._log(f"stderr: {_mask(stderr_text)}")
             raise subprocess.CalledProcessError(
                 proc.returncode, cmd, stdout_text, stderr_text
             )

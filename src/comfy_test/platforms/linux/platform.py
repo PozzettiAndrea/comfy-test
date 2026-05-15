@@ -325,7 +325,7 @@ class LinuxPlatform(TestPlatform):
         target_dir = paths.custom_nodes_dir / name
         # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
         # so private node deps clone the same way the public ones do.
-        from ...cli._git_auth import authenticated_github_url, git_env
+        from ...cli._git_auth import authenticated_github_url, git_env, tokens_to_redact
         git_url = authenticated_github_url(repo)
 
         # Skip if already installed
@@ -333,12 +333,15 @@ class LinuxPlatform(TestPlatform):
             self._log(f"  {name} already exists, skipping...")
             return
 
-        # Clone the repo
+        # Clone the repo. redact= masks the PAT in the logged command and any
+        # captured output so it never reaches session.log -- GitHub Push
+        # Protection blocks gh-pages publish when an active PAT shows up.
         self._log(f"  Cloning {repo}...")
         self._run_command(
             ["git", "clone", "--depth", "1", git_url, str(target_dir)],
             cwd=paths.custom_nodes_dir,
             env=git_env(),
+            redact=tokens_to_redact(),
         )
 
         # Install requirements.txt first
