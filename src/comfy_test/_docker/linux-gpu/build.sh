@@ -27,8 +27,21 @@ trap 'rm -rf "$STAGE_DIR"' EXIT
 cp "$SCRIPT_DIR/Dockerfile" "$STAGE_DIR/Dockerfile"
 cp "$SCRIPT_DIR/entrypoint.sh" "$STAGE_DIR/entrypoint.sh"
 
-echo "Building $IMAGE_TAG ..."
-docker build -t "$IMAGE_TAG" -f "$STAGE_DIR/Dockerfile" "$STAGE_DIR"
+# Stamp the comfy-test commit + tag the image was built from. Read by the
+# home-cluster dashboard's "Runner Docker Images" table to surface scaffolding
+# version (comfy-test itself is installed from PyPI at container start, so the
+# label tracks the Dockerfile/entrypoint/system-deps generation, not runtime).
+GIT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+GIT_COMMIT="$(git -C "$GIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+GIT_TAG="$(git -C "$GIT_ROOT" describe --tags --abbrev=0 2>/dev/null || echo unknown)"
+
+echo "Building $IMAGE_TAG (comfy_test_version=$GIT_TAG comfy_test_commit=$GIT_COMMIT) ..."
+docker build \
+    --label "comfy_test_commit=$GIT_COMMIT" \
+    --label "comfy_test_version=$GIT_TAG" \
+    -t "$IMAGE_TAG" \
+    -f "$STAGE_DIR/Dockerfile" \
+    "$STAGE_DIR"
 
 if [ $? -ne 0 ]; then
     echo "docker build failed" >&2

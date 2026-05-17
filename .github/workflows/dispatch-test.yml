@@ -489,6 +489,14 @@ jobs:
       PIP_NO_COMPILE: "1"
       UV_COMPILE_BYTECODE: "0"
       UV_LINK_MODE: hardlink
+      # On Windows the actual `comfy-test run --desktop` invocation drops
+      # privileges from `runneradmin` (the default GHA user, in
+      # Administrators) to this freshly-created standard user. Same
+      # rationale as the cpu job: catch the "code accidentally requires
+      # admin on Windows" bug class before it ships. No-op on macOS where
+      # the default GHA `runner` user is already non-root.
+      STD_USER: stduser
+      STD_PWD: "ComfyTestNoAdmin_2026!"
     steps:
       - name: Tune Windows runner for IO-heavy installs
         # Beyond just disabling Defender realtime: also turn off scanning
@@ -528,8 +536,177 @@ jobs:
         shell: bash
         run: pip install --upgrade comfy-test
 
-      - name: Run desktop test (CPU)
-        if: ${{ inputs.platform == 'macos-desktop' || inputs.platform == 'windows-desktop' }}
+      # On Windows: create a non-admin user, grant it access to the workspace +
+      # hosted Python toolcache, and stage a Start-Process -Credential wrapper.
+      # The `Run desktop test (Windows as stduser)` step then drops privileges
+      # from `runneradmin` to `stduser` for the actual `comfy-test run
+      # --desktop` invocation. Verbatim parity with the cpu job's wrapper.
+      - name: Create standard user + helper (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $pwd = ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force
+          New-LocalUser -Name $env:STD_USER -Password $pwd -PasswordNeverExpires -AccountNeverExpires | Out-Null
+          $admins = Get-LocalGroupMember -Group Administrators | Where-Object { $_.Name -like "*\$env:STD_USER" }
+          if ($admins) { throw "stduser ended up in Administrators -- aborting." }
+          icacls "${{ github.workspace }}" /grant "${env:STD_USER}:(OI)(CI)F" /T /Q | Out-Null
+          icacls "$env:pythonLocation" /grant "${env:STD_USER}:(OI)(CI)RX" /T /Q | Out-Null
+          $helper = @'
+          param([Parameter(Mandatory)][string]$Command)
+          $cred = [PSCredential]::new($env:STD_USER,
+              (ConvertTo-SecureString $env:STD_PWD -AsPlainText -Force))
+          $ts = [DateTime]::Now.Ticks
+          $scriptPath = "$env:GITHUB_WORKSPACE\runas-$ts.ps1"
+          $logPath    = "$env:GITHUB_WORKSPACE\runas-$ts.log"
+          $markerPath = "$env:GITHUB_WORKSPACE\runas-$ts.done"
+          # Write the wrapped command to a .ps1 and invoke via -File. The
+          # wrapped script redirects all output streams to $logPath via `*>`
+          # (no PowerShell pipeline / Tee-Object — those don't reliably
+          # detect external-EXE EOF and hold the shell open). After the
+          # inner command returns, the script writes its exit code to
+          # $markerPath and then `exit`s.
+          #
+          # The PARENT side (us) doesn't use Start-Process -Wait — instead:
+          #   * background a Get-Content -Wait job so log lines stream to
+          #     our stdout in real time as the child writes them;
+          #   * poll for $markerPath. Once it appears, the inner command
+          #     has finished and any further wait is the child's exit-time
+          #     hang (Python teardown, PowerShell pipeline drain, etc.);
+          #   * if the child PowerShell is still alive 60s after the marker
+          #     was written, Stop-Process -Force it. This is the watchdog
+          #     for the "test passed but powershell.exe won't exit" pattern
+          #     we kept hitting on the stduser lane.
+          $wrapped = @"
+          `$ErrorActionPreference = 'Continue'
+          try {
+              & {
+          $Command
+              } *> '$logPath'
+              `$ec = `$LASTEXITCODE
+          } catch {
+              `$_ | Out-File -FilePath '$logPath' -Append -Encoding utf8
+              `$ec = 1
+          }
+          # Guard against $LASTEXITCODE being $null (e.g. when no external EXE
+          # ran in the block). PowerShell's $null.ToString() throws, which would
+          # leave the marker unwritten and the parent's elseif-on-HasExited
+          # fallback path firing with an unpopulated $p.ExitCode.
+          if (`$null -eq `$ec) { `$ec = 0 }
+          try {
+              [IO.File]::WriteAllText('$markerPath', "`$ec")
+          } catch { }
+          exit `$ec
+          "@
+          Set-Content -Path $scriptPath -Value $wrapped -Encoding UTF8
+          Write-Host "[wrapper] script: $scriptPath"
+          Write-Host "[wrapper] log:    $logPath"
+          Write-Host "[wrapper] marker: $markerPath"
+
+          $p = Start-Process powershell -Credential $cred -PassThru `
+              -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptPath
+
+          # Tail the log file in a background job and pump its lines to our stdout.
+          $tailJob = Start-Job -ScriptBlock {
+              param($path)
+              while (-not (Test-Path $path)) { Start-Sleep -Milliseconds 200 }
+              Get-Content $path -Wait -ErrorAction SilentlyContinue
+          } -ArgumentList $logPath
+
+          $KILL_GRACE_SEC = 60
+          $markerTime = $null
+          while (-not $p.HasExited) {
+              Receive-Job $tailJob -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+              if ($null -eq $markerTime -and (Test-Path $markerPath)) {
+                  $markerTime = Get-Date
+                  Write-Host "[wrapper] inner script wrote marker; waiting up to ${KILL_GRACE_SEC}s for graceful child exit..."
+              }
+              if ($null -ne $markerTime -and ((Get-Date) - $markerTime).TotalSeconds -gt $KILL_GRACE_SEC) {
+                  Write-Host "[wrapper] grace period exceeded; force-killing stalled child PowerShell (pid $($p.Id))"
+                  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                  $p.WaitForExit(10000) | Out-Null
+                  break
+              }
+              Start-Sleep -Seconds 2
+          }
+
+          # Final output drain + tail cleanup.
+          Receive-Job $tailJob -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+          Stop-Job $tailJob -ErrorAction SilentlyContinue
+          Remove-Job $tailJob -Force -ErrorAction SilentlyContinue
+
+          # WaitForExit() refresh: with Start-Process -PassThru (no -Wait), the
+          # Process object's ExitCode property requires an explicit WaitForExit
+          # call to populate even after HasExited flips true. Without this the
+          # elseif-on-HasExited fallback below sees ExitCode as $null.
+          if ($p.HasExited) { try { $p.WaitForExit() | Out-Null } catch { } }
+
+          # Prefer the marker's recorded exit code (set explicitly by the wrapped
+          # script). Fall back to the process exit code if we force-killed.
+          $markerContent = if (Test-Path $markerPath) {
+              try { [IO.File]::ReadAllText($markerPath).Trim() } catch { '' }
+          } else { '' }
+          $exitCode = if ($markerContent -match '^-?\d+$') {
+              [int]$markerContent
+          } elseif ($p.HasExited -and $null -ne $p.ExitCode) {
+              [int]$p.ExitCode
+          } else {
+              124
+          }
+          Write-Host "[wrapper] exitCode=$exitCode  marker='$markerContent'  HasExited=$($p.HasExited)  Process.ExitCode=$($p.ExitCode)"
+
+          Remove-Item $scriptPath, $logPath, $markerPath -ErrorAction SilentlyContinue
+          if ($exitCode -ne 0) { throw "Non-admin command failed (exit $exitCode)" }
+          '@
+          Set-Content -Path "${{ github.workspace }}\run-as-stduser.ps1" -Value $helper
+
+      - name: Run desktop test (Windows as stduser)
+        if: ${{ runner.os == 'Windows' && inputs.platform == 'windows-desktop' }}
+        shell: powershell
+        run: |
+          $exe = (Get-Command comfy-test).Source
+          $pyExe = (Get-Command python).Source
+          $pyRoot = Split-Path $pyExe -Parent
+          $scriptsDir = Split-Path $exe -Parent
+          Write-Host "comfy-test exe: $exe"
+          # Start-Process -Credential gives stduser a FRESH logon session, so
+          # GHA's job-level env vars are NOT visible. Re-export them inside
+          # the child command. Also prepend the hosted-Python paths so child
+          # subprocesses (pip, uv, python) resolve without PATH lookups
+          # against stduser's empty user-PATH.
+          $cmd = @"
+          `$env:COMFY_TEST_LOGS_DIR = '$env:COMFY_TEST_LOGS_DIR'
+          `$env:COMFY_TEST_WORKSPACE_DIR = '$env:COMFY_TEST_WORKSPACE_DIR'
+          `$env:COMFY_TEST_RUN_URL = '$env:COMFY_TEST_RUN_URL'
+          `$env:PYTHONUNBUFFERED = '$env:PYTHONUNBUFFERED'
+          `$env:PIP_NO_COMPILE = '$env:PIP_NO_COMPILE'
+          `$env:UV_COMPILE_BYTECODE = '$env:UV_COMPILE_BYTECODE'
+          `$env:UV_LINK_MODE = '$env:UV_LINK_MODE'
+          `$env:PATH = '$pyRoot;$scriptsDir;' + `$env:PATH
+          # Forward NODE_PAT explicitly: Start-Process -Credential gives stduser
+          # a fresh logon session, so the job-level NODE_PAT secret isn't
+          # visible. Needed for comfy-test's private-repo clones.
+          `$env:NODE_PAT = '${{ secrets.NODE_PAT }}'
+          `$me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          Write-Host "[ci] running as `$(`$me.Name)"
+          if (`$me.Name -notlike '*\stduser') { throw "expected stduser, got `$(`$me.Name)" }
+          `$role = New-Object System.Security.Principal.WindowsPrincipal(`$me)
+          if (`$role.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+              throw 'test step is somehow running as Administrator'
+          }
+          Write-Host "[ci] invoking: $exe run https://github.com/${{ inputs.node_repo }}.git --branch ${{ inputs.branch }} --desktop"
+          & '$exe' run 'https://github.com/${{ inputs.node_repo }}.git' --branch '${{ inputs.branch }}' --desktop
+          # Intentionally NOT `exit $LASTEXITCODE` here -- that exits the whole
+          # wrapped PowerShell before run-as-stduser.ps1 can write the marker
+          # file with the real exit code. The wrapper captures $LASTEXITCODE
+          # after this script block returns naturally.
+          "@
+          Write-Host "=== wrapped stduser command (begin) ==="
+          $cmd -split "`n" | ForEach-Object { Write-Host "  $_" }
+          Write-Host "=== wrapped stduser command (end) ==="
+          & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd
+
+      - name: Run desktop test (macOS)
+        if: ${{ runner.os != 'Windows' && inputs.platform == 'macos-desktop' }}
         shell: bash
         # Forward NODE_PAT so comfy-test's git clones can auth against private
         # node repos (cli/_git_auth.authenticated_github_url reads this).

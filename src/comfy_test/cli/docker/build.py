@@ -29,8 +29,10 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
+from importlib.resources import as_file, files
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from . import _defender
 
@@ -39,10 +41,20 @@ DOCKER_IMAGE_LINUX = "comfy-test-linux-gpu:full"
 DOCKER_IMAGE_WINDOWS = "comfy-test-windows-gpu:full"
 DOCKER_GPU_DEVICE = "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599"
 
-# Repo-relative path to the docker build context (Dockerfile + entrypoint).
-# Resolved from this file's location: src/comfy_test/cli/docker/build.py
-# -> ../../../../../docker/<linux|windows>-gpu
-_DOCKER_DIR = Path(__file__).resolve().parents[4] / "docker"
+
+@contextmanager
+def _docker_build_context(variant: str) -> Iterator[Path]:
+    """Yield a real filesystem path to the build context for `variant`.
+
+    The Dockerfile + entrypoint scripts ship as package data under
+    `comfy_test/_docker/<variant>/`. We resolve them via importlib.resources
+    so the same code path works for editable installs, PyPI wheels, and
+    zipapp/embedded installs — `as_file` extracts to a temp dir if the
+    package is loaded from a zip, and yields the real on-disk path otherwise.
+    """
+    resource = files("comfy_test").joinpath("_docker", variant)
+    with as_file(resource) as path:
+        yield Path(path)
 
 
 def _find_docker() -> str:
@@ -99,27 +111,28 @@ def _confirm_overwrite(tag: str, info: dict, force: bool) -> bool:
 
 def _build_linux(args, docker_exe: str) -> int:
     tag = args.tag or DOCKER_IMAGE_LINUX
-    src = _DOCKER_DIR / "linux-gpu"
-    if not src.is_dir():
-        print(f"Build context not found at {src}", file=sys.stderr)
-        return 2
 
-    info = _image_info(docker_exe, tag)
-    if info and not _confirm_overwrite(tag, info, args.force):
-        return 0
+    with _docker_build_context("linux-gpu") as src:
+        if not src.is_dir():
+            print(f"Build context not found at {src}", file=sys.stderr)
+            return 2
 
-    with tempfile.TemporaryDirectory(prefix="comfy-test-build-") as tmp:
-        stage = Path(tmp)
-        shutil.copy(src / "Dockerfile", stage / "Dockerfile")
-        shutil.copy(src / "entrypoint.sh", stage / "entrypoint.sh")
-        print(f"[docker build] staging to {stage}")
-        print(f"[docker build] building {tag} ...")
-        rc = subprocess.run(
-            [docker_exe, "build", "-t", tag, "-f", str(stage / "Dockerfile"), str(stage)],
-        ).returncode
-        if rc != 0:
-            print(f"docker build failed (exit {rc})", file=sys.stderr)
-            return rc
+        info = _image_info(docker_exe, tag)
+        if info and not _confirm_overwrite(tag, info, args.force):
+            return 0
+
+        with tempfile.TemporaryDirectory(prefix="comfy-test-build-") as tmp:
+            stage = Path(tmp)
+            shutil.copy(src / "Dockerfile", stage / "Dockerfile")
+            shutil.copy(src / "entrypoint.sh", stage / "entrypoint.sh")
+            print(f"[docker build] staging to {stage}")
+            print(f"[docker build] building {tag} ...")
+            rc = subprocess.run(
+                [docker_exe, "build", "-t", tag, "-f", str(stage / "Dockerfile"), str(stage)],
+            ).returncode
+            if rc != 0:
+                print(f"docker build failed (exit {rc})", file=sys.stderr)
+                return rc
 
     if not args.no_smoke:
         print("[docker build] smoke: comfy-test --help")
@@ -275,11 +288,15 @@ def _build_windows(args, docker_exe: str) -> int:
     _defender.warn_if_needed(args)
 
     tag = args.tag or DOCKER_IMAGE_WINDOWS
-    src = _DOCKER_DIR / "windows-gpu"
-    if not src.is_dir():
-        print(f"Build context not found at {src}", file=sys.stderr)
-        return 2
 
+    with _docker_build_context("windows-gpu") as src:
+        if not src.is_dir():
+            print(f"Build context not found at {src}", file=sys.stderr)
+            return 2
+        return _build_windows_with_context(args, docker_exe, tag, src)
+
+
+def _build_windows_with_context(args, docker_exe: str, tag: str, src: Path) -> int:
     # Overwrite prompt FIRST -- before downloading 1+ GB of installers,
     # confirm the user actually wants to rebuild.
     info = _image_info(docker_exe, tag)

@@ -75,16 +75,16 @@ def _docker_preflight_windows(docker_exe: str) -> Optional[str]:
     if r.returncode != 0 or "windows" not in r.stdout.lower():
         return (
             f"Docker is not in Windows-container mode (OSType={r.stdout.strip()!r}). "
-            "Run utils/comfy-test/docker/windows-gpu/install-host.ps1 as admin, or switch "
-            "Docker Desktop to Windows containers."
+            "Switch Docker Desktop to Windows containers, or run the bundled "
+            "install-host.ps1 (located inside the installed package at "
+            "site-packages/comfy_test/_docker/windows-gpu/install-host.ps1) as admin."
         )
     r = subprocess.run([docker_exe, "image", "inspect", DOCKER_IMAGE_WINDOWS],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return (
             f"Image {DOCKER_IMAGE_WINDOWS} not found. Build it:\n"
-            f"  powershell -ExecutionPolicy Bypass -File "
-            r"D:\utils\comfy-test\docker\windows-gpu\build.ps1 -Target full"
+            f"  comfy-test docker build"
         )
     return None
 
@@ -101,7 +101,7 @@ def _docker_preflight_linux(docker_exe: str) -> Optional[str]:
     if r.returncode != 0:
         return (
             f"Image {DOCKER_IMAGE_LINUX} not found. Build it:\n"
-            f"  bash utils/comfy-test/docker/linux-gpu/build.sh"
+            f"  comfy-test docker build"
         )
     return None
 

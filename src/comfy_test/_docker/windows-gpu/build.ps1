@@ -72,11 +72,21 @@ Copy-Item -Force -Path (Join-Path $PSScriptRoot 'entrypoint.ps1') -Destination (
 Write-Host "Staged Dockerfile + entrypoint.ps1 -> $StageDir" -ForegroundColor Cyan
 
 # --- Build -----------------------------------------------------------------
-Write-Host "Building $ImageTag ..." -ForegroundColor Cyan
+# Stamp the comfy-test commit + tag the image was built from. Read by the
+# home-cluster dashboard's "Runner Docker Images" table.
+$gitRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$gitCommit = (& git -C $gitRoot rev-parse --short HEAD 2>$null)
+if (-not $gitCommit) { $gitCommit = 'unknown' }
+$gitTag = (& git -C $gitRoot describe --tags --abbrev=0 2>$null)
+if (-not $gitTag) { $gitTag = 'unknown' }
+
+Write-Host "Building $ImageTag (comfy_test_version=$gitTag comfy_test_commit=$gitCommit) ..." -ForegroundColor Cyan
 docker build `
     --isolation=process `
     --build-arg NVIDIA_INSTALLER=$NvidiaExe `
     --build-arg GIT_INSTALLER=$GitExe `
+    --label "comfy_test_commit=$gitCommit" `
+    --label "comfy_test_version=$gitTag" `
     -t $ImageTag `
     -f (Join-Path $StageDir 'Dockerfile') `
     $StageDir
