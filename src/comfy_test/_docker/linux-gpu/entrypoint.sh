@@ -10,6 +10,19 @@
 
 set -e
 
+# Plumb GitHub auth into git globally so any `git clone https://github.com/...`
+# from a node's install.py picks up the token transparently. Without this,
+# install.py subclones of private dependency repos silently fail to
+# authenticate. Mirrors cli/_git_auth.authenticated_github_url but as a
+# git-config rewrite so it intercepts every subprocess.
+gh_token="${NODE_PAT:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+if [ -n "$gh_token" ]; then
+    git config --global url."https://x-access-token:${gh_token}@github.com/".insteadOf "https://github.com/"
+    echo "[entrypoint] git auth: github.com PAT installed (rewrite)"
+else
+    echo "[entrypoint] git auth: no PAT in env (public clones only)"
+fi
+
 if [ -n "$COMFY_TEST_VERSION" ]; then
     uv tool install --reinstall --python 3.10 "comfy-test==$COMFY_TEST_VERSION"
 else
