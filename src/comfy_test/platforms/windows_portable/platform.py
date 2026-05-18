@@ -375,6 +375,7 @@ class WindowsPortablePlatform(TestPlatform):
         # unwedge it cleanly on Windows).
         server_log = paths.work_dir / "server.log"
         self._server_log_fh = open(server_log, "w", encoding="utf-8", errors="replace")
+        self.server_log_path = server_log
         self._log(f"Server stdout/stderr -> {server_log}")
         process = subprocess.Popen(
             cmd,
@@ -395,6 +396,7 @@ class WindowsPortablePlatform(TestPlatform):
                 fh.close()
             finally:
                 self._server_log_fh = None
+        self.server_log_path = None
 
     def cleanup(self, paths: TestPaths) -> None:
         """Clean up test environment."""

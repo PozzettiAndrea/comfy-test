@@ -150,6 +150,18 @@ class ComfyUIServer:
         if not self._process:
             return
 
+        # Some platforms (windows_portable) redirect the server's stdout/stderr
+        # straight to a file to avoid the Windows pipe-buffer deadlock, leaving
+        # self._process.stdout/stderr as None. In that case, tail the platform-
+        # advertised log file so we still get live streaming, captured output
+        # for diagnostics, and import-error detection.
+        if self._process.stdout is None:
+            log_path = getattr(self.platform, "server_log_path", None)
+            if log_path is None:
+                return
+            self._tail_log_file(Path(log_path))
+            return
+
         def read_stream(stream, name):
             """Read from a stream and log each line."""
             try:
@@ -177,6 +189,37 @@ class ComfyUIServer:
                 stderr_thread.join(timeout=1)
                 break
             time.sleep(0.1)
+
+    def _tail_log_file(self, log_path: Path) -> None:
+        """Tail a server log file written by the platform (used when stdout/stderr are redirected)."""
+        deadline = time.time() + 5
+        while not log_path.exists() and time.time() < deadline:
+            if self._stop_output_thread:
+                return
+            time.sleep(0.1)
+        if not log_path.exists():
+            self._log_all(f"  [ComfyUI] log file never appeared: {log_path}")
+            return
+
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+                while not self._stop_output_thread:
+                    line = fh.readline()
+                    if line:
+                        line_text = line.rstrip()
+                        self._output_lines.append(line_text)
+                        self._log_all(f"  [ComfyUI] {line_text}")
+                        continue
+                    if self._process.poll() is not None:
+                        # Drain anything written between our last read and exit.
+                        for remaining in fh:
+                            line_text = remaining.rstrip()
+                            self._output_lines.append(line_text)
+                            self._log_all(f"  [ComfyUI] {line_text}")
+                        return
+                    time.sleep(0.1)
+        except Exception as exc:
+            self._log_all(f"  [ComfyUI] log tail died: {exc!r}")
 
     def _wait_for_ready(self, timeout: int) -> None:
         """Wait for server to become responsive.
