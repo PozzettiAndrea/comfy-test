@@ -381,6 +381,11 @@ def _run_linux(args, docker_exe: str, gpu: bool,
     container_node_path = f"/node/{node_name}"
     docker_cmd = [
         docker_exe, "run", "--rm",
+        # Run as the host caller's uid so the container can write to the
+        # bind-mounted /logs (owned by the caller on the host). The image
+        # has no baked user, so this is the only uid the container ever
+        # sees — bugs that root-in-container would mask still surface.
+        "--user", f"{os.getuid()}:{os.getgid()}",
         "--gpus", "all",
         "--shm-size=8g",
         "-v", f"{logs_dir}:/logs",

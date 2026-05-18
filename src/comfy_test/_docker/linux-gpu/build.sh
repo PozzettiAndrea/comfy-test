@@ -51,5 +51,9 @@ fi
 if [ "$RUN_TEST" = true ]; then
     echo ""
     echo "=== Smoke test: comfy-test --help ==="
-    docker run --rm "$IMAGE_TAG" --help
+    # --user inherits the caller's uid so the smoke test exercises the same
+    # unprivileged path as `comfy-test docker run` (see _run_linux). Without
+    # it the container runs as root and would silently paper over any
+    # permission misconfiguration introduced into the image.
+    docker run --rm --user "$(id -u):$(id -g)" "$IMAGE_TAG" --help
 fi

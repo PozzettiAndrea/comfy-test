@@ -3,7 +3,7 @@
 # so no driver matching or spike stage is needed.
 #
 # comfy-test is NOT baked into the image — it's installed from PyPI
-# at container start by entrypoint.sh, so each `comfy-test dockertest`
+# at container start by entrypoint.sh, so each `comfy-test docker run`
 # invocation gets the version currently on PyPI without rebuilding the
 # image. Pin to a specific release with `-e COMFY_TEST_VERSION=0.3.5`
 # if reproducibility matters.
@@ -27,35 +27,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libegl1 libgl1 libgles2 && \
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user for everything below. Running tests as root inside the
-# container papers over permission bugs that real users hit (e.g. the
-# `mkdir C:\ce` admin-required bug that went undetected for months because
-# CI was effectively privileged on every platform).
-RUN useradd -m -u 1000 -s /bin/bash comfytest && \
-    mkdir -p /workspaces /logs /node && \
-    chown comfytest:comfytest /workspaces /logs /node
+# Full uid isolation: NO baked container user. Runtime uid is whatever
+# the host caller passes via `--user $UID:$GID` (set by
+# cli/docker/run.py:_run_linux and the build.sh smoke test). Bugs the
+# original `comfytest` user was meant to surface (non-root permission
+# issues) still surface — the container still runs unprivileged, just
+# as the caller's uid instead of a build-time stranger.
+#
+# Read-only tooling under /opt/uv (chmod a+rX); writable runtime state
+# under /tmp (0777). No /home anywhere.
 
-# Stage entrypoint with broad read+exec while we're still root.
+ENV UV_INSTALL_DIR=/opt/uv/bin \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    HOME=/tmp/comfytest-home \
+    UV_TOOL_DIR=/tmp/comfytest-tools \
+    UV_TOOL_BIN_DIR=/tmp/comfytest-tools/bin \
+    PATH=/tmp/comfytest-tools/bin:/opt/uv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# uv binary + Python interpreters into /opt/uv. Pre-installing 3.10-3.13
+# so per-test `uv venv --python 3.X` is fast regardless of which version
+# _random_python_version() picks.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    uv python install 3.10 3.11 3.12 3.13 && \
+    chmod -R a+rX /opt/uv
+
+# Runtime mountpoints + state dirs — writable by any uid that --user sets.
+RUN mkdir -p /workspaces /logs /node /tmp/comfytest-home /tmp/comfytest-tools/bin && \
+    chmod 0777 /workspaces /logs /node /tmp/comfytest-home /tmp/comfytest-tools /tmp/comfytest-tools/bin
+
+# System-wide git config — visible to any runtime uid without needing
+# a per-user ~/.gitconfig fixture.
+RUN git config --system --add safe.directory '*'
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-USER comfytest
-WORKDIR /home/comfytest
+WORKDIR /tmp/comfytest-home
 
-# uv (installs into ~/.local/bin for the current user)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/home/comfytest/.local/bin:$PATH"
+# No USER directive — caller MUST pass --user. Without it the container
+# runs as root, which we want loud (so missed `--user` flags fail closed
+# in any sane test). build.sh smoke test and _run_linux both pass --user.
 
-# Python 3.10–3.13 via uv: pre-install all candidates so per-test venv
-# creation (uv venv --python 3.X) is fast regardless of which version
-# `_random_python_version()` picks for the run.
-RUN uv python install 3.10 3.11 3.12 3.13
-
-# Trust bind-mounted repos (different ownership in container vs host).
-# Per-user git config now, since we're no longer root.
-RUN git config --global --add safe.directory '*'
-
-# Runtime env
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
     COMFY_TEST_LOGS_DIR=/logs \
     COMFY_TEST_GPU=1 \
