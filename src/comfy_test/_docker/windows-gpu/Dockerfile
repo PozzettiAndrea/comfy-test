@@ -53,6 +53,14 @@ RUN Start-Process -Wait -FilePath C:\install\7z.exe -ArgumentList '/S'; \
 # Admin-only HKLM write (intentional, build-time).
 RUN New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
 
+# 4a. ContainerUser account. mcr.microsoft.com/windows/server (full server,
+# chosen for Media Foundation / mfplat.dll for PyAV — see header) does NOT
+# ship the built-in ContainerUser that nanoserver/servercore have. Create it
+# explicitly so the icacls grants below and the later `USER ContainerUser`
+# resolve. `net user /add` adds new accounts to local Users by default
+# (non-admin); /passwordreq:no lets the account exist without a password.
+RUN net user ContainerUser /add /active:yes /passwordreq:no
+
 # 5. Git — comfy-test clones ComfyUI inside the container
 # (platforms/windows/platform.py:103). Add ONLY \cmd to PATH; \bin contains
 # Git for Windows's MSYS userland (sh.exe, bash.exe, awk.exe, sed.exe, ssh.exe,
