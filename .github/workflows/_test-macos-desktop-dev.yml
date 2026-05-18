@@ -1,0 +1,304 @@
+name: Test macOS Desktop (Dev)
+
+on:
+  workflow_call:
+    inputs:
+      node_repo:
+        description: "owner/repo of the node to test"
+        type: string
+        required: true
+      node_branch:
+        description: "Branch to install via Manager's /customnode/install/git_url"
+        type: string
+        default: "dev"
+      runs_on:
+        type: string
+        default: "macos-latest"
+
+jobs:
+  macos-desktop-dev-test:
+    name: macos-desktop-dev-test
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+      COMFY_TEST_GPU: "0"
+      COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
+    steps:
+
+      - name: Resolve target node + run layout
+        env:
+          INPUT_REPO: ${{ inputs.node_repo }}
+        run: |
+          if [ -n "$INPUT_REPO" ]; then
+            NODE_NAME="${INPUT_REPO##*/}"
+          else
+            NODE_NAME="${{ github.event.repository.name }}"
+          fi
+          # Flat layout matching linux-gpu's gh-pages shape:
+          # dev/<platform>/{results.json, logs/, screenshots/, videos/, debug/}.
+          # The publish workflow's flatten step locates results.json
+          # and copies its parent dir contents into gh-pages, so any
+          # nesting we add here would just get stripped anyway.
+          # Desktop-only debug captures (electron_inspect/, frames/) go
+          # under a `debug/` subdir to keep the top level uniform with
+          # cpu/gpu.
+          mkdir -p "$COMFY_TEST_LOGS_DIR/debug" \
+                   "$COMFY_TEST_LOGS_DIR/logs" \
+                   "$COMFY_TEST_LOGS_DIR/screenshots" \
+                   "$COMFY_TEST_LOGS_DIR/videos"
+          # crash_dump.log + session.log: gpu always emits these (even
+          # empty), so other tooling that scans the dir doesn't
+          # special-case desktop's absence.
+          : > "$COMFY_TEST_LOGS_DIR/crash_dump.log"
+          {
+            echo "NODE_NAME=$NODE_NAME"
+            echo "DEBUG_ROOT=$COMFY_TEST_LOGS_DIR/debug"
+          } >> $GITHUB_ENV
+
+      # --- Download and install desktop app ---
+      - name: Download ComfyUI Desktop
+        run: |
+          curl -L --retry 3 -o ComfyUI.dmg "https://download.comfy.org/mac/dmg/arm64"
+          # DMG mount path includes the version suffix (e.g. "ComfyUI 0.8.36-arm64"),
+          # which varies per release. Use a glob to match whatever it is.
+          hdiutil attach -nobrowse ComfyUI.dmg
+          cp -R /Volumes/ComfyUI*/ComfyUI.app "${{ github.workspace }}/ComfyUI.app"
+          hdiutil detach /Volumes/ComfyUI* || true
+          rm ComfyUI.dmg
+
+      # --- Pre-write Manager security config ---
+      # /customnode/install/git_url requires security_level=weak. Manager
+      # reads <user_dir>/__manager/config.ini at startup (manager_core.py:1717),
+      # so write it before the app boots and creates its own. Both the new
+      # `__manager/` path and the legacy `default/ComfyUI-Manager/` path
+      # are written -- whichever Manager version picks up, the value is
+      # the same.
+      - name: Pre-write Manager security config (weak)
+        run: |
+          USER_DIR="$HOME/Documents/ComfyUI/user"
+          mkdir -p "$USER_DIR/__manager" "$USER_DIR/default/ComfyUI-Manager"
+          printf '[default]\nsecurity_level = weak\n' \
+            > "$USER_DIR/__manager/config.ini"
+          printf '[default]\nsecurity_level = weak\n' \
+            > "$USER_DIR/default/ComfyUI-Manager/config.ini"
+          echo "Wrote security_level=weak to both Manager config paths"
+
+      # We don't run a desktop-wide screencapture loop on macOS:
+      # `screencapture` requires Screen Recording (TCC) permission, which
+      # presents a native modal "bash wants to access your screen" dialog
+      # that CDP can't click. The Electron renderer frames captured by the
+      # CDP driver give us the wizard view we actually need.
+
+      # .venv caching disabled — see windows workflow comment.
+
+      # --- First boot: launch app + drive maintenance UI via CDP if needed ---
+      # Same idea as windows-desktop: attach Playwright via CDP, click through
+      # the Maintenance page (Recreate → wait → Continue), capture renderer
+      # frames at 5fps, ffmpeg-assemble into driver.mp4.
+      - name: First boot (CDP-driven)
+        env:
+          NODE_REPO: ${{ inputs.node_repo }}
+          NODE_BRANCH: ${{ inputs.node_branch }}
+          # Driver writes its standard outputs (results.json, videos/)
+          # to COMFY_TEST_LOGS_DIR (default) and electron_inspect/ to
+          # DEBUG_ROOT under that.
+          COMFY_TEST_DEBUG_DIR: ${{ env.DEBUG_ROOT }}
+        run: |
+          OUT="$DEBUG_ROOT/electron_inspect"
+          mkdir -p "$OUT/frames"
+
+          # Dev driver lives at src/comfy_test/desktop/cdp_driver_dev.py in
+          # the comfy-test repo. It POSTs to /customnode/install/git_url with
+          # `<repo>@<branch>` instead of driving the registry-tile UI (which
+          # is what the production cdp_driver.py at the same package path
+          # does for main-branch CNR installs). Fetched from main so the
+          # workflow stays self-contained.
+          curl -L -o /tmp/cdp_driver.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/src/comfy_test/desktop/cdp_driver_dev.py
+
+          # Launch the .app with CDP enabled. `open --args` forwards flags to argv.
+          open "${{ github.workspace }}/ComfyUI.app" --args --remote-debugging-port=9222
+          echo "App launched with CDP on :9222"
+
+          SHORT=""
+          for i in $(seq 1 60); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              SHORT=server; break
+            fi
+            if curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
+              SHORT=cdp; break
+            fi
+            sleep 1
+          done
+          echo "Phase 1 outcome: ${SHORT:-neither}"
+
+          if [ "$SHORT" = "cdp" ]; then
+            # macOS Homebrew Python is PEP 668 externally-managed; --break-system-packages
+            # is fine in CI since the runner is thrown away after the job.
+            pip3 install --break-system-packages --quiet playwright imageio-ffmpeg tomli
+            # Tee driver stdout to session.log so the dir mirrors gpu's.
+            python3 /tmp/cdp_driver.py 2>&1 | tee "$COMFY_TEST_LOGS_DIR/session.log" || echo "CDP driver had errors; continuing"
+          fi
+
+          LOG_DIR="$HOME/Library/Logs/ComfyUI"
+          if [ -f "$LOG_DIR/comfyui.log" ]; then
+            echo "----- last 200 lines of comfyui.log -----"
+            tail -200 "$LOG_DIR/comfyui.log" || true
+            echo "----- /comfyui.log tail -----"
+          fi
+
+          echo "Polling /system_stats up to 15min..."
+          for i in $(seq 1 900); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              exit 0
+            fi
+            if [ $((i % 30)) -eq 0 ]; then echo "still polling... ${i}s"; fi
+            sleep 1
+          done
+          echo "Server failed to start within 15min"
+          cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -80 || true
+          exit 1
+
+      # --- Install node via ComfyUI Manager CLI ---
+      # comfyui_manager imports `from comfy.cli_args import args` at module
+      # load. The `comfy` source package isn't in the venv — it lives in the
+      # bundled app at .../Resources/ComfyUI/. The desktop app puts that on
+      # PYTHONPATH at launch; running cm_cli standalone has to do the same.
+      - name: Install custom node via Manager
+        if: false  # disabled while we iterate on the wizard click-through demo
+        run: |
+          export PYTHONPATH="${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI:$PYTHONPATH"
+          VENV="$HOME/Documents/ComfyUI/.venv/bin/python"
+          echo "Using Python: $VENV  PYTHONPATH=$PYTHONPATH"
+          $VENV --version
+          $VENV -m comfyui_manager.cm_cli install \
+            "https://github.com/${{ inputs.node_repo }}.git"
+
+      # --- Restart app for node to load ---
+      - name: Restart app
+        if: false
+        run: |
+          pkill -f "ComfyUI" || true
+          sleep 5
+          open "${{ github.workspace }}/ComfyUI.app"
+          echo "Waiting for server after restart..."
+          for i in $(seq 1 180); do
+            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
+              echo "Server ready after restart (${i}s)"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/system_stats || {
+            echo "Server failed to start after restart"
+            cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -50
+            exit 1
+          }
+
+      # --- Install comfy-test and run ---
+      - name: Install comfy-test
+        if: false
+        run: |
+          # macOS ships BSD grep without -P; use bash parameter expansion.
+          VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
+          if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
+          if [ -n "$VERSION" ]; then
+            pip3 install --upgrade "comfy-test==$VERSION"
+          else
+            pip3 install --upgrade comfy-test
+          fi
+
+      - name: Run tests
+        if: false
+        working-directory: ${{ github.workspace }}
+        run: |
+          # Clone node source for workflow files
+          git clone --depth 1 -b ${{ inputs.node_branch }} \
+            "https://github.com/${{ inputs.node_repo }}.git" node_source
+          cd node_source
+          python3 -m comfy_test run --server-url http://127.0.0.1:8000 --level execution
+
+      # --- Cleanup ---
+      - name: Finalize "system" card from latest CDP frame
+        if: always()
+        run: |
+          # System-card thumbnail comes from the last renderer frame the
+          # CDP driver captured. _render_workflow_cards looks up
+          # screenshots/{stem}_executed.png at the artifact root.
+          LATEST=$(ls -1t "$DEBUG_ROOT/electron_inspect/frames/"*.png 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            mkdir -p "$COMFY_TEST_LOGS_DIR/screenshots"
+            cp "$LATEST" "$COMFY_TEST_LOGS_DIR/screenshots/system_executed.png"
+          fi
+          # Synthetic "system" workflow so the HTML report renders a card.
+          python3 - <<'PY' || true
+          import json, os, pathlib
+          p = pathlib.Path(os.environ["COMFY_TEST_LOGS_DIR"]) / "results.json"
+          if not p.exists():
+              raise SystemExit(0)
+          data = json.loads(p.read_text())
+          data.setdefault("workflows", []).insert(0, {
+              "name": "system", "status": "pass",
+              "duration_seconds": 0, "error": None,
+              "hardware": data.get("hardware"),
+          })
+          p.write_text(json.dumps(data, indent=2))
+          PY
+
+      - name: Stop app
+        if: always()
+        run: pkill -f "ComfyUI" || true
+
+      - name: Collect + merge ComfyUI app logs
+        if: always()
+        run: |
+          # Electron splits logs across Documents/ComfyUI/user/ (server stdout)
+          # and ~/Library/Logs/ComfyUI/ (main/renderer process). Grab them all
+          # under logs/ — we want the Install-button stdout in particular.
+          DEST="$COMFY_TEST_LOGS_DIR/logs"
+          mkdir -p "$DEST"
+          for d in \
+            "$HOME/Documents/ComfyUI/user" \
+            "$HOME/Library/Logs/ComfyUI" \
+            "$HOME/Library/Application Support/ComfyUI/logs"; do
+            if [ -d "$d" ]; then
+              find "$d" -maxdepth 2 -type f -name "*.log" -exec cp -v {} "$DEST/" \; 2>/dev/null || true
+            fi
+          done
+          # Merge chronologically — html_report serves logs/<name>.log
+          # under each workflow card, so logs/system.log shows up under
+          # the 'system' card on the per-platform page.
+          curl -L -o /tmp/merge_logs.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/.github/workflows/scripts/merge_logs.py
+          python3 /tmp/merge_logs.py "$DEST" || true
+          echo "--- collected ---"
+          ls -la "$DEST" || true
+
+      - name: Generate per-platform index.html
+        if: always()
+        run: |
+          # Match gpu: the artifact dir gets its own rendered index.html
+          # so the report is self-contained even before publish flatten.
+          VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
+          if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
+          if [ -n "$VERSION" ]; then
+            pip3 install --break-system-packages --quiet "comfy-test==$VERSION" || pip3 install --break-system-packages --quiet comfy-test
+          else
+            pip3 install --break-system-packages --quiet comfy-test
+          fi
+          python3 -c "
+          import os
+          from pathlib import Path
+          from comfy_test.reporting.html_report import generate_html_report
+          generate_html_report(Path(os.environ['COMFY_TEST_LOGS_DIR']),
+                               repo_name=os.environ.get('NODE_REPO', os.environ.get('NODE_NAME', '')),
+                               current_platform='macos-desktop-dev')
+          " || echo "index.html generation failed (non-fatal)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-macos-desktop-dev
+          path: ${{ env.COMFY_TEST_LOGS_DIR }}/
+          if-no-files-found: ignore
+          include-hidden-files: true

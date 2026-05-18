@@ -61,6 +61,10 @@ def cmd_run(args) -> int:
     # or non-main branch is meaningless. cdp_driver fetches pyproject.toml
     # / comfy-test.toml / workflows/ via raw.githubusercontent direct from
     # main -- no local source needed.
+    if getattr(args, "desktop", False) and getattr(args, "desktop_dev", False):
+        print("[comfy-test] --desktop and --desktop-dev are mutually exclusive",
+              file=sys.stderr)
+        return 1
     if getattr(args, "desktop", False):
         if host not in ("darwin", "win32"):
             print("[comfy-test] --desktop is only valid on macOS or Windows", file=sys.stderr)
@@ -73,7 +77,8 @@ def cmd_run(args) -> int:
                   f"--branch {args.branch!r}; Manager-driven flow has no "
                   f"branch selection. Results will land under "
                   f"gh-pages/{args.branch}/<platform>/ to match the user's "
-                  f"intent.", file=sys.stderr)
+                  f"intent. (Use --desktop-dev to actually install a branch.)",
+                  file=sys.stderr)
         # NOTE: don't overwrite args.branch -- _desktop_runner uses it for the
         # logs path layout (gh-pages/<branch>/<platform>/), while NODE_BRANCH
         # is hardcoded to "main" separately when invoking cdp_driver.
@@ -85,6 +90,29 @@ def cmd_run(args) -> int:
         else:
             mode = "windows"
         return run_desktop(args, mode)
+
+    # Dev-branch desktop: same Electron launch + CDP workflow loop, but
+    # the install side POSTs `<repo>@<branch>` to Manager's
+    # /customnode/install/git_url endpoint. Lets us test arbitrary
+    # branches via the Manager-native git-clone path. Separate code path
+    # from --desktop on purpose -- main-branch CI keeps using the
+    # registry-tile UI it's exercised against.
+    if getattr(args, "desktop_dev", False):
+        if host not in ("darwin", "win32"):
+            print("[comfy-test] --desktop-dev is only valid on macOS or Windows",
+                  file=sys.stderr)
+            return 1
+        if args.portable:
+            print("[comfy-test] --desktop-dev conflicts with --portable",
+                  file=sys.stderr)
+            return 1
+        if args.gpu:
+            print("[comfy-test] --desktop-dev does not support --gpu in v1 "
+                  "(no Windows-GPU variant)", file=sys.stderr)
+            return 1
+        from comfy_test.cli._desktop_runner_dev import run_desktop_dev
+        mode_dev = "mac_dev" if host == "darwin" else "windows_dev"
+        return run_desktop_dev(args, mode_dev)
 
     # Resolve <nodelink> positional. Three modes (non-desktop only):
     #   empty            -> cwd is the node dir (legacy behavior)
@@ -319,6 +347,14 @@ def add_run_parser(subparsers):
         action="store_true",
         help="macOS or Windows only: drive ComfyUI Desktop via CDP instead of "
              "running a server (--gpu on Windows means Electron + CUDA)",
+    )
+    run_parser.add_argument(
+        "--desktop-dev",
+        action="store_true",
+        help="Like --desktop but installs the node via Manager's "
+             "/customnode/install/git_url endpoint, which supports "
+             "--branch <dev>. Sibling code path -- does not affect --desktop. "
+             "Artifacts land under <run>/<branch>/{macos,windows}-desktop-dev/.",
     )
     run_parser.add_argument(
         "--workflow", "-W",

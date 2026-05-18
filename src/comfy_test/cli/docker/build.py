@@ -92,6 +92,33 @@ def _human_size(n: int) -> str:
     return f"{n:.1f} PB"
 
 
+def _build_labels() -> List[str]:
+    """Return docker --label args carrying comfy-test version + git commit.
+
+    Read by hub-api's _attach_comfy_test_labels (in the home-cluster repo
+    at mac-mini/hub-api/tabs/runners.py) to render a version chip next to
+    each image in the dashboard's runners tab — replaces the "unstamped"
+    badge. Keys use underscore form to match the existing hub-api parser.
+    """
+    out: List[str] = []
+    try:
+        from importlib.metadata import version as _ver
+        out.extend(["--label", f"comfy_test_version={_ver('comfy-test')}"])
+    except Exception:
+        pass
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if commit:
+            out.extend(["--label", f"comfy_test_commit={commit}"])
+    except Exception:
+        pass
+    return out
+
+
 def _confirm_overwrite(tag: str, info: dict, force: bool) -> bool:
     """Return True if we should overwrite the existing image."""
     created = info.get("Created", "?")
@@ -128,7 +155,8 @@ def _build_linux(args, docker_exe: str) -> int:
             print(f"[docker build] staging to {stage}")
             print(f"[docker build] building {tag} ...")
             rc = subprocess.run(
-                [docker_exe, "build", "-t", tag, "-f", str(stage / "Dockerfile"), str(stage)],
+                [docker_exe, "build", *_build_labels(),
+                 "-t", tag, "-f", str(stage / "Dockerfile"), str(stage)],
             ).returncode
             if rc != 0:
                 print(f"docker build failed (exit {rc})", file=sys.stderr)
@@ -373,6 +401,7 @@ def _build_windows_with_context(args, docker_exe: str, tag: str, src: Path) -> i
     rc = subprocess.run([
         docker_exe, "build",
         "--isolation=process",
+        *_build_labels(),
         "--build-arg", f"NVIDIA_INSTALLER={nvidia_exe}",
         "--build-arg", f"GIT_INSTALLER={git_exe}",
         "-t", tag,
