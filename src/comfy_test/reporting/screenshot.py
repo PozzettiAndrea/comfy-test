@@ -537,12 +537,46 @@ class WorkflowScreenshot:
         """Clear captured console logs."""
         self._console_logs.clear()
 
+    def _dismiss_blocking_dialogs(self) -> None:
+        """Dismiss ComfyUI's "Save Changes?" (unsaved workflow) modal so it
+        doesn't overlay screenshots.
+
+        When a workflow is loaded into a session that still has the default
+        "Unsaved Workflow" tab (or any modified tab), ComfyUI shows a
+        "The files below have been changed. Save before closing?" dialog. It is
+        modal and lands on top of the captured frame. We cancel it (header
+        close / Escape) so the *current* workflow stays put -- never click
+        "Save"/"Close anyway", which could discard or switch the workflow we
+        are about to screenshot. Best-effort.
+        """
+        try:
+            found = self._page.evaluate("""
+                (() => {
+                    const dialogs = document.querySelectorAll('.p-dialog, [role="dialog"]');
+                    for (const d of dialogs) {
+                        const txt = (d.innerText || '');
+                        if (txt.includes('have been changed') || txt.includes('Save Changes')) {
+                            const x = d.querySelector('.p-dialog-header-close, button[aria-label="Close"], .p-dialog-header button');
+                            if (x) x.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                })();
+            """)
+            if found:
+                # Fallback for closable PrimeVue dialogs that respond to Escape.
+                self._page.keyboard.press("Escape")
+        except Exception:
+            pass  # Best effort
+
     def _safe_screenshot(self, path: str, **kwargs) -> bool:
         """Take a screenshot, logging the full traceback on failure instead of crashing.
 
         Returns:
             True if screenshot succeeded, False if it failed.
         """
+        self._dismiss_blocking_dialogs()
         try:
             self._page.screenshot(path=path, animations="disabled", **kwargs)
             return True
@@ -565,6 +599,7 @@ class WorkflowScreenshot:
         last_error = None
         for attempt in range(retries):
             try:
+                self._dismiss_blocking_dialogs()
                 self._page.screenshot(path=path, animations="disabled", **kwargs)
                 return
             except Exception as e:
