@@ -387,7 +387,13 @@ def _run_linux(args, docker_exe: str, gpu: bool,
         # sees — bugs that root-in-container would mask still surface.
         "--user", f"{os.getuid()}:{os.getgid()}",
         "--gpus", "all",
-        "--shm-size=8g",
+        # /dev/shm backs comfy_env's worker IPC (node outputs are serialized to
+        # shared memory to cross the isolated-subprocess boundary). 8g overflows
+        # on heavy nodes like PanoramaSplitAdaptive (42 faces x 1536^2 of RGB +
+        # depth + normals + masks ~= 4GB serialized at once, on top of cached
+        # upstream outputs). shm is RAM-backed; runners have >=31GB so 16g still
+        # leaves ample headroom for the process working set.
+        "--shm-size=16g",
         "-v", f"{logs_dir}:/logs",
     ]
     if not url_mode:

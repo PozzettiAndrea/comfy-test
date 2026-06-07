@@ -1,6 +1,6 @@
 [project]
 name = "comfy-test"
-version = "0.3.114"
+version = "0.3.115"
 description = "Installation testing infrastructure for ComfyUI custom nodes"
 readme = "README.md"
 license = {text = "MIT"}
