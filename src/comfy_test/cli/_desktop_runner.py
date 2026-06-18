@@ -749,7 +749,11 @@ def run_desktop(args, desktop_mode: str) -> int:
     # rate-limit). cdp_driver picks up the list via COMFY_TEST_WORKFLOWS env.
     from comfy_test.cli._nodelink import clone_node, expand_nodelink
 
-    url = expand_nodelink(args.nodelink).rstrip(".git")
+    # NOT .rstrip(".git") -- that strips ANY trailing chars in {'.','g','i','t'},
+    # so "ComfyUI-UniRig.git" becomes "ComfyUI-UniR" and every downstream fetch
+    # (pyproject.toml, comfy-test.toml, workflows/) 404s, leaving the run with
+    # "no workflows ran" but rc=0.
+    url = expand_nodelink(args.nodelink).removesuffix(".git")
     node_name = url.rsplit("/", 1)[-1]
 
     clone_root = Path(tempfile.mkdtemp(prefix="comfy-test-desktop-clone-"))
