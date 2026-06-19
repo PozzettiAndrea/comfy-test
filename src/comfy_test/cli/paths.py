@@ -1,6 +1,7 @@
 """Paths command for comfy-test CLI."""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,23 +91,56 @@ def run_setup_wizard() -> dict:
             DEFAULT_WORKSPACE_DIR,
         )
 
-    # Offer to add to shell config
-    shell_config = _detect_shell_config()
-    print(f"\nAdd to your shell config ({shell_config}):")
-    print(f'  export {ENV_LOGS_DIR}="{logs_dir}"')
-    print(f'  export {ENV_WORKSPACE_DIR}="{workspace_dir}"')
+    # Offer to persist these so the wizard doesn't run again next time.
+    print("\nThese can be saved so you're not asked again:")
+    print(f"  {ENV_LOGS_DIR}      = {logs_dir}")
+    print(f"  {ENV_WORKSPACE_DIR} = {workspace_dir}")
 
-    add_to_shell = input("\nAdd these now? [Y/n] ").strip().lower()
-    if add_to_shell != "n":
+    if input("\nSave these for future terminals? [Y/n] ").strip().lower() != "n":
+        _persist_env_vars(logs_dir, workspace_dir)
+
+    # Always set in the current process so this run proceeds with the chosen
+    # paths (setx / shell-config changes only affect *future* shells).
+    os.environ[ENV_LOGS_DIR] = str(logs_dir)
+    os.environ[ENV_WORKSPACE_DIR] = str(workspace_dir)
+
+    return {"logs_dir": logs_dir, "workspace_dir": workspace_dir}
+
+
+def _persist_env_vars(logs_dir: Path, workspace_dir: Path) -> None:
+    """Persist the path env vars for future shells, cross-platform.
+
+    Windows: ``setx`` writes them to the per-user environment (registry), which
+    new terminals inherit. Unix: append ``export`` lines to the shell config.
+    Neither affects the *current* shell -- the caller also sets os.environ so the
+    in-progress run proceeds.
+    """
+    if os.name == "nt":
+        for var, value in (
+            (ENV_LOGS_DIR, str(logs_dir)),
+            (ENV_WORKSPACE_DIR, str(workspace_dir)),
+        ):
+            try:
+                # No shell=True: args are passed verbatim, so backslashes/spaces
+                # in the path need no quoting. setx persists to HKCU\Environment.
+                subprocess.run(
+                    ["setx", var, value],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+                print(f"  set {var}={value}")
+            except (OSError, subprocess.CalledProcessError) as e:
+                print(f"  Failed to set {var} via setx: {e}")
+        print(
+            "Saved to your Windows user environment. "
+            "Open a NEW terminal for it to take effect."
+        )
+    else:
+        shell_config = _detect_shell_config()
         _add_to_shell_config(shell_config, logs_dir, workspace_dir)
         print(f"Added to {shell_config}")
         print(f"Run: source {shell_config} (or restart terminal)")
-
-        # Also set in current environment
-        os.environ[ENV_LOGS_DIR] = str(logs_dir)
-        os.environ[ENV_WORKSPACE_DIR] = str(workspace_dir)
-
-    return {"logs_dir": logs_dir, "workspace_dir": workspace_dir}
 
 
 def _add_to_shell_config(config_path: Path, logs_dir: Path, workspace_dir: Path) -> None:
