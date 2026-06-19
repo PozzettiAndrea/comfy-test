@@ -246,6 +246,9 @@ class TestConfig:
     comfyui_version: str = "latest"
     python_version: str = field(default_factory=_random_python_version)
     torch_version: str = DEFAULT_TORCH_VERSION
+    # Extra PyPI indexes passed to uv/pip as --extra-index-url (in addition to the
+    # built-in PyTorch wheel index + pypi.org). For private mirrors / Artifactory.
+    extra_pip_indices: List[str] = field(default_factory=list)
     timeout: int = 600
     res: int = 1080  # Viewport height (width = height * 16/9)
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))

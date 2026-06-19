@@ -73,6 +73,7 @@ class LinuxPlatform(TestPlatform):
         torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
+        cmd.extend(self._extra_index_args())
         cmd.extend(["--index-strategy", "unsafe-best-match"])
         cmd.extend([f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"])
         self._log(f"Pinning torch family from {torch_index}: torch=={t} torchvision=={tv} torchaudio=={ta}")
@@ -98,6 +99,7 @@ class LinuxPlatform(TestPlatform):
         torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
+        cmd.extend(self._extra_index_args())
         cmd.extend(["--index-strategy", "unsafe-best-match"])
         cmd.extend(["-r", str(requirements_file)])
 
@@ -130,6 +132,7 @@ class LinuxPlatform(TestPlatform):
         env_torch = os.environ.get("COMFY_TEST_TORCH_VERSION", "").strip()
         torch_spec = env_torch or getattr(config, "torch_version", None)
         self._torch_triple = resolve_torch_triple(torch_spec)
+        self.set_extra_pip_indices(config)
         if self._torch_triple:
             t, tv, ta = self._torch_triple
             self._log(f"torch_version={torch_spec!r} -> pinning torch=={t} torchvision=={tv} torchaudio=={ta}")

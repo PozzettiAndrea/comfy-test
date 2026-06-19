@@ -49,6 +49,8 @@ class MacOSPlatform(TestPlatform):
         if local_wheels and Path(local_wheels).exists():
             cmd.extend(["--find-links", local_wheels])
 
+        cmd.extend(self._extra_index_args())
+
         self._run_command(cmd, cwd=cwd, env=env)
 
     def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
@@ -64,6 +66,8 @@ class MacOSPlatform(TestPlatform):
         work_dir.mkdir(parents=True, exist_ok=True)
 
         comfyui_dir = work_dir / "ComfyUI"
+
+        self.set_extra_pip_indices(config)
 
         # Clone ComfyUI
         self._log(f"Cloning ComfyUI ({config.comfyui_version})...")

@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable, TYPE_CHECKING
+from typing import Optional, Callable, List, TYPE_CHECKING
 import subprocess
 
 if TYPE_CHECKING:
@@ -43,6 +43,27 @@ class TestPlatform(ABC):
             log_callback: Optional callback for logging messages
         """
         self._log = log_callback or (lambda msg: print(msg))
+        # Extra PyPI indexes (from config.extra_pip_indices), appended to install
+        # commands as --extra-index-url. Populated by set_extra_pip_indices().
+        self._extra_pip_indices: List[str] = []
+
+    def set_extra_pip_indices(self, config: "TestConfig") -> None:
+        """Capture extra PyPI indexes from config so install commands can add them
+        as --extra-index-url (alongside the built-in PyTorch + PyPI indexes).
+        Call this from setup_comfyui() before installing anything."""
+        indices = getattr(config, "extra_pip_indices", None) or []
+        if isinstance(indices, str):
+            indices = [indices]
+        self._extra_pip_indices = [str(i).strip() for i in indices if str(i).strip()]
+        if self._extra_pip_indices:
+            self._log(f"Extra pip indexes: {', '.join(self._extra_pip_indices)}")
+
+    def _extra_index_args(self) -> List[str]:
+        """uv/pip args adding each configured extra index as --extra-index-url."""
+        args: List[str] = []
+        for idx in self._extra_pip_indices:
+            args.extend(["--extra-index-url", idx])
+        return args
 
     @property
     @abstractmethod

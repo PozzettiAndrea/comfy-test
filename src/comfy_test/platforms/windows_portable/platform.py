@@ -161,6 +161,7 @@ class WindowsPortablePlatform(TestPlatform):
         cmd = [str(python), "-m", "uv", "pip", "install"]
         if self._wheel_dir and self._wheel_dir.exists():
             cmd.extend(["--find-links", str(self._wheel_dir)])
+        cmd.extend(self._extra_index_args())
         cmd.extend(args)
         self._run_command(cmd, cwd=cwd)
 
@@ -169,6 +170,7 @@ class WindowsPortablePlatform(TestPlatform):
         cmd = [str(python), "-m", "pip", "install"]
         if self._wheel_dir and self._wheel_dir.exists():
             cmd.extend(["--find-links", str(self._wheel_dir)])
+        cmd.extend(self._extra_index_args())
         cmd.extend(args)
         self._run_command(cmd, cwd=cwd)
 
@@ -176,6 +178,7 @@ class WindowsPortablePlatform(TestPlatform):
         """Set up ComfyUI Portable for testing on Windows."""
         work_dir = Path(work_dir).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
+        self.set_extra_pip_indices(config)
 
         # Get portable version
         portable_config = config.windows_portable

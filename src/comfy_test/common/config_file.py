@@ -144,6 +144,8 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         python_version = "3.10"
         timeout = 300
         levels = ["syntax", "install", "registration", "instantiation", "execution"]
+        # Extra PyPI indexes (added as --extra-index-url, alongside PyTorch + pypi.org)
+        extra_pip_indices = ["https://pypi.example.com/simple"]
 
         [test.platforms]
         linux = true
@@ -264,6 +266,16 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             kwargs["python_version"] = python_version
         if "res" in test_section:
             kwargs["res"] = test_section["res"]
+        if "extra_pip_indices" in test_section:
+            indices = test_section["extra_pip_indices"]
+            if isinstance(indices, str):
+                indices = [indices]
+            if not isinstance(indices, list) or not all(isinstance(i, str) for i in indices):
+                raise ConfigError(
+                    "extra_pip_indices must be a list of index URL strings",
+                    'e.g. extra_pip_indices = ["https://pypi.example.com/simple"]',
+                )
+            kwargs["extra_pip_indices"] = indices
 
         return TestConfig(**kwargs)
     except ValueError as e:
