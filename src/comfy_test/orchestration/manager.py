@@ -12,6 +12,7 @@ from .context import LevelContext
 from .results import TestResult
 from .levels import (
     run_syntax,
+    run_coverage,
     run_install,
     run_registration,
     run_instantiation,
@@ -25,6 +26,7 @@ from .levels import (
 # Map test levels to their runner functions
 LEVEL_RUNNERS = {
     TestLevel.SYNTAX: run_syntax,
+    TestLevel.COVERAGE: run_coverage,
     TestLevel.INSTALL: run_install,
     TestLevel.REGISTRATION: run_registration,
     TestLevel.INSTANTIATION: run_instantiation,
@@ -37,6 +39,7 @@ LEVEL_RUNNERS = {
 # All levels in execution order
 ALL_LEVELS = [
     TestLevel.SYNTAX,
+    TestLevel.COVERAGE,
     TestLevel.INSTALL,
     TestLevel.REGISTRATION,
     TestLevel.INSTANTIATION,

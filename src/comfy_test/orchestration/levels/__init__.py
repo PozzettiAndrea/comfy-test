@@ -4,6 +4,7 @@ Each level is a function that takes a LevelContext and returns an updated LevelC
 """
 
 from .syntax import run as run_syntax
+from .coverage import run as run_coverage
 from .install import run as run_install
 from .registration import run as run_registration
 from .instantiation import run as run_instantiation
@@ -14,6 +15,7 @@ from .execution import run as run_execution
 
 __all__ = [
     "run_syntax",
+    "run_coverage",
     "run_install",
     "run_registration",
     "run_instantiation",

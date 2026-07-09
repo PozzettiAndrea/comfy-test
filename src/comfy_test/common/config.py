@@ -83,6 +83,7 @@ class TestLevel(str, Enum):
     """Test levels - each is explicit, run what's in the list.
 
     - syntax: Check project structure (pyproject.toml vs requirements.txt)
+    - coverage: Check every registered node is used by a workflow (static, no install)
     - install: Setup ComfyUI, install node, install deps
     - registration: Start server, check nodes in object_info (requires install)
     - instantiation: Call each node's constructor (requires install)
@@ -92,10 +93,12 @@ class TestLevel(str, Enum):
 
     Dependencies:
     - syntax: standalone
+    - coverage: standalone
     - install: standalone
     - registration, instantiation, static_capture, validation, execution: all require install
     """
     SYNTAX = "syntax"
+    COVERAGE = "coverage"
     INSTALL = "install"
     REGISTRATION = "registration"
     INSTANTIATION = "instantiation"
@@ -113,6 +116,7 @@ class TestLevel(str, Enum):
         """
         deps = {
             cls.SYNTAX: [],
+            cls.COVERAGE: [],
             cls.INSTALL: [],
             cls.REGISTRATION: [cls.INSTALL],
             cls.INSTANTIATION: [cls.INSTALL],
@@ -139,7 +143,7 @@ class TestLevel(str, Enum):
                 all_levels.add(dep)
 
         # Return in execution order
-        order = [cls.SYNTAX, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.STATIC_CAPTURE, cls.VALIDATION, cls.EXECUTION_LIGHT, cls.EXECUTION]
+        order = [cls.SYNTAX, cls.COVERAGE, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.STATIC_CAPTURE, cls.VALIDATION, cls.EXECUTION_LIGHT, cls.EXECUTION]
         return [l for l in order if l in all_levels]
 
 

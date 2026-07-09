@@ -329,7 +329,7 @@ def add_run_parser(subparsers):
     )
     run_parser.add_argument(
         "--level", "-l",
-        choices=["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution_light", "execution"],
+        choices=["syntax", "coverage", "install", "registration", "instantiation", "static_capture", "validation", "execution_light", "execution"],
         help="Run only up to this level (overrides config)",
     )
     run_parser.add_argument(
