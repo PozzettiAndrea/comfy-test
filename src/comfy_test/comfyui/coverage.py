@@ -16,13 +16,26 @@ Because both sides are parsed statically, the result is reproducible: the same
 files always yield the same coverage. Nodes whose mapping keys are *not* string
 literals (built dynamically) can't be resolved statically and are surfaced as
 warnings rather than silently dropped.
+
+**Dispatcher nodes (GraphBuilder expansion).** Some packs use ComfyUI's node
+expansion API to fan a single visible node out to a hidden (``is_dev_only``)
+backend node at execution time, based on a combo widget -- e.g. a "Remesh"
+node with a "backend" dropdown that inserts a different registered node
+depending on the selection. The saved workflow JSON only ever records the
+dispatcher's own type, never the backend it resolved to, so a naive
+type-string comparison always misreports those backend nodes as untested even
+when a workflow demonstrably exercises them. By convention such a dispatcher
+class exposes a class-level ``BACKEND_MAP = {"combo_value": "HiddenNodeId"}``
+dict literal; this module statically finds those maps and, for each workflow
+node of that dispatcher type, resolves its saved "backend" widget value
+through the map to credit the real underlying node as tested.
 """
 
 import ast
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 # Directories never worth scanning for node registrations.
@@ -38,8 +51,11 @@ class CoverageResult:
 
     pack_dir: Path
     workflows_dir: Path
-    # node type -> sorted list of workflow filenames that reference it
+    # node type -> sorted list of workflow filenames that reference it directly
     used: Dict[str, List[str]] = field(default_factory=dict)
+    # node type -> sorted list of human-readable dispatch provenance notes
+    # (e.g. "remeshing_all.json (via GeomPackRemesh backend='geogram_anisotropic')")
+    dispatched: Dict[str, List[str]] = field(default_factory=dict)
     registered: Set[str] = field(default_factory=set)
     # workflow node types that are not registered by this pack (builtins / other packs)
     external: Set[str] = field(default_factory=set)
@@ -49,13 +65,13 @@ class CoverageResult:
 
     @property
     def tested(self) -> List[str]:
-        """Registered nodes referenced by at least one workflow."""
-        return sorted(self.registered & set(self.used))
+        """Registered nodes referenced by at least one workflow, directly or via dispatch."""
+        return sorted(self.registered & (set(self.used) | set(self.dispatched)))
 
     @property
     def untested(self) -> List[str]:
-        """Registered nodes referenced by NO workflow."""
-        return sorted(self.registered - set(self.used))
+        """Registered nodes referenced by NO workflow, directly or via dispatch."""
+        return sorted(self.registered - (set(self.used) | set(self.dispatched)))
 
     @property
     def coverage_pct(self) -> float:
@@ -158,16 +174,165 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
 
 
 # --------------------------------------------------------------------------
+# Dispatcher-node discovery (AST, deterministic, no imports)
+# --------------------------------------------------------------------------
+
+_DISPATCH_WIDGET_NAME = "backend"
+
+
+def _dict_literal_str_pairs(
+    node: ast.Dict, rel: str, warnings: List[str], label: str
+) -> Dict[str, str]:
+    """Collect string-literal key -> string-literal value pairs from a dict literal."""
+    pairs: Dict[str, str] = {}
+    for key, value in zip(node.keys, node.values):
+        if key is None:  # dict unpacking: {**other}
+            continue
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            warnings.append(
+                f"{rel}:{getattr(key, 'lineno', '?')}: non-literal {label} key "
+                f"could not be resolved statically"
+            )
+            continue
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            pairs[key.value] = value.value
+        else:
+            warnings.append(
+                f"{rel}:{getattr(value, 'lineno', '?')}: non-literal {label} value "
+                f"for {key.value!r} could not be resolved statically"
+            )
+    return pairs
+
+
+def _find_schema_node_id(class_node: ast.ClassDef) -> Optional[str]:
+    """Find node_id="..." passed to a ``*.Schema(...)`` call inside this class."""
+    for node in ast.walk(class_node):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        is_schema_call = (
+            (isinstance(fn, ast.Attribute) and fn.attr == "Schema")
+            or (isinstance(fn, ast.Name) and fn.id == "Schema")
+        )
+        if not is_schema_call:
+            continue
+        for kw in node.keywords:
+            if kw.arg == "node_id" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                return kw.value.value
+    return None
+
+
+def discover_backend_maps(pack_dir: Path) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
+    """Statically collect dispatcher-node backend maps.
+
+    For every class that defines both a ``*.Schema(node_id=...)`` call and a
+    class-level ``BACKEND_MAP = {"combo_value": "HiddenNodeId", ...}`` dict
+    literal, records ``{dispatcher_node_id: {combo_value: backend_node_id}}``.
+
+    Returns ``(backend_maps, warnings)``.
+    """
+    backend_maps: Dict[str, Dict[str, str]] = {}
+    warnings: List[str] = []
+
+    for py in sorted(pack_dir.rglob("*.py")):
+        if any(part in _SKIP_DIRS for part in py.relative_to(pack_dir).parts):
+            continue
+        rel = str(py.relative_to(pack_dir))
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=rel)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+
+            backend_map_dict = None
+            for stmt in node.body:
+                if (
+                    isinstance(stmt, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "BACKEND_MAP" for t in stmt.targets)
+                    and isinstance(stmt.value, ast.Dict)
+                ):
+                    backend_map_dict = stmt.value
+                    break
+            if backend_map_dict is None:
+                continue
+
+            node_id = _find_schema_node_id(node)
+            if node_id is None:
+                warnings.append(
+                    f"{rel}:{node.lineno}: class {node.name} has BACKEND_MAP but no "
+                    f"resolvable node_id, skipping dispatch tracing for it"
+                )
+                continue
+
+            pairs = _dict_literal_str_pairs(backend_map_dict, rel, warnings, "BACKEND_MAP")
+            if pairs:
+                backend_maps[node_id] = pairs
+
+    return backend_maps, warnings
+
+
+# --------------------------------------------------------------------------
 # Workflow-node discovery (JSON)
 # --------------------------------------------------------------------------
 
-def _collect_workflow_types(data: object) -> Set[str]:
-    """Extract node ``type`` values from a parsed workflow (litegraph or API).
+def _resolve_dispatch_selection(n: dict, widget_name: str = _DISPATCH_WIDGET_NAME) -> Optional[str]:
+    """Extract the saved value of a named widget from a workflow node dict.
+
+    Handles litegraph (UI) format -- where ``widgets_values`` is a list
+    positionally aligned with the widget-bearing entries in ``inputs`` -- and
+    the API/prompt format, where ``inputs`` already maps names to values.
+    """
+    if "class_type" in n:  # API / prompt format
+        inputs = n.get("inputs")
+        if isinstance(inputs, dict):
+            v = inputs.get(widget_name)
+            return v if isinstance(v, str) else None
+        return None
+
+    # litegraph (UI) format
+    widgets_values = n.get("widgets_values")
+    inputs = n.get("inputs")
+    if isinstance(widgets_values, dict):
+        v = widgets_values.get(widget_name)
+        return v if isinstance(v, str) else None
+    if isinstance(widgets_values, list) and isinstance(inputs, list):
+        widget_inputs = [inp for inp in inputs if isinstance(inp, dict) and isinstance(inp.get("widget"), dict)]
+        for idx, inp in enumerate(widget_inputs):
+            if idx >= len(widgets_values):
+                break
+            name = (inp.get("widget") or {}).get("name") or inp.get("name")
+            if name == widget_name:
+                v = widgets_values[idx]
+                return v if isinstance(v, str) else None
+    return None
+
+
+def _collect_workflow_types(
+    data: object, backend_maps: Optional[Dict[str, Dict[str, str]]] = None
+) -> Tuple[Set[str], List[Tuple[str, str, str]]]:
+    """Extract node ``type`` values from a parsed workflow (litegraph or API),
+    plus any GraphBuilder-dispatched backend nodes resolvable via backend_maps.
 
     Handles top-level ``nodes`` plus nodes nested in ``definitions.subgraphs``
     (litegraph subgraphs), and the API/prompt format ``{id: {class_type}}``.
+
+    Returns ``(types, dispatched)`` where ``dispatched`` is a list of
+    ``(backend_node_id, dispatcher_type, combo_value)`` tuples.
     """
+    backend_maps = backend_maps or {}
     types: Set[str] = set()
+    dispatched: List[Tuple[str, str, str]] = []
+
+    def record(n: dict, t: str) -> None:
+        types.add(t)
+        bmap = backend_maps.get(t)
+        if bmap:
+            selection = _resolve_dispatch_selection(n)
+            if selection is not None and selection in bmap:
+                dispatched.append((bmap[selection], t, selection))
 
     def visit_nodes(nodes: object) -> None:
         if not isinstance(nodes, list):
@@ -176,7 +341,7 @@ def _collect_workflow_types(data: object) -> Set[str]:
             if isinstance(n, dict):
                 t = n.get("type")
                 if isinstance(t, str):
-                    types.add(t)
+                    record(n, t)
 
     if isinstance(data, dict):
         if "nodes" in data:  # litegraph (UI) format
@@ -188,23 +353,28 @@ def _collect_workflow_types(data: object) -> Set[str]:
         else:  # API / prompt format: {node_id: {"class_type": ...}}
             for v in data.values():
                 if isinstance(v, dict) and isinstance(v.get("class_type"), str):
-                    types.add(v["class_type"])
+                    record(v, v["class_type"])
 
-    return types
+    return types, dispatched
 
 
-def discover_workflow_nodes(workflows_dir: Path) -> Tuple[Dict[str, List[str]], int, List[str]]:
-    """Map each node type to the workflow files that reference it.
+def discover_workflow_nodes(
+    workflows_dir: Path, backend_maps: Optional[Dict[str, Dict[str, str]]] = None
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], int, List[str]]:
+    """Map each node type to the workflow files that reference it, plus any
+    dispatcher-resolved backend nodes.
 
-    Returns ``(used, workflow_count, warnings)`` where ``used`` is
-    ``{node_type: [workflow_filename, ...]}``.
+    Returns ``(used, dispatched, workflow_count, warnings)`` where ``used`` is
+    ``{node_type: [workflow_filename, ...]}`` and ``dispatched`` is
+    ``{backend_node_id: [provenance_note, ...]}``.
     """
     used: Dict[str, Set[str]] = {}
+    dispatched: Dict[str, Set[str]] = {}
     warnings: List[str] = []
     count = 0
 
     if not workflows_dir.is_dir():
-        return {}, 0, [f"no workflows/ directory at {workflows_dir}"]
+        return {}, {}, 0, [f"no workflows/ directory at {workflows_dir}"]
 
     for wf in sorted(workflows_dir.glob("*.json")):
         count += 1
@@ -213,10 +383,19 @@ def discover_workflow_nodes(workflows_dir: Path) -> Tuple[Dict[str, List[str]], 
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             warnings.append(f"{wf.name}: could not parse ({e.__class__.__name__})")
             continue
-        for t in _collect_workflow_types(data):
+        types, dispatch_records = _collect_workflow_types(data, backend_maps)
+        for t in types:
             used.setdefault(t, set()).add(wf.name)
+        for backend_id, dispatcher_type, selection in dispatch_records:
+            note = f"{wf.name} (via {dispatcher_type} backend={selection!r})"
+            dispatched.setdefault(backend_id, set()).add(note)
 
-    return {t: sorted(files) for t, files in used.items()}, count, warnings
+    return (
+        {t: sorted(files) for t, files in used.items()},
+        {t: sorted(notes) for t, notes in dispatched.items()},
+        count,
+        warnings,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -229,14 +408,16 @@ def analyze_coverage(pack_dir: Path, workflows_dir: Path | None = None) -> Cover
     workflows_dir = Path(workflows_dir).resolve() if workflows_dir else pack_dir / "workflows"
 
     registered, reg_warnings = discover_registered_nodes(pack_dir)
-    used, wf_count, wf_warnings = discover_workflow_nodes(workflows_dir)
+    backend_maps, bmap_warnings = discover_backend_maps(pack_dir)
+    used, dispatched, wf_count, wf_warnings = discover_workflow_nodes(workflows_dir, backend_maps)
 
     return CoverageResult(
         pack_dir=pack_dir,
         workflows_dir=workflows_dir,
         used=used,
+        dispatched=dispatched,
         registered=registered,
         external=set(used) - registered,
-        warnings=reg_warnings + wf_warnings,
+        warnings=reg_warnings + bmap_warnings + wf_warnings,
         workflow_count=wf_count,
     )

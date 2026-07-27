@@ -32,6 +32,11 @@ def run(ctx: LevelContext) -> LevelContext:
         f"Coverage: {len(result.tested)}/{len(result.registered)} registered nodes "
         f"used across {result.workflow_count} workflow(s) ({result.coverage_pct:.0f}%)"
     )
+    if result.dispatched:
+        ctx.log(
+            f"  ({len(result.dispatched)} of those credited via dispatcher "
+            "backend-map tracing, not a direct workflow reference)"
+        )
 
     if result.untested:
         raise TestError(

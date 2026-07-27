@@ -38,6 +38,7 @@ def cmd_coverage(args) -> int:
             "tested": result.tested,
             "untested": result.untested,
             "used": result.used,
+            "dispatched": result.dispatched,
             "external": sorted(result.external),
             "warnings": result.warnings,
         }, indent=2))
@@ -55,6 +56,11 @@ def cmd_coverage(args) -> int:
         f"Coverage:   {len(result.tested)}/{len(result.registered)} registered nodes "
         f"used in workflows ({result.coverage_pct:.0f}%)"
     ))
+    if result.dispatched:
+        print(_safe(
+            f"            ({len(result.dispatched)} of those credited via dispatcher "
+            "backend-map tracing, not a direct workflow reference -- see -v)"
+        ))
     print()
 
     if result.untested:
@@ -68,8 +74,12 @@ def cmd_coverage(args) -> int:
     if args.verbose and result.tested:
         print(_safe(f"TESTED ({len(result.tested)}):"))
         for name in result.tested:
-            files = ", ".join(result.used.get(name, []))
-            print(_safe(f"  + {name}  ->  {files}"))
+            direct = result.used.get(name)
+            if direct:
+                print(_safe(f"  + {name}  ->  {', '.join(direct)}"))
+            else:
+                via = ", ".join(result.dispatched.get(name, []))
+                print(_safe(f"  + {name}  ->  {via}  [dispatched]"))
         print()
 
     if result.external:

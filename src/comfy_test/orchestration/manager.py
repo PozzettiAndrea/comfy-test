@@ -2,6 +2,7 @@
 
 import faulthandler
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Optional, Callable, List
@@ -256,6 +257,12 @@ class TestManager:
         output_base.mkdir(parents=True, exist_ok=True)
         self._session_log_file = output_base / "session.log"
         self._session_log_file.write_text("", encoding="utf-8")
+
+        # Copy the config that produced this run alongside its output, so it's
+        # easy to see what config was used without checking the source repo.
+        toml_src = self.node_dir / "comfy-test.toml"
+        if toml_src.exists():
+            shutil.copy2(toml_src, output_base / "comfy-test.toml")
 
         # Enable crash dump logging
         crash_log_path = output_base / "crash_dump.log"
