@@ -1,5 +1,5 @@
 #!/bin/bash
-# Container entrypoint for comfy-test-linux-gpu:full.
+# Container entrypoint for comfy-test-linux-cuda:full.
 #
 # Installs comfy-test from PyPI at startup. If COMFY_TEST_NODE_URL is set,
 # clones the node into /node/<name> first and changes into that directory

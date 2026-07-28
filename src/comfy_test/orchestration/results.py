@@ -74,16 +74,13 @@ class TestResult:
 
 
 def has_gpu() -> bool:
-    """Check if a GPU is available for CUDA operations.
+    """Check if an accelerator is available for the active backend.
 
-    Returns:
-        True if nvidia-smi succeeds (GPU available), False otherwise
+    Generic dispatcher -- the vendor probe (nvidia-smi for cuda) lives in the
+    backend impl, so this contains no vendor call.
     """
-    try:
-        result = subprocess.run(["nvidia-smi"], capture_output=True, timeout=10)
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+    from ..backends import active_backend
+    return active_backend().accelerator_present()
 
 
 def get_hardware_info() -> dict:
@@ -103,16 +100,11 @@ def get_hardware_info() -> dict:
     except (FileNotFoundError, PermissionError):
         pass
 
-    # Get GPU info
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            info["gpu"] = result.stdout.strip().split("\n")[0]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    # Get accelerator info via the active backend (vendor probe lives there).
+    from ..backends import active_backend
+    name = active_backend().hardware_name()
+    if name:
+        info["gpu"] = name
 
     return info
 

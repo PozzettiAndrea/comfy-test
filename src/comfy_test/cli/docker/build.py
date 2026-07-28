@@ -37,8 +37,8 @@ from typing import Iterator, List, Optional
 from . import _defender
 
 
-DOCKER_IMAGE_LINUX = "comfy-test-linux-gpu:full"
-DOCKER_IMAGE_WINDOWS = "comfy-test-windows-gpu:full"
+DOCKER_IMAGE_LINUX = "comfy-test-linux-cuda:full"
+DOCKER_IMAGE_WINDOWS = "comfy-test-windows-cuda:full"
 DOCKER_GPU_DEVICE = "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599"
 
 
@@ -139,7 +139,7 @@ def _confirm_overwrite(tag: str, info: dict, force: bool) -> bool:
 def _build_linux(args, docker_exe: str) -> int:
     tag = args.tag or DOCKER_IMAGE_LINUX
 
-    with _docker_build_context("linux-gpu") as src:
+    with _docker_build_context("linux-cuda") as src:
         if not src.is_dir():
             print(f"Build context not found at {src}", file=sys.stderr)
             return 2
@@ -317,7 +317,7 @@ def _build_windows(args, docker_exe: str) -> int:
 
     tag = args.tag or DOCKER_IMAGE_WINDOWS
 
-    with _docker_build_context("windows-gpu") as src:
+    with _docker_build_context("windows-cuda") as src:
         if not src.is_dir():
             print(f"Build context not found at {src}", file=sys.stderr)
             return 2
@@ -379,7 +379,7 @@ def _build_windows_with_context(args, docker_exe: str, tag: str, src: Path) -> i
               f"Stage {git_exe} in {cache_dir} or pass --git-exe.", file=sys.stderr)
         return 3
 
-    stage_dir = Path(os.environ.get("COMFY_TEST_DOCKER_STAGE_DIR", r"D:\docker-stage")) / "windows-gpu"
+    stage_dir = Path(os.environ.get("COMFY_TEST_DOCKER_STAGE_DIR", r"D:\docker-stage")) / "windows-cuda"
     stage_dir.mkdir(parents=True, exist_ok=True)
 
     # Stage installers (skip-copy if already present)
@@ -461,7 +461,7 @@ def _save_image(docker_exe: str, tag: str, args) -> int:
     artifact = args.artifact_path or os.environ.get("COMFY_TEST_DOCKER_ARTIFACT_PATH")
     if not artifact:
         from . import _root
-        # Default: <root>/artifacts/<image>-<variant>.tar.zst (e.g. comfy-test-windows-gpu-full.tar.zst)
+        # Default: <root>/artifacts/<image>-<variant>.tar.zst (e.g. comfy-test-windows-cuda-full.tar.zst)
         safe = tag.replace(":", "-").replace("/", "-")
         artifact = str(_root.subdir("artifacts") / f"{safe}.tar.zst")
     artifact_path = Path(artifact)

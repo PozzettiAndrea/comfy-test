@@ -21,15 +21,15 @@ import subprocess
 # Platform definitions for multi-platform index
 PLATFORMS = [
     {'id': 'linux-cpu', 'label': 'Linux CPU'},
-    {'id': 'linux-gpu', 'label': 'Linux GPU'},
+    {'id': 'linux-cuda', 'label': 'Linux CUDA'},
     {'id': 'windows-cpu', 'label': 'Windows CPU'},
-    {'id': 'windows-gpu', 'label': 'Windows GPU'},
+    {'id': 'windows-cuda', 'label': 'Windows CUDA'},
     {'id': 'windows-portable-cpu', 'label': 'Win Portable CPU'},
-    {'id': 'windows-portable-gpu', 'label': 'Win Portable GPU'},
+    {'id': 'windows-portable-cuda', 'label': 'Win Portable CUDA'},
     {'id': 'macos-cpu', 'label': 'macOS CPU'},
     {'id': 'macos-desktop', 'label': 'macOS Desktop'},
     {'id': 'windows-desktop', 'label': 'Windows Desktop'},
-    {'id': 'windows-desktop-gpu', 'label': 'Windows Desktop GPU'},
+    {'id': 'windows-desktop-cuda', 'label': 'Windows Desktop CUDA'},
 ]
 
 
@@ -104,21 +104,12 @@ def _get_system_info() -> dict:
     if cores > 0:
         info['cpu'] = f"{info['cpu']} ({cores} cores)"
 
-    # Get GPU info
+    # Get accelerator info via the active backend (vendor probe lives there).
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            gpus = [g.strip() for g in result.stdout.strip().split('\n') if g.strip()]
-            if gpus:
-                if len(gpus) > 1:
-                    info['gpu'] = f"{gpus[0]} x{len(gpus)}"
-                else:
-                    info['gpu'] = gpus[0]
-    except FileNotFoundError:
-        pass
+        from ..backends import active_backend
+        gpus = active_backend().hardware_names()
+        if gpus:
+            info['gpu'] = f"{gpus[0]} x{len(gpus)}" if len(gpus) > 1 else gpus[0]
     except Exception:
         pass
 

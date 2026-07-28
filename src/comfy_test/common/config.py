@@ -258,12 +258,12 @@ class TestConfig:
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)
-    linux_gpu: PlatformTestConfig = field(default_factory=PlatformTestConfig)
+    linux_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     macos: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows: PlatformTestConfig = field(default_factory=PlatformTestConfig)
-    windows_gpu: PlatformTestConfig = field(default_factory=PlatformTestConfig)
+    windows_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows_portable: PlatformTestConfig = field(default_factory=PlatformTestConfig)
-    windows_portable_gpu: PlatformTestConfig = field(default_factory=PlatformTestConfig)
+    windows_portable_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
 
     def __post_init__(self):
         """Validate configuration."""
@@ -292,16 +292,16 @@ class TestConfig:
         # Ensure platform configs are PlatformTestConfig
         if isinstance(self.linux, dict):
             self.linux = PlatformTestConfig(**self.linux)
-        if isinstance(self.linux_gpu, dict):
-            self.linux_gpu = PlatformTestConfig(**self.linux_gpu)
+        if isinstance(self.linux_cuda, dict):
+            self.linux_cuda = PlatformTestConfig(**self.linux_cuda)
         if isinstance(self.windows, dict):
             self.windows = PlatformTestConfig(**self.windows)
-        if isinstance(self.windows_gpu, dict):
-            self.windows_gpu = PlatformTestConfig(**self.windows_gpu)
+        if isinstance(self.windows_cuda, dict):
+            self.windows_cuda = PlatformTestConfig(**self.windows_cuda)
         if isinstance(self.windows_portable, dict):
             self.windows_portable = PlatformTestConfig(**self.windows_portable)
-        if isinstance(self.windows_portable_gpu, dict):
-            self.windows_portable_gpu = PlatformTestConfig(**self.windows_portable_gpu)
+        if isinstance(self.windows_portable_cuda, dict):
+            self.windows_portable_cuda = PlatformTestConfig(**self.windows_portable_cuda)
 
     @property
     def python_short(self) -> str:
@@ -312,8 +312,8 @@ class TestConfig:
         """Get configuration for a specific platform.
 
         Args:
-            platform: Platform name ('linux', 'linux_gpu', 'macos', 'windows', 'windows_gpu',
-                      'windows_portable', 'windows_portable_gpu')
+            platform: Platform name ('linux', 'linux_cuda', 'macos', 'windows', 'windows_cuda',
+                      'windows_portable', 'windows_portable_cuda')
 
         Returns:
             PlatformTestConfig for the specified platform
@@ -323,16 +323,15 @@ class TestConfig:
         """
         platform_map = {
             "linux": self.linux,
-            "linux_gpu": self.linux_gpu,
-            "linux-gpu": self.linux_gpu,
+            "linux_cuda": self.linux_cuda,
+            "linux-cuda": self.linux_cuda,
             "macos": self.macos,
             "windows": self.windows,
-            "windows_gpu": self.windows_gpu,
-            "windows-gpu": self.windows_gpu,
+            "windows_cuda": self.windows_cuda,
+            "windows-cuda": self.windows_cuda,
             "windows_portable": self.windows_portable,
-            "windows-portable": self.windows_portable,
-            "windows_portable_gpu": self.windows_portable_gpu,
-            "windows-portable-gpu": self.windows_portable_gpu,
+            "windows_portable_cuda": self.windows_portable_cuda,
+            "windows-portable-cuda": self.windows_portable_cuda,
         }
         if platform not in platform_map:
             raise ValueError(f"Unknown platform: {platform}")

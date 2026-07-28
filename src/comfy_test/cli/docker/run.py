@@ -18,8 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-DOCKER_IMAGE_WINDOWS = "comfy-test-windows-gpu:full"
-DOCKER_IMAGE_LINUX = "comfy-test-linux-gpu:full"
+DOCKER_IMAGE_WINDOWS = "comfy-test-windows-cuda:full"
+DOCKER_IMAGE_LINUX = "comfy-test-linux-cuda:full"
 DOCKER_GPU_DEVICE = "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599"  # GUID_DEVINTERFACE_DISPLAY_ADAPTER
 
 from . import _root
@@ -77,7 +77,7 @@ def _docker_preflight_windows(docker_exe: str) -> Optional[str]:
             f"Docker is not in Windows-container mode (OSType={r.stdout.strip()!r}). "
             "Switch Docker Desktop to Windows containers, or run the bundled "
             "install-host.ps1 (located inside the installed package at "
-            "site-packages/comfy_test/_docker/windows-gpu/install-host.ps1) as admin."
+            "site-packages/comfy_test/_docker/windows-cuda/install-host.ps1) as admin."
         )
     r = subprocess.run([docker_exe, "image", "inspect", DOCKER_IMAGE_WINDOWS],
                        capture_output=True, text=True)
@@ -243,7 +243,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
 
     # Grant the host's `Users` group Modify on every bind-mount source dir.
     # The Windows GPU container now runs as `ContainerUser` (non-admin) — see
-    # docker/windows-gpu/Dockerfile. Windows containers project the host's
+    # docker/windows-cuda/Dockerfile. Windows containers project the host's
     # NTFS ACLs through bind mounts; ContainerUser inside maps to the host's
     # `Users` / `Authenticated Users` SID. Without an explicit grant, dirs
     # created with default creator-only ACLs cause `[WinError 5] Access is
@@ -462,7 +462,7 @@ def _patch_null_commit_hash(node_path: Path, logs_dir: Path) -> None:
 def cmd_docker_run(args) -> int:
     """Clone a node from a URL (or local path) and run comfy-test in Docker.
 
-    With --desktop_mac / --desktop_windows / --desktop_windows_gpu, bypass
+    With --desktop_mac / --desktop_windows / --desktop_windows_cuda, bypass
     the Docker path entirely and drive ComfyUI Desktop on the local host
     via cdp_driver.py. That mode mirrors what the
     `_test-{macos,windows}-desktop.yml` workflows do on a GHA runner --
@@ -607,8 +607,8 @@ def add_docker_run_parser(subparsers):
     desktop_group.add_argument("--desktop_windows", action="store_const",
                                const="windows", dest="desktop_mode",
                                help="Drive ComfyUI Desktop locally on Windows CPU (no docker)")
-    desktop_group.add_argument("--desktop_windows_gpu", action="store_const",
-                               const="windows_gpu", dest="desktop_mode",
+    desktop_group.add_argument("--desktop_windows_cuda", action="store_const",
+                               const="windows_cuda", dest="desktop_mode",
                                help="Drive ComfyUI Desktop locally on Windows with GPU (no docker)")
     p.add_argument("--monitor-progress", type=int, default=None, metavar="PORT",
                    help="Desktop only: serve a live viewer on http://localhost:<PORT>/ "

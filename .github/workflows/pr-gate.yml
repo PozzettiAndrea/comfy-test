@@ -208,7 +208,7 @@ jobs:
       - name: Find screenshot platform
         id: find-platform
         run: |
-          for dir in windows-portable-cpu windows-portable-gpu windows-cpu windows-gpu linux-gpu linux-cpu; do
+          for dir in windows-portable-cpu windows-portable-cuda windows-cpu windows-cuda linux-cuda linux-cpu; do
             if [ -f "gh-pages/main/$dir/index.html" ]; then
               echo "platform=$dir" >> "$GITHUB_OUTPUT"
               echo "Found screenshot platform: $dir"

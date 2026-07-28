@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_TAG="comfy-test-linux-gpu:full"
+IMAGE_TAG="comfy-test-linux-cuda:full"
 RUN_TEST=true
 
 while [[ $# -gt 0 ]]; do

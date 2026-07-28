@@ -1,6 +1,6 @@
 # comfy-test Windows GPU image — single-stage, runs as non-admin ContainerUser.
 #
-# Mirrors docker/linux-gpu/Dockerfile structure where Windows allows:
+# Mirrors docker/linux-cuda/Dockerfile structure where Windows allows:
 #   privileged installs as ContainerAdministrator
 #   → USER ContainerUser
 #   → uv → uv python install 3.10-3.13

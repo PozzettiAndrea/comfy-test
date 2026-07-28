@@ -88,19 +88,12 @@ class ScreenshotError(TestError):
 
 
 def _detect_gpu() -> bool:
-    """Check if a GPU is available on this machine (independent of test mode)."""
-    import shutil
-    if shutil.which("nvidia-smi"):
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return True
-        except Exception:
-            pass
-    return False
+    """Check if an accelerator is available (independent of test mode).
+
+    Generic dispatcher -- the vendor probe lives in the active backend.
+    """
+    from ..backends import active_backend
+    return active_backend().hardware_name() is not None
 
 
 def _detect_vulkan() -> bool:

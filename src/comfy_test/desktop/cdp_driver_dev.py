@@ -770,7 +770,7 @@ with sync_playwright() as p:
                       'Recreate', 'Confirm', 'Accept', 'Allow', 'Yes', 'Finish']
 
     # Hardware-tile preference is driven by COMFY_TEST_GPU (set by
-    # _desktop_runner.py from --desktop_windows vs --desktop_windows_gpu),
+    # _desktop_runner.py from --desktop_windows vs --desktop_windows_cuda),
     # not by what the wizard's auto-detect picks. On an NVIDIA box the
     # wizard pre-selects CUDA and enables Next/Install on entry, so without
     # forcing our own tile click we'd silently always install CUDA.
@@ -1436,7 +1436,7 @@ with sync_playwright() as p:
                     data = tomllib.loads(toml_text)
                     # Read .gpu when COMFY_TEST_GPU=1, else .cpu. Earlier
                     # this was hardcoded to 'cpu' which silently picked the
-                    # wrong workflow on --desktop_windows_gpu (the spec's
+                    # wrong workflow on --desktop_windows_cuda (the spec's
                     # cpu-mode exclude list happened to allow alpha_wrap).
                     spec_key_inline = 'gpu' if os.environ.get('COMFY_TEST_GPU', '0') == '1' else 'cpu'
                     spec_inline = data.get('test', {}).get('workflows', {}).get(spec_key_inline)

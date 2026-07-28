@@ -1,6 +1,6 @@
 """Shared constants + helpers for the `comfy-test vm` subcommand group.
 
-The vm subpackage manages a Hyper-V baseline VM used for windows-desktop-gpu
+The vm subpackage manages a Hyper-V baseline VM used for windows-desktop-cuda
 tests. ComfyUI Desktop is an Electron + chromium GUI app that needs an
 interactive desktop session and GPU passthrough -- neither of which works
 in Windows containers (Session 0 isolation, --device only on process

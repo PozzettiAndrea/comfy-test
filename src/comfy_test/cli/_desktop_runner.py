@@ -57,7 +57,7 @@ _VENV_DIR = _CACHE_DIR / "venv"
 _DESKTOP_DOWNLOAD_URLS = {
     "mac":         "https://download.comfy.org/mac/dmg/arm64",
     "windows":     "https://download.comfy.org/windows/nsis/x64",
-    "windows_gpu": "https://download.comfy.org/windows/nsis/x64",
+    "windows_cuda": "https://download.comfy.org/windows/nsis/x64",
 }
 
 
@@ -75,7 +75,7 @@ def _validate_host(desktop_mode: str) -> Optional[str]:
     host = _host_kind()
     if desktop_mode == "mac" and host != "mac":
         return f"--desktop_mac requires a macOS host, got {host}"
-    if desktop_mode in ("windows", "windows_gpu") and host != "windows":
+    if desktop_mode in ("windows", "windows_cuda") and host != "windows":
         return f"--{desktop_mode.replace('_', '-')} requires a Windows host, got {host}"
     # SSH-spawned shells (incl. loopback ones, like the one limactl/colima
     # holds open against the host's own sshd) put the process in a Background
@@ -126,7 +126,7 @@ def _ensure_desktop_app(desktop_mode: str) -> Path:
                        capture_output=True)
         return _APP_DIR
 
-    # windows / windows_gpu
+    # windows / windows_cuda
     if _APP_EXE.exists():
         print(f"[desktop] reusing cached app at {_APP_EXE}")
         return _APP_EXE
@@ -468,7 +468,7 @@ def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str) -> None:
     optional dep doesn't fail the whole run."""
     platform_id = {"mac": "macos-desktop",
                    "windows": "windows-desktop",
-                   "windows_gpu": "windows-desktop-gpu"}[desktop_mode]
+                   "windows_cuda": "windows-desktop-cuda"}[desktop_mode]
     try:
         from comfy_test.reporting.html_report import generate_html_report
         generate_html_report(logs_dir, repo_name=node_repo, current_platform=platform_id)
@@ -792,7 +792,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     platform_dir = {
         "mac":         "macos-desktop",
         "windows":     "windows-desktop",
-        "windows_gpu": "windows-desktop-gpu",
+        "windows_cuda": "windows-desktop-cuda",
     }.get(desktop_mode, desktop_mode)
     # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
     # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
@@ -844,7 +844,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     env = os.environ.copy()
     env.update({
         "PYTHONUNBUFFERED": "1",
-        "COMFY_TEST_GPU": "1" if desktop_mode == "windows_gpu" else "0",
+        "COMFY_TEST_GPU": "1" if desktop_mode == "windows_cuda" else "0",
         "COMFY_TEST_LOGS_DIR": str(logs_dir),
         "COMFY_TEST_DEBUG_DIR": str(debug_dir),
         "NODE_REPO": url.rsplit("github.com/", 1)[-1],
@@ -861,7 +861,7 @@ def run_desktop(args, desktop_mode: str) -> int:
         "COMFY_TEST_DESKTOP_PLATFORM": {
             "mac":         "macos_desktop",
             "windows":     "windows_desktop",
-            "windows_gpu": "windows_desktop_gpu",
+            "windows_cuda": "windows_desktop_cuda",
         }.get(desktop_mode, "unknown_desktop"),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.

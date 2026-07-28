@@ -21,8 +21,8 @@ from typing import Optional
 
 
 KNOWN_IMAGES = [
-    "comfy-test-linux-gpu:full",
-    "comfy-test-windows-gpu:full",
+    "comfy-test-linux-cuda:full",
+    "comfy-test-windows-cuda:full",
 ]
 
 
@@ -91,10 +91,10 @@ def _smb_artifact_paths() -> list:
     if artifact:
         p = Path(artifact)
         paths.append(p)
-        if "windows-gpu" in p.name:
-            paths.append(p.with_name(p.name.replace("windows-gpu", "linux-gpu")))
-        elif "linux-gpu" in p.name:
-            paths.append(p.with_name(p.name.replace("linux-gpu", "windows-gpu")))
+        if "windows-cuda" in p.name:
+            paths.append(p.with_name(p.name.replace("windows-cuda", "linux-cuda")))
+        elif "linux-cuda" in p.name:
+            paths.append(p.with_name(p.name.replace("linux-cuda", "windows-cuda")))
     return paths
 
 

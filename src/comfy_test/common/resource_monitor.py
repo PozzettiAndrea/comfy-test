@@ -108,55 +108,29 @@ class ResourceMonitor:
             if vram is not None:
                 return vram
 
-        # Fallback: system-wide GPU memory
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if result.returncode == 0:
-                mib = float(result.stdout.strip().split("\n")[0])
-                return round(mib / 1024, 2)
-        except Exception:
-            pass
+        # Fallback: system-wide accelerator memory (vendor query in backend).
+        from ..backends import active_backend
+        mib = active_backend().system_vram_used_mib()
+        if mib is not None:
+            return round(mib / 1024, 2)
 
         return None
 
     def _get_per_process_vram_gb(self) -> float | None:
-        """Get GPU VRAM for tracked PIDs via nvidia-smi per-process query.
+        """Get accelerator VRAM for tracked PIDs (GB).
 
         Returns 0.0 when the query succeeds but no tracked PIDs have GPU
         allocations (valid: process isn't using VRAM right now).
         Returns None only on query failure (caller should fall back).
+        The vendor query lives in the active backend; PID filtering + GB
+        conversion are generic and stay here.
         """
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-compute-apps=pid,used_memory",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if result.returncode != 0:
-                return None
-
-            total_mib = 0.0
-            for line in result.stdout.strip().split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    pid = int(parts[0].strip())
-                    mib = float(parts[1].strip())
-                    if pid in self._pids:
-                        total_mib += mib
-
-            return round(total_mib / 1024, 2)
-        except Exception:
+        from ..backends import active_backend
+        per_pid = active_backend().vram_used_by_pid_mib()
+        if per_pid is None:
             return None
+        total_mib = sum(mib for pid, mib in per_pid.items() if pid in self._pids)
+        return round(total_mib / 1024, 2)
 
     def get_summary(self) -> dict:
         """Return summary stats and timeline."""

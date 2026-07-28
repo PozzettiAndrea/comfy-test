@@ -1,6 +1,6 @@
 """`comfy-test vm` subcommand group.
 
-Manages a Hyper-V baseline VM used for windows-desktop-gpu CI tests.
+Manages a Hyper-V baseline VM used for windows-desktop-cuda CI tests.
 ComfyUI Desktop is an Electron + chromium GUI app that needs an interactive
 desktop session and GPU passthrough -- neither of which works in Windows
 containers (Session 0 isolation, --device only on process isolation,
@@ -35,7 +35,7 @@ def add_vm_parser(subparsers):
     """Register the `vm` subcommand group."""
     p = subparsers.add_parser(
         "vm",
-        help="Hyper-V baseline VM lifecycle for windows-desktop-gpu tests",
+        help="Hyper-V baseline VM lifecycle for windows-desktop-cuda tests",
     )
     # Bare `comfy-test vm` (no subcommand) defaults to `list`.
     p.set_defaults(func=cmd_vm_list)

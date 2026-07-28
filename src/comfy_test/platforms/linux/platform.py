@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 
 
 COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
-PYTORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu128"
+# CUDA torch index lives in backends/cuda.py (CudaBackend.torch_index); this
+# file holds only the backend-neutral CPU index and dispatches for the rest.
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYPI_INDEX = "https://pypi.org/simple"
 
@@ -70,7 +71,8 @@ class LinuxPlatform(TestPlatform):
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
         if local_wheels and Path(local_wheels).exists():
             cmd.extend(["--find-links", local_wheels])
-        torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
+        from ...backends import active_backend
+        torch_index = active_backend().torch_index() if self.is_gpu_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
         cmd.extend(self._extra_index_args())
@@ -96,7 +98,8 @@ class LinuxPlatform(TestPlatform):
         # so torch and torch ecosystem deps resolve from the same source the
         # explicit pin came from. unsafe-best-match required for the same
         # reason as _pip_install_torch_family above (local-version wheels).
-        torch_index = PYTORCH_CUDA_INDEX if self.is_gpu_mode() else PYTORCH_CPU_INDEX
+        from ...backends import active_backend
+        torch_index = active_backend().torch_index() if self.is_gpu_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
         cmd.extend(self._extra_index_args())

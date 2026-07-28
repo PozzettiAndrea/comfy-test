@@ -232,18 +232,18 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         platforms.get("windows_portable", True)
     )
 
-    # Parse platform-specific configs (GPU)
-    linux_gpu_config = _parse_platform_config(
-        test_section.get("linux_gpu", {}),
-        platforms.get("linux_gpu", True)
+    # Parse platform-specific configs (CUDA)
+    linux_cuda_config = _parse_platform_config(
+        test_section.get("linux_cuda", {}),
+        platforms.get("linux_cuda", True)
     )
-    windows_gpu_config = _parse_platform_config(
-        test_section.get("windows_gpu", {}),
-        platforms.get("windows_gpu", True)
+    windows_cuda_config = _parse_platform_config(
+        test_section.get("windows_cuda", {}),
+        platforms.get("windows_cuda", True)
     )
-    windows_portable_gpu_config = _parse_platform_config(
-        test_section.get("windows_portable_gpu", {}),
-        platforms.get("windows_portable_gpu", True)
+    windows_portable_cuda_config = _parse_platform_config(
+        test_section.get("windows_portable_cuda", {}),
+        platforms.get("windows_portable_cuda", True)
     )
 
     try:
@@ -255,12 +255,12 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             "levels": levels,
             "workflow": workflow,
             "linux": linux_config,
-            "linux_gpu": linux_gpu_config,
+            "linux_cuda": linux_cuda_config,
             "macos": macos_config,
             "windows": windows_config,
-            "windows_gpu": windows_gpu_config,
+            "windows_cuda": windows_cuda_config,
             "windows_portable": windows_portable_config,
-            "windows_portable_gpu": windows_portable_gpu_config,
+            "windows_portable_cuda": windows_portable_cuda_config,
         }
         if python_version is not None:
             kwargs["python_version"] = python_version

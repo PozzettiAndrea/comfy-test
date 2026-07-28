@@ -86,7 +86,7 @@ def cmd_run(args) -> int:
         if host == "darwin":
             mode = "mac"
         elif args.gpu:
-            mode = "windows_gpu"
+            mode = "windows_cuda"
         else:
             mode = "windows"
         return run_desktop(args, mode)
@@ -179,11 +179,15 @@ def cmd_run(args) -> int:
         if args.portable:
             platform = "windows_portable"
 
-        # Build output path: logs_dir/NodeName-XXXX/branch/platform-gpu
+        # Build output path: logs_dir/NodeName-XXXX/branch/platform-<backend>
         run_id = f"{short_name}-{timestamp}"
         branch = getattr(args, 'branch', None)
         gpu = args.gpu or os.environ.get("COMFY_TEST_GPU") == "1"
-        gpu_suffix = "gpu" if gpu else "cpu"
+        # `gpu` stays the generic "accelerator active?" bool. The backend LABEL
+        # that names the on-disk platform bucket is separate: defaults to `cuda`
+        # (the only accelerator wired today); set COMFY_TEST_BACKEND=rocm later to
+        # mint `linux-rocm` as an additive sibling of `linux-cuda`. `cpu` when off.
+        backend = "cpu" if not gpu else (os.environ.get("COMFY_TEST_BACKEND") or "cuda")
         # Propagate args.gpu into COMFY_TEST_GPU so the platform layer's
         # is_gpu_mode() (which only reads the env var) sees it. Without this,
         # `comfy-test run --gpu` silently runs ComfyUI in CPU mode.
@@ -197,7 +201,7 @@ def cmd_run(args) -> int:
         # names). The internal `platform` string is `windows_portable` for valid Python
         # identifier purposes; normalize the on-disk dir name to hyphens so e.g.
         # findstr/grep expressions in CI publish steps match without renaming.
-        platform_dir = f"{platform.replace('_', '-')}-{gpu_suffix}"
+        platform_dir = f"{platform.replace('_', '-')}-{backend}"
         if branch:
             output_dir = logs_dir / run_id / branch / platform_dir
         else:

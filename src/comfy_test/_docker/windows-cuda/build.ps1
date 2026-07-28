@@ -1,16 +1,16 @@
 # Build the comfy-test Windows GPU image and run smoke tests.
 # Requires Moby already installed and docker service running (see install-host.ps1).
 #
-# Single-stage build: produces comfy-test-windows-gpu:full directly from
+# Single-stage build: produces comfy-test-windows-cuda:full directly from
 # windows/server:ltsc2025. The old two-stage spike→full split has been folded
 # into one Dockerfile.
 
 param(
     [string]$SmbInstallers = '\\192.168.1.19\pxe\scripts\installers',
-    [string]$StageDir      = 'D:\docker-stage\windows-gpu',
+    [string]$StageDir      = 'D:\docker-stage\windows-cuda',
     [string]$NvidiaExe     = '',
     [string]$GitExe        = 'Git-2.53.0-64-bit.exe',
-    [string]$ImageTag      = 'comfy-test-windows-gpu:full',
+    [string]$ImageTag      = 'comfy-test-windows-cuda:full',
     [switch]$NoSmoke
 )
 
@@ -131,4 +131,4 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "Image $ImageTag built and smoke-tested successfully." -ForegroundColor Green
-Write-Host "To roll out cluster-wide: docker save $ImageTag | zstd -19 -o comfy-test-windows-gpu-full.tar.zst, then push to \\\\192.168.1.19\\pxe\\scripts\\." -ForegroundColor Cyan
+Write-Host "To roll out cluster-wide: docker save $ImageTag | zstd -19 -o comfy-test-windows-cuda-full.tar.zst, then push to \\\\192.168.1.19\\pxe\\scripts\\." -ForegroundColor Cyan

@@ -36,43 +36,15 @@ def _get_descendant_pids(root_pid: int) -> set[int]:
 
 
 def _get_gpu_vram_per_pid() -> dict[int, int]:
-    """Query nvidia-smi for per-PID VRAM usage. Returns dict of PID -> MiB."""
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            return {}
-        vram = {}
-        for line in result.stdout.strip().split("\n"):
-            if not line.strip():
-                continue
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 2:
-                try:
-                    vram[int(parts[0])] = int(parts[1])
-                except ValueError:
-                    pass
-        return vram
-    except (subprocess.TimeoutExpired, OSError):
-        return {}
+    """Per-PID accelerator VRAM (MiB). Generic dispatcher; vendor query in backend."""
+    from ..backends import active_backend
+    return active_backend().vram_per_pid_mib()
 
 
 def _get_gpu_total_vram() -> int:
-    """Query nvidia-smi for total GPU memory in MiB. Returns 0 on failure."""
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            return 0
-        return int(result.stdout.strip().split("\n")[0].strip())
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        return 0
+    """Total accelerator VRAM (MiB), 0 on failure. Generic dispatcher."""
+    from ..backends import active_backend
+    return active_backend().total_vram_mib()
 
 
 class VramMonitor:

@@ -49,16 +49,16 @@ jobs:
       run-windows: ${{ steps.platforms.outputs.windows }}
       run-windows-portable: ${{ steps.platforms.outputs.windows-portable }}
       # GPU platforms (separate toggles)
-      run-linux-gpu: ${{ steps.platforms.outputs.linux-gpu }}
-      run-windows-gpu: ${{ steps.platforms.outputs.windows-gpu }}
-      run-windows-portable-gpu: ${{ steps.platforms.outputs.windows-portable-gpu }}
+      run-linux-cuda: ${{ steps.platforms.outputs.linux-cuda }}
+      run-windows-cuda: ${{ steps.platforms.outputs.windows-cuda }}
+      run-windows-portable-cuda: ${{ steps.platforms.outputs.windows-portable-cuda }}
       # Workflow lists
       has-cpu: ${{ steps.platforms.outputs.has-cpu }}
       has-gpu: ${{ steps.platforms.outputs.has-gpu }}
       # Skip flags (existing passing results on gh-pages)
-      skip-linux-gpu: ${{ steps.skip-check.outputs.linux-gpu }}
-      skip-windows-gpu: ${{ steps.skip-check.outputs.windows-gpu }}
-      skip-windows-portable-gpu: ${{ steps.skip-check.outputs.windows-portable-gpu }}
+      skip-linux-cuda: ${{ steps.skip-check.outputs.linux-cuda }}
+      skip-windows-cuda: ${{ steps.skip-check.outputs.windows-cuda }}
+      skip-windows-portable-cuda: ${{ steps.skip-check.outputs.windows-portable-cuda }}
       skip-linux: ${{ steps.skip-check.outputs.linux }}
       skip-windows: ${{ steps.skip-check.outputs.windows }}
       skip-macos: ${{ steps.skip-check.outputs.macos }}
@@ -105,10 +105,10 @@ jobs:
           echo "macos=$(get_platform macos)" >> $GITHUB_OUTPUT
           echo "windows=$(get_platform windows)" >> $GITHUB_OUTPUT
           echo "windows-portable=$(get_platform windows_portable)" >> $GITHUB_OUTPUT
-          # GPU platforms (separate toggles, default to true if not specified)
-          echo "linux-gpu=$(get_platform linux_gpu)" >> $GITHUB_OUTPUT
-          echo "windows-gpu=$(get_platform windows_gpu)" >> $GITHUB_OUTPUT
-          echo "windows-portable-gpu=$(get_platform windows_portable_gpu)" >> $GITHUB_OUTPUT
+          # CUDA platforms (separate toggles, default to true if not specified).
+          echo "linux-cuda=$(get_platform linux_cuda)" >> $GITHUB_OUTPUT
+          echo "windows-cuda=$(get_platform windows_cuda)" >> $GITHUB_OUTPUT
+          echo "windows-portable-cuda=$(get_platform windows_portable_cuda)" >> $GITHUB_OUTPUT
 
           # Check if cpu/gpu workflow lists are defined (non-empty)
           has_workflows() {
@@ -124,7 +124,7 @@ jobs:
           FILTER="${{ inputs.platform }}"
           if [ -n "$FILTER" ]; then
             MAPPED=$(echo "$FILTER" | sed 's/-cpu$//')
-            for p in linux macos windows windows-portable linux-gpu windows-gpu windows-portable-gpu; do
+            for p in linux macos windows windows-portable linux-cuda windows-cuda windows-portable-cuda; do
               if [ "$p" = "$MAPPED" ]; then
                 echo "${p}=true" >> $GITHUB_OUTPUT
               else
@@ -162,7 +162,7 @@ jobs:
             echo "${platform}=false" >> $GITHUB_OUTPUT
           }
 
-          PLATFORMS="linux-gpu windows-gpu windows-portable-gpu linux windows macos windows-portable"
+          PLATFORMS="linux-cuda windows-cuda windows-portable-cuda linux windows macos windows-portable"
           for p in $PLATFORMS; do
             check_platform "$p"
           done

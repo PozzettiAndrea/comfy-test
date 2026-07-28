@@ -1,4 +1,4 @@
-# Container entrypoint for comfy-test-windows-gpu:full.
+# Container entrypoint for comfy-test-windows-cuda:full.
 #
 # Installs comfy-test from PyPI at startup. If COMFY_TEST_NODE_URL is set,
 # clones the node into C:\<name> first and changes into that directory
