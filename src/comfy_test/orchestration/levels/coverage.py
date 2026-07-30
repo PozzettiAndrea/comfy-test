@@ -28,6 +28,17 @@ def run(ctx: LevelContext) -> LevelContext:
     for warning in result.warnings:
         ctx.log(f"  ! {warning}")
 
+    if not result.registered:
+        raise TestError(
+            "Found 0 registered nodes -- this almost always means the static "
+            "NODE_CLASS_MAPPINGS scan couldn't recognize this pack's "
+            "registration pattern (e.g. a dict built from a function call, or "
+            "an unsupported comprehension shape), not that the pack truly "
+            "registers no nodes. Failing loudly instead of vacuously passing "
+            "a meaningless 0/0 coverage check.",
+            f"scanned: {result.pack_dir}",
+        )
+
     ctx.log(
         f"Coverage: {len(result.tested)}/{len(result.registered)} registered nodes "
         f"used across {result.workflow_count} workflow(s) ({result.coverage_pct:.0f}%)"

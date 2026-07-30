@@ -6,8 +6,9 @@ Answers a single question without starting a server or importing node code:
 Two static sources are cross-referenced:
 
 1. **Registered nodes** -- the string keys of every ``NODE_CLASS_MAPPINGS``
-   dict literal in the pack's Python source, collected via ``ast`` (no import,
-   no execution). This mirrors how ComfyUI keys ``/object_info`` and how
+   dict literal (or ``{cls.__name__: cls for cls in [...]}`` comprehension)
+   in the pack's Python source, collected via ``ast`` (no import, no
+   execution). This mirrors how ComfyUI keys ``/object_info`` and how
    workflows reference node types.
 2. **Workflow nodes** -- the ``type`` of every node in each ``workflows/*.json``
    file (litegraph format), including nodes nested inside subgraph definitions.
@@ -116,6 +117,50 @@ def _is_mapping_target(target: ast.expr) -> bool:
     return False
 
 
+def _dict_comp_class_name_keys(
+    node: ast.DictComp, rel: str, warnings: List[str]
+) -> Set[str]:
+    """Collect keys from a ``{cls.__name__: cls for cls in [A, B, ...]}`` comprehension.
+
+    A common idiom for building ``NODE_CLASS_MAPPINGS`` from a list of already
+    -imported node classes. ``cls.__name__`` can't be evaluated statically in
+    general, but when the loop variable's ``__name__`` attribute is used as
+    the key and the iterable is a literal list/tuple of bare names, each name
+    IS that class's ``__name__`` at runtime (barring the vanishingly rare case
+    of a class overriding ``__name__``), so the identifier text itself is a
+    safe, deterministic stand-in.
+    """
+    keys: Set[str] = set()
+    if len(node.generators) != 1:
+        return keys
+    gen = node.generators[0]
+    if not isinstance(gen.target, ast.Name):
+        return keys
+    var = gen.target.id
+
+    if not (
+        isinstance(node.key, ast.Attribute)
+        and node.key.attr == "__name__"
+        and isinstance(node.key.value, ast.Name)
+        and node.key.value.id == var
+    ):
+        return keys
+
+    iterable = gen.iter
+    if not isinstance(iterable, (ast.List, ast.Tuple)):
+        return keys
+
+    for elt in iterable.elts:
+        if isinstance(elt, ast.Name):
+            keys.add(elt.id)
+        else:
+            warnings.append(
+                f"{rel}:{getattr(elt, 'lineno', '?')}: non-literal class reference in "
+                f"NODE_CLASS_MAPPINGS dict-comprehension could not be resolved statically"
+            )
+    return keys
+
+
 def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
     """Statically collect every registered node type name in a pack.
 
@@ -144,8 +189,11 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
         for node in ast.walk(tree):
             # NODE_CLASS_MAPPINGS = {...}   (and chained / annotated assigns)
             if isinstance(node, ast.Assign):
-                if any(_is_mapping_target(t) for t in node.targets) and isinstance(node.value, ast.Dict):
-                    found |= _dict_literal_str_keys(node.value, rel, warnings)
+                if any(_is_mapping_target(t) for t in node.targets):
+                    if isinstance(node.value, ast.Dict):
+                        found |= _dict_literal_str_keys(node.value, rel, warnings)
+                    elif isinstance(node.value, ast.DictComp):
+                        found |= _dict_comp_class_name_keys(node.value, rel, warnings)
                 # NODE_CLASS_MAPPINGS["Type"] = Cls
                 for t in node.targets:
                     if (
@@ -156,8 +204,11 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
                     ):
                         found.add(t.slice.value)
             elif isinstance(node, ast.AnnAssign):
-                if node.target and _is_mapping_target(node.target) and isinstance(node.value, ast.Dict):
-                    found |= _dict_literal_str_keys(node.value, rel, warnings)
+                if node.target and _is_mapping_target(node.target):
+                    if isinstance(node.value, ast.Dict):
+                        found |= _dict_literal_str_keys(node.value, rel, warnings)
+                    elif isinstance(node.value, ast.DictComp):
+                        found |= _dict_comp_class_name_keys(node.value, rel, warnings)
             # NODE_CLASS_MAPPINGS.update({...})
             elif isinstance(node, ast.Call):
                 fn = node.func
@@ -169,6 +220,8 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
                     for arg in node.args:
                         if isinstance(arg, ast.Dict):
                             found |= _dict_literal_str_keys(arg, rel, warnings)
+                        elif isinstance(arg, ast.DictComp):
+                            found |= _dict_comp_class_name_keys(arg, rel, warnings)
 
     return found, warnings
 
