@@ -201,8 +201,7 @@ jobs:
 
       - name: Regenerate indexes
         run: |
-          comfy-test generate-index gh-pages/main --repo-name "${{ github.repository }}"
-          comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
+          comfy-test generate-index gh-pages --branch main --repo-name "${{ github.repository }}"
 
       # --- Screenshot gallery for README ---
       - name: Find screenshot platform

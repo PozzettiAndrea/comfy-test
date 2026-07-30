@@ -73,7 +73,7 @@ class TestResult:
         return f"TestResult({self.platform}: {status})"
 
 
-def has_gpu() -> bool:
+def has_cuda() -> bool:
     """Check if an accelerator is available for the active backend.
 
     Generic dispatcher -- the vendor probe (nvidia-smi for cuda) lives in the
@@ -104,14 +104,14 @@ def get_hardware_info() -> dict:
     from ..backends import active_backend
     name = active_backend().hardware_name()
     if name:
-        info["gpu"] = name
+        info["cuda"] = name
 
     return info
 
 
 def get_workflow_timeout(config_timeout: int) -> int:
-    """Get workflow timeout, using very long timeout for GPU mode."""
-    if os.environ.get("COMFY_TEST_GPU"):
-        # GPU mode: use 24 hours (effectively no timeout)
+    """Get workflow timeout, using very long timeout for CUDA mode."""
+    if os.environ.get("COMFY_TEST_CUDA"):
+        # CUDA mode: use 24 hours (effectively no timeout)
         return 86400
     return config_timeout

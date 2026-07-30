@@ -22,17 +22,17 @@ class ResourceSample:
 class ResourceMonitor:
     """Background thread that samples CPU/GPU/RAM at regular intervals."""
 
-    def __init__(self, interval: float = 1.0, monitor_gpu: bool = False, pid: int | None = None):
+    def __init__(self, interval: float = 1.0, monitor_cuda: bool = False, pid: int | None = None):
         """Initialize resource monitor.
 
         Args:
             interval: Sampling interval in seconds (default: 1.0)
-            monitor_gpu: Whether to monitor GPU usage (default: False)
+            monitor_cuda: Whether to monitor GPU usage (default: False)
             pid: Process ID to track RAM for. If set, tracks that process
                  (plus its children) instead of system-wide RAM.
         """
         self.interval = interval
-        self.monitor_gpu = monitor_gpu
+        self.monitor_cuda = monitor_cuda
         self.pid = pid
         self.samples: list[ResourceSample] = []
         self._pids: set[int] = set()
@@ -88,7 +88,7 @@ class ResourceMonitor:
             sample = ResourceSample(
                 timestamp=round(time.time() - self._start_time, 1),
                 ram_gb=round(ram_bytes / (1024**3), 2),
-                vram_gb=self._get_gpu_vram_gb() if self.monitor_gpu else None,
+                vram_gb=self._get_gpu_vram_gb() if self.monitor_cuda else None,
             )
             self.samples.append(sample)
             self._stop_event.wait(self.interval)

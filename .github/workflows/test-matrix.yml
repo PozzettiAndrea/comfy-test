@@ -18,12 +18,8 @@ on:
         description: "Job timeout in minutes"
         type: number
         default: 1440
-      run-gpu:
-        description: "DEPRECATED - GPU tests now auto-run when gpu=[...] is defined in config"
-        type: boolean
-        default: false
       platform:
-        description: "Run only this platform (e.g. linux-cpu, windows-cpu, macos-cpu). Empty = all platforms."
+        description: "Run only this platform (linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, macos-desktop, windows-desktop). Empty = all listed."
         type: string
         default: ""
       node_repo:
@@ -43,26 +39,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: test
     outputs:
-      # CPU platforms
+      # CPU + desktop platforms (opt-in allowlist from [test.platforms] platforms=[...])
       run-linux: ${{ steps.platforms.outputs.linux }}
       run-macos: ${{ steps.platforms.outputs.macos }}
       run-windows: ${{ steps.platforms.outputs.windows }}
       run-windows-portable: ${{ steps.platforms.outputs.windows-portable }}
-      # GPU platforms (separate toggles)
-      run-linux-cuda: ${{ steps.platforms.outputs.linux-cuda }}
-      run-windows-cuda: ${{ steps.platforms.outputs.windows-cuda }}
-      run-windows-portable-cuda: ${{ steps.platforms.outputs.windows-portable-cuda }}
-      # Workflow lists
+      run-macos-desktop: ${{ steps.platforms.outputs.macos-desktop }}
+      run-windows-desktop: ${{ steps.platforms.outputs.windows-desktop }}
+      # Whether a cpu workflow list is defined (gates all CPU/desktop jobs)
       has-cpu: ${{ steps.platforms.outputs.has-cpu }}
-      has-gpu: ${{ steps.platforms.outputs.has-gpu }}
-      # Skip flags (existing passing results on gh-pages)
-      skip-linux-cuda: ${{ steps.skip-check.outputs.linux-cuda }}
-      skip-windows-cuda: ${{ steps.skip-check.outputs.windows-cuda }}
-      skip-windows-portable-cuda: ${{ steps.skip-check.outputs.windows-portable-cuda }}
-      skip-linux: ${{ steps.skip-check.outputs.linux }}
-      skip-windows: ${{ steps.skip-check.outputs.windows }}
-      skip-macos: ${{ steps.skip-check.outputs.macos }}
-      skip-windows-portable: ${{ steps.skip-check.outputs.windows-portable }}
       # Publish
       run-publish: ${{ steps.platforms.outputs.publish }}
     steps:
@@ -95,84 +80,58 @@ jobs:
 
       - name: Parse platform config
         id: platforms
+        env:
+          CONFIG: ${{ inputs.config-file }}
+          FILTER: ${{ inputs.platform }}
         run: |
-          config="${{ inputs.config-file }}"
-          get_platform() {
-            [ -f "$config" ] && grep -E "^$1\s*=" "$config" 2>/dev/null | grep -qi "false" && echo "false" || echo "true"
+          python3 - <<'PY'
+          import os, sys, tomllib
+          cfg = os.environ["CONFIG"]
+          try:
+              with open(cfg, "rb") as f:
+                  data = tomllib.load(f)
+          except Exception as e:
+              print(f"::error::cannot read {cfg}: {e}"); sys.exit(1)
+          test = data.get("test", {})
+          allow = (test.get("platforms") or {}).get("platforms")
+          if not isinstance(allow, list):
+              print('::error::[test.platforms] must be an allowlist: platforms = ["linux-cpu", ...]')
+              sys.exit(1)
+          # `platform` input filters to one target; otherwise use the allowlist.
+          # Tokens accepted in hyphen or underscore spelling (matches the registry).
+          filt = os.environ.get("FILTER", "").strip()
+          if filt:
+              sel = {filt, filt.replace("-", "_"), filt.replace("_", "-")}
+          else:
+              sel = set()
+              for t in allow:
+                  t = str(t); sel |= {t, t.replace("-", "_"), t.replace("_", "-")}
+          def on(*toks):
+              return "true" if sel & set(toks) else "false"
+          # The 6 GitHub-hosted platforms (== registry.matrix()['hosted'];
+          # kept in sync by tests/test_platforms_matrix_yaml.py).
+          rows = {
+              "linux": on("linux-cpu", "linux"),
+              "macos": on("macos-cpu", "macos"),
+              "windows": on("windows-cpu", "windows"),
+              "windows-portable": on("windows-portable-cpu", "windows_portable", "windows-portable"),
+              "macos-desktop": on("macos-desktop", "macos_desktop"),
+              "windows-desktop": on("windows-desktop", "windows_desktop"),
+              "has-cpu": "true" if "cpu" in test.get("workflows", {}) else "false",
+              "publish": "false" if test.get("publish") is False else "true",
           }
-          # CPU platforms
-          echo "linux=$(get_platform linux)" >> $GITHUB_OUTPUT
-          echo "macos=$(get_platform macos)" >> $GITHUB_OUTPUT
-          echo "windows=$(get_platform windows)" >> $GITHUB_OUTPUT
-          echo "windows-portable=$(get_platform windows_portable)" >> $GITHUB_OUTPUT
-          # CUDA platforms (separate toggles, default to true if not specified).
-          echo "linux-cuda=$(get_platform linux_cuda)" >> $GITHUB_OUTPUT
-          echo "windows-cuda=$(get_platform windows_cuda)" >> $GITHUB_OUTPUT
-          echo "windows-portable-cuda=$(get_platform windows_portable_cuda)" >> $GITHUB_OUTPUT
-
-          # Check if cpu/gpu workflow lists are defined (non-empty)
-          has_workflows() {
-            [ -f "$config" ] && grep -qE "^$1\s*=" "$config" 2>/dev/null && echo "true" || echo "false"
-          }
-          echo "has-cpu=$(has_workflows cpu)" >> $GITHUB_OUTPUT
-          echo "has-gpu=$(has_workflows gpu)" >> $GITHUB_OUTPUT
-
-          # Publish toggle (defaults to true)
-          echo "publish=$(get_platform publish)" >> $GITHUB_OUTPUT
-
-          # Per-platform filter: if platform input is set, only run that one
-          FILTER="${{ inputs.platform }}"
-          if [ -n "$FILTER" ]; then
-            MAPPED=$(echo "$FILTER" | sed 's/-cpu$//')
-            for p in linux macos windows windows-portable linux-cuda windows-cuda windows-portable-cuda; do
-              if [ "$p" = "$MAPPED" ]; then
-                echo "${p}=true" >> $GITHUB_OUTPUT
-              else
-                echo "${p}=false" >> $GITHUB_OUTPUT
-              fi
-            done
-          fi
-
-      - name: Skip platforms with existing passing results
-        id: skip-check
-        run: |
-          BRANCH="$TARGET_BRANCH"
-          REPO="$TARGET_REPO"
-          SHA="$TARGET_SHA"
-          BASE_URL="https://raw.githubusercontent.com/${REPO}/gh-pages/${BRANCH}"
-
-          check_platform() {
-            local platform="$1"
-            local url="${BASE_URL}/${platform}/results.json"
-            local http_code
-            http_code=$(curl -s -o /tmp/results_${platform}.json -w "%{http_code}" "$url" 2>/dev/null || echo "000")
-
-            if [ "$http_code" = "200" ]; then
-              local existing_hash existing_success
-              existing_hash=$(python3 -c "import json; d=json.load(open('/tmp/results_${platform}.json')); print(d.get('commit_hash', ''))" 2>/dev/null || echo "")
-              existing_success=$(python3 -c "import json; d=json.load(open('/tmp/results_${platform}.json')); print(str(d.get('success', False)).lower())" 2>/dev/null || echo "false")
-
-              if [ "$existing_hash" = "$SHA" ] && [ "$existing_success" = "true" ]; then
-                echo "SKIP ${platform}: passing results already exist for ${SHA:0:7}"
-                echo "${platform}=true" >> $GITHUB_OUTPUT
-                return
-              fi
-            fi
-            echo "RUN ${platform}: no passing results for ${SHA:0:7} (HTTP ${http_code})"
-            echo "${platform}=false" >> $GITHUB_OUTPUT
-          }
-
-          PLATFORMS="linux-cuda windows-cuda windows-portable-cuda linux windows macos windows-portable"
-          for p in $PLATFORMS; do
-            check_platform "$p"
-          done
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              for k, v in rows.items():
+                  f.write(f"{k}={v}\n")
+          print("resolved platforms:", rows)
+          PY
 
   # ---------------------------------------------------------------------------
-  # CPU tests (GitHub-hosted runners) - only if cpu workflows defined
+  # CPU tests (GitHub-hosted runners) - only if a cpu workflow list is defined
   # ---------------------------------------------------------------------------
   linux-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true' && needs.setup.outputs.skip-linux != 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-linux == 'true'
     uses: ./.github/workflows/_test-linux.yml
     with:
       node_repo: ${{ inputs.node_repo }}
@@ -181,7 +140,7 @@ jobs:
 
   macos-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true' && needs.setup.outputs.skip-macos != 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos == 'true'
     uses: ./.github/workflows/_test-macos.yml
     with:
       node_repo: ${{ inputs.node_repo }}
@@ -190,7 +149,7 @@ jobs:
 
   windows-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true' && needs.setup.outputs.skip-windows != 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows == 'true'
     uses: ./.github/workflows/_test-windows.yml
     with:
       node_repo: ${{ inputs.node_repo }}
@@ -199,22 +158,42 @@ jobs:
 
   windows-portable-cpu:
     needs: [setup]
-    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true' && needs.setup.outputs.skip-windows-portable != 'true'
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-portable == 'true'
     uses: ./.github/workflows/_test-windows-portable.yml
     with:
       node_repo: ${{ inputs.node_repo }}
       node_branch: ${{ inputs.node_branch }}
     secrets: inherit
 
-  # GPU bare-metal reusables removed (2026-05-09). GPU testing now goes through
-  # `comfy-test docker test` via the comfy-gpu-ci dispatcher; the old
-  # `_test-{linux,windows,windows-portable}-gpu.yml` files were deleted.
+  # ---------------------------------------------------------------------------
+  # Desktop (Electron) tests on GitHub-hosted runners
+  # ---------------------------------------------------------------------------
+  macos-desktop:
+    needs: [setup]
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-macos-desktop == 'true'
+    uses: ./.github/workflows/_test-macos-desktop.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit
+
+  windows-desktop:
+    needs: [setup]
+    if: needs.setup.outputs.has-cpu == 'true' && needs.setup.outputs.run-windows-desktop == 'true'
+    uses: ./.github/workflows/_test-windows-desktop.yml
+    with:
+      node_repo: ${{ inputs.node_repo }}
+      node_branch: ${{ inputs.node_branch }}
+    secrets: inherit
+
+  # Accelerator (cuda) targets run via dispatch-test.yml on self-hosted runners,
+  # not here. This matrix is the GitHub-hosted cpu + desktop lanes only.
 
   # ---------------------------------------------------------------------------
   # Publish results
   # ---------------------------------------------------------------------------
   publish:
-    needs: [setup, linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu]
+    needs: [setup, linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, macos-desktop, windows-desktop]
     if: always() && needs.setup.outputs.run-publish == 'true'
     uses: ./.github/workflows/_publish-results.yml
     with:

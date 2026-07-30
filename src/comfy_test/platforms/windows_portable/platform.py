@@ -152,9 +152,9 @@ class WindowsPortablePlatform(TestPlatform):
         """Detect if running in CI environment."""
         return os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
 
-    def is_gpu_mode(self) -> bool:
+    def is_cuda_mode(self) -> bool:
         """Detect if GPU mode is enabled."""
-        return os.environ.get("COMFY_TEST_GPU", "0") not in ("0", "", "false", "no")
+        return os.environ.get("COMFY_TEST_CUDA", "0") not in ("0", "", "false", "no")
 
     def _uv_install(self, python: Path, args: list, cwd: Path) -> None:
         """Run uv pip install with local wheels if available."""
@@ -359,7 +359,7 @@ class WindowsPortablePlatform(TestPlatform):
             "--windows-standalone-build",
         ]
 
-        if not self.is_gpu_mode():
+        if not self.is_cuda_mode():
             cmd.append("--cpu")
 
         if extra_args:

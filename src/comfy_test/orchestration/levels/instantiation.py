@@ -18,8 +18,8 @@ from pathlib import Path
 
 # Disable CUDA on CPU-only machines to prevent crashes
 # (model_management.py calls torch.cuda at import time)
-is_gpu_runner = {is_gpu_runner}
-if not is_gpu_runner:
+is_cuda_runner = {is_cuda_runner}
+if not is_cuda_runner:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     # On Windows, CUDA_VISIBLE_DEVICES="" is not enough - torch.cuda C++ calls
     # can still crash with access violations when no GPU driver is present.
@@ -116,18 +116,18 @@ def run(ctx: LevelContext) -> LevelContext:
 
     # Get CUDA packages if not already set (e.g., when INSTALL was skipped)
     cuda_packages = ctx.cuda_packages
-    if not cuda_packages and not os.environ.get("COMFY_TEST_GPU"):
+    if not cuda_packages and not os.environ.get("COMFY_TEST_CUDA"):
         cuda_packages = tuple(get_cuda_packages(ctx.node_dir))
         if cuda_packages:
             ctx.log(f"Found CUDA packages to mock: {', '.join(cuda_packages)}")
 
     # Build the test script
-    is_gpu_runner = os.environ.get("COMFY_TEST_GPU") == "1"
+    is_cuda_runner = os.environ.get("COMFY_TEST_CUDA") == "1"
     script = INSTANTIATION_SCRIPT.format(
         custom_nodes_dir=str(ctx.paths.custom_nodes_dir).replace("\\", "/"),
         node_name=ctx.node_dir.name,
         cuda_packages_json=json.dumps(list(cuda_packages)),
-        is_gpu_runner="True" if is_gpu_runner else "False",
+        is_cuda_runner="True" if is_cuda_runner else "False",
     )
 
     # Run the script

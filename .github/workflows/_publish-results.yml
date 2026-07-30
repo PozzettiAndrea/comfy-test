@@ -103,8 +103,7 @@ jobs:
       - name: Generate index pages
         if: github.event_name != 'pull_request'
         run: |
-          comfy-test generate-index "gh-pages/$BRANCH" --repo-name "$TARGET_REPO"
-          comfy-test generate-root-index gh-pages --repo-name "$TARGET_REPO"
+          comfy-test generate-index gh-pages --branch "$BRANCH" --repo-name "$TARGET_REPO"
 
       - name: Publish to gh-pages (caller repo)
         if: github.event_name != 'pull_request' && inputs.node_repo == ''

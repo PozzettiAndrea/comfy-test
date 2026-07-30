@@ -70,7 +70,7 @@ WORKDIR /tmp/comfytest-home
 
 ENV COMFY_TEST_WORKSPACE_DIR=/workspaces \
     COMFY_TEST_LOGS_DIR=/logs \
-    COMFY_TEST_GPU=1 \
+    COMFY_TEST_CUDA=1 \
     NVIDIA_DRIVER_CAPABILITIES=all
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -156,7 +156,8 @@ class WorkflowConfig:
     Args:
         workflows: All discovered workflow files (auto-populated)
         cpu: Workflows to run on CPU runners (GitHub-hosted). If empty, skip CPU jobs.
-        gpu: Workflows to run on GPU runners (self-hosted). If empty, skip GPU jobs.
+        cuda: Workflows to run on CUDA runners (self-hosted). If empty, skip CUDA jobs.
+        rocm: Workflows to run on ROCm runners (reserved; no runner wired yet).
         timeout: Timeout in seconds for workflow execution
 
         # Deprecated fields (for backwards compatibility)
@@ -168,7 +169,8 @@ class WorkflowConfig:
 
     workflows: List[Path] = field(default_factory=list)
     cpu: List[Path] = field(default_factory=list)
-    gpu: List[Path] = field(default_factory=list)
+    cuda: List[Path] = field(default_factory=list)
+    rocm: List[Path] = field(default_factory=list)
     timeout: int = 3600  # Default 60 minutes
 
     # Deprecated fields for backwards compatibility
@@ -188,14 +190,15 @@ class WorkflowConfig:
             elif self.file is not None:
                 self.workflows = [Path(self.file)]
 
-        # Backwards compatibility: if 'run' specified but not cpu/gpu, treat as cpu
-        if self.run and not self.cpu and not self.gpu:
+        # Backwards compatibility: if 'run' specified but no accelerator list, treat as cpu
+        if self.run and not self.cpu and not self.cuda and not self.rocm:
             self.cpu = list(self.run)
 
         # Normalize to Path objects
         self.workflows = [Path(f) for f in self.workflows]
         self.cpu = [Path(f) for f in self.cpu]
-        self.gpu = [Path(f) for f in self.gpu]
+        self.cuda = [Path(f) for f in self.cuda]
+        self.rocm = [Path(f) for f in self.rocm]
         self.run = [Path(f) for f in self.run]
         self.screenshot = [Path(f) for f in self.screenshot]
         self.files = [Path(f) for f in self.files]
@@ -264,6 +267,9 @@ class TestConfig:
     windows_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows_portable: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     windows_portable_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
+    macos_desktop: PlatformTestConfig = field(default_factory=lambda: PlatformTestConfig(enabled=False))
+    windows_desktop: PlatformTestConfig = field(default_factory=lambda: PlatformTestConfig(enabled=False))
+    windows_desktop_cuda: PlatformTestConfig = field(default_factory=lambda: PlatformTestConfig(enabled=False))
 
     def __post_init__(self):
         """Validate configuration."""
@@ -302,6 +308,12 @@ class TestConfig:
             self.windows_portable = PlatformTestConfig(**self.windows_portable)
         if isinstance(self.windows_portable_cuda, dict):
             self.windows_portable_cuda = PlatformTestConfig(**self.windows_portable_cuda)
+        if isinstance(self.macos_desktop, dict):
+            self.macos_desktop = PlatformTestConfig(**self.macos_desktop)
+        if isinstance(self.windows_desktop, dict):
+            self.windows_desktop = PlatformTestConfig(**self.windows_desktop)
+        if isinstance(self.windows_desktop_cuda, dict):
+            self.windows_desktop_cuda = PlatformTestConfig(**self.windows_desktop_cuda)
 
     @property
     def python_short(self) -> str:
@@ -309,30 +321,17 @@ class TestConfig:
         return self.python_version.replace(".", "")
 
     def get_platform_config(self, platform: str) -> PlatformTestConfig:
-        """Get configuration for a specific platform.
+        """Get configuration for a specific platform (id or alias).
 
-        Args:
-            platform: Platform name ('linux', 'linux_cuda', 'macos', 'windows', 'windows_cuda',
-                      'windows_portable', 'windows_portable_cuda')
-
-        Returns:
-            PlatformTestConfig for the specified platform
+        The platform taxonomy is single-sourced in comfy_test.platforms; this
+        resolves the token there and returns the matching stored config. Imported
+        lazily to avoid an import cycle (platforms -> common.config).
 
         Raises:
-            ValueError: If platform is not recognized
+            ValueError: If platform is not recognized.
         """
-        platform_map = {
-            "linux": self.linux,
-            "linux_cuda": self.linux_cuda,
-            "linux-cuda": self.linux_cuda,
-            "macos": self.macos,
-            "windows": self.windows,
-            "windows_cuda": self.windows_cuda,
-            "windows-cuda": self.windows_cuda,
-            "windows_portable": self.windows_portable,
-            "windows_portable_cuda": self.windows_portable_cuda,
-            "windows-portable-cuda": self.windows_portable_cuda,
-        }
-        if platform not in platform_map:
+        from ..platforms.registry import resolve
+        p = resolve(platform)
+        if p is None:
             raise ValueError(f"Unknown platform: {platform}")
-        return platform_map[platform]
+        return getattr(self, p.config_key)

@@ -35,7 +35,7 @@ class CudaBackend:
     def torch_index(self) -> str:
         return CUDA_TORCH_INDEX
 
-    # --- presence / identity (was results.has_gpu / get_hardware_info) --------
+    # --- presence / identity (was results.has_cuda / get_hardware_info) --------
     def accelerator_present(self) -> bool:
         try:
             return subprocess.run(["nvidia-smi"], capture_output=True, timeout=10).returncode == 0

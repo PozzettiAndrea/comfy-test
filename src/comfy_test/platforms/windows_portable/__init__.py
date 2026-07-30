@@ -9,7 +9,7 @@ from .download import (
     get_cache_dir,
 )
 from .local import get_portable_cache_dir
-from ..common import is_ci_environment, get_ci_env_vars, is_gpu_mode_enabled
+from ..common import is_ci_environment, get_ci_env_vars, is_cuda_mode_enabled
 
 __all__ = [
     "WindowsPortablePlatform",
@@ -20,6 +20,6 @@ __all__ = [
     "get_cache_dir",
     "is_ci_environment",
     "get_ci_env_vars",
-    "is_gpu_mode_enabled",
+    "is_cuda_mode_enabled",
     "get_portable_cache_dir",
 ]

@@ -48,8 +48,8 @@ def cmd_run(args) -> int:
 
     # Validate flag combos against host OS -- we never run cross-platform tests
     host = sys.platform
-    if args.gpu and host == "darwin":
-        print("[comfy-test] --gpu is not supported on macOS (no NVIDIA on Apple Silicon)",
+    if args.cuda and host == "darwin":
+        print("[comfy-test] --cuda is not supported on macOS (no NVIDIA on Apple Silicon)",
               file=sys.stderr)
         return 1
     if args.portable and host != "win32":
@@ -85,7 +85,7 @@ def cmd_run(args) -> int:
         from comfy_test.cli._desktop_runner import run_desktop
         if host == "darwin":
             mode = "mac"
-        elif args.gpu:
+        elif args.cuda:
             mode = "windows_cuda"
         else:
             mode = "windows"
@@ -106,8 +106,8 @@ def cmd_run(args) -> int:
             print("[comfy-test] --desktop-dev conflicts with --portable",
                   file=sys.stderr)
             return 1
-        if args.gpu:
-            print("[comfy-test] --desktop-dev does not support --gpu in v1 "
+        if args.cuda:
+            print("[comfy-test] --desktop-dev does not support --cuda in v1 "
                   "(no Windows-GPU variant)", file=sys.stderr)
             return 1
         from comfy_test.cli._desktop_runner_dev import run_desktop_dev
@@ -182,17 +182,16 @@ def cmd_run(args) -> int:
         # Build output path: logs_dir/NodeName-XXXX/branch/platform-<backend>
         run_id = f"{short_name}-{timestamp}"
         branch = getattr(args, 'branch', None)
-        gpu = args.gpu or os.environ.get("COMFY_TEST_GPU") == "1"
-        # `gpu` stays the generic "accelerator active?" bool. The backend LABEL
-        # that names the on-disk platform bucket is separate: defaults to `cuda`
-        # (the only accelerator wired today); set COMFY_TEST_BACKEND=rocm later to
-        # mint `linux-rocm` as an additive sibling of `linux-cuda`. `cpu` when off.
-        backend = "cpu" if not gpu else (os.environ.get("COMFY_TEST_BACKEND") or "cuda")
-        # Propagate args.gpu into COMFY_TEST_GPU so the platform layer's
-        # is_gpu_mode() (which only reads the env var) sees it. Without this,
-        # `comfy-test run --gpu` silently runs ComfyUI in CPU mode.
-        if gpu:
-            os.environ["COMFY_TEST_GPU"] = "1"
+        cuda = args.cuda or os.environ.get("COMFY_TEST_CUDA") == "1"
+        # `cuda` is the "accelerator active?" bool. It also names the on-disk
+        # platform bucket (`<platform>-cuda` vs `<platform>-cpu`). ROCm is
+        # reserved for later (a `COMFY_TEST_ROCM` sibling), not wired today.
+        backend = "cuda" if cuda else "cpu"
+        # Propagate args.cuda into COMFY_TEST_CUDA so the platform layer's
+        # is_cuda_mode() (which only reads the env var) sees it. Without this,
+        # `comfy-test run --cuda` silently runs ComfyUI in CPU mode.
+        if cuda:
+            os.environ["COMFY_TEST_CUDA"] = "1"
         # Propagate --torch-version (CLI > env var > config TOML > default).
         torch_version_override = getattr(args, "torch_version", None)
         if torch_version_override:
@@ -242,8 +241,8 @@ def cmd_run(args) -> int:
 
         # Report results
         flags = []
-        if args.gpu:
-            flags.append("--gpu")
+        if args.cuda:
+            flags.append("--cuda")
         if getattr(args, 'novram', False):
             flags.append("--novram")
         if getattr(args, 'vram_debug', False):
@@ -337,9 +336,9 @@ def add_run_parser(subparsers):
         help="Run only up to this level (overrides config)",
     )
     run_parser.add_argument(
-        "--gpu",
+        "--cuda",
         action="store_true",
-        help="Enable GPU mode (uses real CUDA instead of mocking)",
+        help="Enable CUDA mode (uses real CUDA instead of mocking)",
     )
     run_parser.add_argument(
         "--portable",
@@ -350,7 +349,7 @@ def add_run_parser(subparsers):
         "--desktop",
         action="store_true",
         help="macOS or Windows only: drive ComfyUI Desktop via CDP instead of "
-             "running a server (--gpu on Windows means Electron + CUDA)",
+             "running a server (--cuda on Windows means Electron + CUDA)",
     )
     run_parser.add_argument(
         "--desktop-dev",

@@ -9,7 +9,7 @@ from .isolation import (
 )
 from .ci import get_ci_python
 from .local import get_local_dev_packages
-from ..common import is_ci_environment, get_ci_env_vars, is_gpu_mode_enabled, get_local_wheels_path
+from ..common import is_ci_environment, get_ci_env_vars, is_cuda_mode_enabled, get_local_wheels_path
 
 __all__ = [
     "WindowsPlatform",
@@ -21,6 +21,6 @@ __all__ = [
     "get_ci_env_vars",
     "get_ci_python",
     "get_local_wheels_path",
-    "is_gpu_mode_enabled",
+    "is_cuda_mode_enabled",
     "get_local_dev_packages",
 ]

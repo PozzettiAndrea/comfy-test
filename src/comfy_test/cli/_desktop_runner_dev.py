@@ -232,7 +232,7 @@ def run_desktop_dev(args, desktop_mode_dev: str) -> int:
     env.update({
         "PYTHONUNBUFFERED": "1",
         # No GPU variant in dev v1; cdp_driver_dev still reads this env.
-        "COMFY_TEST_GPU": "0",
+        "COMFY_TEST_CUDA": "0",
         "COMFY_TEST_LOGS_DIR": str(logs_dir),
         "COMFY_TEST_DEBUG_DIR": str(debug_dir),
         "NODE_REPO": url.rsplit("github.com/", 1)[-1],

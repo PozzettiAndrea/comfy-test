@@ -844,7 +844,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     env = os.environ.copy()
     env.update({
         "PYTHONUNBUFFERED": "1",
-        "COMFY_TEST_GPU": "1" if desktop_mode == "windows_cuda" else "0",
+        "COMFY_TEST_CUDA": "1" if desktop_mode == "windows_cuda" else "0",
         "COMFY_TEST_LOGS_DIR": str(logs_dir),
         "COMFY_TEST_DEBUG_DIR": str(debug_dir),
         "NODE_REPO": url.rsplit("github.com/", 1)[-1],

@@ -12,7 +12,7 @@ from .results import (
     TestState,
     save_state,
     load_state,
-    has_gpu,
+    has_cuda,
     get_hardware_info,
     get_workflow_timeout,
 )
@@ -25,7 +25,7 @@ __all__ = [
     "TestState",
     "save_state",
     "load_state",
-    "has_gpu",
+    "has_cuda",
     "get_hardware_info",
     "get_workflow_timeout",
 ]

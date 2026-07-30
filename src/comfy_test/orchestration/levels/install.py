@@ -68,7 +68,7 @@ def run(ctx: LevelContext) -> LevelContext:
 
     # Get CUDA packages from comfy-env.toml. Whether we mock them depends on
     # whether the per-node pixi env actually has them installed -- not on the
-    # `--gpu` flag. comfy-env now inlines cuda-wheel URLs into pixi.toml when a
+    # `--cuda` flag. comfy-env now inlines cuda-wheel URLs into pixi.toml when a
     # GPU is detected and a combo resolves, so on those runs the wheels live
     # in `<comfyui>/.ce/.pixi/envs/<env>/Lib/site-packages/<pkg>/`. On no-GPU
     # hosts the cuda-wheels resolution is skipped, the wheels aren't installed,

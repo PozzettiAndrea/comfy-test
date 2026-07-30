@@ -43,9 +43,9 @@ class LinuxPlatform(TestPlatform):
         """Detect if running in CI environment."""
         return os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
 
-    def is_gpu_mode(self) -> bool:
+    def is_cuda_mode(self) -> bool:
         """Detect if GPU mode is enabled."""
-        return os.environ.get("COMFY_TEST_GPU", "0") not in ("0", "", "false", "no")
+        return os.environ.get("COMFY_TEST_CUDA", "0") not in ("0", "", "false", "no")
 
     def _pip_install_torch_family(self, cwd: Path) -> None:
         """Install the pinned (torch, torchvision, torchaudio) triple before any
@@ -72,7 +72,7 @@ class LinuxPlatform(TestPlatform):
         if local_wheels and Path(local_wheels).exists():
             cmd.extend(["--find-links", local_wheels])
         from ...backends import active_backend
-        torch_index = active_backend().torch_index() if self.is_gpu_mode() else PYTORCH_CPU_INDEX
+        torch_index = active_backend().torch_index() if self.is_cuda_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
         cmd.extend(self._extra_index_args())
@@ -99,7 +99,7 @@ class LinuxPlatform(TestPlatform):
         # explicit pin came from. unsafe-best-match required for the same
         # reason as _pip_install_torch_family above (local-version wheels).
         from ...backends import active_backend
-        torch_index = active_backend().torch_index() if self.is_gpu_mode() else PYTORCH_CPU_INDEX
+        torch_index = active_backend().torch_index() if self.is_cuda_mode() else PYTORCH_CPU_INDEX
         cmd.extend(["--index-url", torch_index])
         cmd.extend(["--extra-index-url", PYPI_INDEX])
         cmd.extend(self._extra_index_args())
@@ -289,7 +289,7 @@ class LinuxPlatform(TestPlatform):
         ]
 
         # Use CPU mode unless GPU mode is explicitly enabled
-        if not self.is_gpu_mode():
+        if not self.is_cuda_mode():
             cmd.append("--cpu")
 
         if extra_args:

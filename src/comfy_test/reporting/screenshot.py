@@ -443,10 +443,10 @@ class WorkflowScreenshot:
 
         # Detect rendering backend: GPU > Mesa llvmpipe > SwiftShader
         import platform
-        has_gpu = _detect_gpu()
-        has_vulkan = _ensure_vulkan_linux(self._log) if has_gpu else False
+        has_cuda = _detect_gpu()
+        has_vulkan = _ensure_vulkan_linux(self._log) if has_cuda else False
 
-        if has_gpu and has_vulkan:
+        if has_cuda and has_vulkan:
             self._log("  GPU + Vulkan detected -- using ANGLE/Vulkan rendering")
             chrome_args = [
                 "--use-gl=angle",
@@ -456,7 +456,7 @@ class WorkflowScreenshot:
                 "--ignore-gpu-blocklist",
                 "--enable-unsafe-swiftshader",  # fallback if Vulkan fails
             ]
-        elif has_gpu:
+        elif has_cuda:
             self._log("  GPU detected (no Vulkan) -- using ANGLE/OpenGL rendering")
             chrome_args = [
                 "--use-gl=angle",

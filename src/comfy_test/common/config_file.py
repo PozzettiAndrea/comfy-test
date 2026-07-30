@@ -37,6 +37,7 @@ else:
 
 from .config import TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig
 from .errors import ConfigError
+from ..platforms.registry import resolve as _resolve_platform, allowed_tokens
 
 
 # Config file names to search for
@@ -148,13 +149,14 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         extra_pip_indices = ["https://pypi.example.com/simple"]
 
         [test.platforms]
-        linux = true
-        windows = true
-        windows_portable = true
+        # Explicit opt-in allowlist. Valid: linux, macos, windows,
+        # windows_portable, macos_desktop, windows_desktop.
+        platforms = ["linux", "macos", "windows", "windows_portable"]
 
         [test.workflows]
         timeout = 120
-        run = ["basic.json"]  # Resolved from workflows/ folder
+        cpu = "all"           # or ["!heavy"] to run all-except; cuda = [...] for CUDA
+        run = ["basic.json"]  # (legacy) Resolved from workflows/ folder
         screenshot = ["basic.json", "advanced.json"]
 
         # Legacy format (still supported):
@@ -199,8 +201,34 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         levels_raw = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution_light", "execution"]
     levels = [TestLevel(l.replace("-", "_")) for l in levels_raw]
 
-    # Parse platforms section
+    # Platforms are an explicit opt-in allowlist, validated against the platform
+    # registry (comfy_test.platforms). Tokens are platform ids or aliases, e.g.:
+    #   [test.platforms] platforms = ["linux-cpu", "windows-cuda", "macos-desktop"]
+    # (bare "linux"/"macos"/"windows" are accepted as the cpu-server variant).
+    # Only listed platforms run; an unknown token is an error.
     platforms = test_section.get("platforms", {})
+    _allow = platforms.get("platforms") if isinstance(platforms, dict) else None
+    if platforms and not isinstance(_allow, list):
+        raise ConfigError(
+            "[test.platforms] must declare an explicit allowlist",
+            'Use:  platforms = ["linux-cpu", "windows-cpu", "windows-cuda"]  '
+            "(per-platform booleans like `linux = true` are no longer supported).")
+    _allow = _allow or []
+    _enabled_keys: set[str] = set()
+    _bad = []
+    for _tok in _allow:
+        _p = _resolve_platform(str(_tok))
+        if _p is None:
+            _bad.append(_tok)
+        else:
+            _enabled_keys.add(_p.config_key)
+    if _bad:
+        raise ConfigError(
+            f"Unknown platform(s) in [test.platforms] platforms: {_bad}",
+            "Valid tokens: " + ", ".join(sorted(allowed_tokens())))
+
+    def _os_enabled(config_key: str) -> bool:
+        return config_key in _enabled_keys
 
     # Parse workflow section - support both new 'workflows' and legacy 'workflow'
     workflows_data = test_section.get("workflows", {})
@@ -214,37 +242,24 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     else:
         workflow = _parse_workflow_config({}, base_dir)
 
-    # Parse platform-specific configs (CPU)
-    linux_config = _parse_platform_config(
-        test_section.get("linux", {}),
-        platforms.get("linux", True)
-    )
-    macos_config = _parse_platform_config(
-        test_section.get("macos", {}),
-        platforms.get("macos", True)
-    )
-    windows_config = _parse_platform_config(
-        test_section.get("windows", {}),
-        platforms.get("windows", True)
-    )
+    # Every platform config — enabled iff its token is in the allowlist.
+    linux_config = _parse_platform_config(test_section.get("linux", {}), _os_enabled("linux"))
+    macos_config = _parse_platform_config(test_section.get("macos", {}), _os_enabled("macos"))
+    windows_config = _parse_platform_config(test_section.get("windows", {}), _os_enabled("windows"))
     windows_portable_config = _parse_platform_config(
-        test_section.get("windows_portable", {}),
-        platforms.get("windows_portable", True)
-    )
-
-    # Parse platform-specific configs (CUDA)
+        test_section.get("windows_portable", {}), _os_enabled("windows_portable"))
+    macos_desktop_config = _parse_platform_config(
+        test_section.get("macos_desktop", {}), _os_enabled("macos_desktop"))
+    windows_desktop_config = _parse_platform_config(
+        test_section.get("windows_desktop", {}), _os_enabled("windows_desktop"))
     linux_cuda_config = _parse_platform_config(
-        test_section.get("linux_cuda", {}),
-        platforms.get("linux_cuda", True)
-    )
+        test_section.get("linux_cuda", {}), _os_enabled("linux_cuda"))
     windows_cuda_config = _parse_platform_config(
-        test_section.get("windows_cuda", {}),
-        platforms.get("windows_cuda", True)
-    )
+        test_section.get("windows_cuda", {}), _os_enabled("windows_cuda"))
     windows_portable_cuda_config = _parse_platform_config(
-        test_section.get("windows_portable_cuda", {}),
-        platforms.get("windows_portable_cuda", True)
-    )
+        test_section.get("windows_portable_cuda", {}), _os_enabled("windows_portable_cuda"))
+    windows_desktop_cuda_config = _parse_platform_config(
+        test_section.get("windows_desktop_cuda", {}), _os_enabled("windows_desktop_cuda"))
 
     try:
         # Build kwargs, only include python_version if explicitly set
@@ -261,6 +276,9 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             "windows_cuda": windows_cuda_config,
             "windows_portable": windows_portable_config,
             "windows_portable_cuda": windows_portable_cuda_config,
+            "macos_desktop": macos_desktop_config,
+            "windows_desktop": windows_desktop_config,
+            "windows_desktop_cuda": windows_desktop_cuda_config,
         }
         if python_version is not None:
             kwargs["python_version"] = python_version
@@ -288,9 +306,11 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     All workflows in workflows/ and tests/ folders are auto-discovered and tested.
     Screenshots are always taken. Workflows run in alphabetical order.
 
-    Supports:
-      - cpu = "all" or cpu = [...] - workflows to run on CPU runners
-      - gpu = "all" or gpu = [...] - workflows to run on GPU runners
+    Supports (accelerator named by backend; there is no "gpu"):
+      - cpu  = "all" or [...] - workflows to run on CPU runners
+      - cuda = "all" or [...] - workflows to run on CUDA runners
+      - rocm = "all" or [...] - reserved (no ROCm runner wired yet)
+    Each list also supports "!name" entries meaning "all except these".
     """
     workflows_dir = base_dir / "workflows"
     dev_tests_dir = workflows_dir / "tests"
@@ -340,13 +360,17 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     # Auto-discover workflows (filtered by consumer/dev settings)
     workflows = resolve_workflows("all", filtered=True)
 
-    # Parse cpu/gpu options - supports "all" or list
+    # Parse accelerator workflow lists - supports "all" or list (with "!exclude").
+    # Accelerator is named by backend: cpu / cuda / rocm. There is no "gpu".
     cpu = []
-    gpu = []
+    cuda = []
+    rocm = []
     if "cpu" in data:
         cpu = resolve_workflows(data["cpu"], filtered=True)
-    if "gpu" in data:
-        gpu = resolve_workflows(data["gpu"], filtered=True)
+    if "cuda" in data:
+        cuda = resolve_workflows(data["cuda"], filtered=True)
+    if "rocm" in data:
+        rocm = resolve_workflows(data["rocm"], filtered=True)
 
     # Legacy format support (backwards compatibility)
     run = []
@@ -359,8 +383,8 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
         # If explicit run list provided, use it instead of auto-discover
         if run:
             workflows = run
-        # Backward compat: if 'run' specified but not cpu/gpu, treat as cpu
-        if not cpu and not gpu:
+        # Backward compat: if 'run' specified but no accelerator list, treat as cpu
+        if not cpu and not cuda and not rocm:
             cpu = run
     if "screenshot" in data:
         screenshot = resolve_workflows(data["screenshot"])
@@ -377,7 +401,8 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     kwargs = {
         "workflows": workflows,
         "cpu": cpu,
-        "gpu": gpu,
+        "cuda": cuda,
+        "rocm": rocm,
         "run": run,
         "screenshot": screenshot,
         "files": files,

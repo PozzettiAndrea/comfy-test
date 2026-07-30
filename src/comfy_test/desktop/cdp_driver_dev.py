@@ -710,7 +710,7 @@ def _fetch_workflow_list_from_repo():
 
 def _parse_cpu_spec():
     """Returns (mode, items) parsed from comfy-test.toml's
-    [test.workflows].cpu (or .gpu when COMFY_TEST_GPU=1)."""
+    [test.workflows].cpu (or .cuda when COMFY_TEST_CUDA=1)."""
     cpu_mode = 'all'
     cpu_items = []
     try:
@@ -725,7 +725,7 @@ def _parse_cpu_spec():
             except ImportError:
                 import tomli as tomllib  # type: ignore
             data = tomllib.loads(toml_text)
-            spec_key = 'gpu' if os.environ.get('COMFY_TEST_GPU', '0') == '1' else 'cpu'
+            spec_key = 'cuda' if os.environ.get('COMFY_TEST_CUDA', '0') == '1' else 'cpu'
             spec = data.get('test', {}).get('workflows', {}).get(spec_key)
             if spec == 'all' or spec is None:
                 cpu_mode = 'all'
@@ -769,19 +769,19 @@ with sync_playwright() as p:
     PRIMARY_LABELS = ['Get Started', 'Next', 'Continue', 'Install', 'OK',
                       'Recreate', 'Confirm', 'Accept', 'Allow', 'Yes', 'Finish']
 
-    # Hardware-tile preference is driven by COMFY_TEST_GPU (set by
+    # Hardware-tile preference is driven by COMFY_TEST_CUDA (set by
     # _desktop_runner.py from --desktop_windows vs --desktop_windows_cuda),
     # not by what the wizard's auto-detect picks. On an NVIDIA box the
     # wizard pre-selects CUDA and enables Next/Install on entry, so without
     # forcing our own tile click we'd silently always install CUDA.
-    _GPU_MODE = os.environ.get('COMFY_TEST_GPU', '0') == '1'
+    _CUDA_MODE = os.environ.get('COMFY_TEST_CUDA', '0') == '1'
     if sys.platform == 'darwin':
         PREFERRED = ['Apple Silicon', 'MPS', 'M4', 'M3', 'M2', 'M1']
-    elif _GPU_MODE:
+    elif _CUDA_MODE:
         PREFERRED = ['NVIDIA', 'CUDA', 'AMD', 'ROCm', 'DirectML', 'GPU']
     else:
         PREFERRED = ['CPU']
-    log(f'  wizard: COMFY_TEST_GPU={os.environ.get("COMFY_TEST_GPU","0")} '
+    log(f'  wizard: COMFY_TEST_CUDA={os.environ.get("COMFY_TEST_CUDA","0")} '
         f'platform={sys.platform} preferred={PREFERRED}')
 
     def server_up():
@@ -1434,11 +1434,11 @@ with sync_playwright() as p:
                     except ImportError:
                         import tomli as tomllib  # type: ignore
                     data = tomllib.loads(toml_text)
-                    # Read .gpu when COMFY_TEST_GPU=1, else .cpu. Earlier
+                    # Read .cuda when COMFY_TEST_CUDA=1, else .cpu. Earlier
                     # this was hardcoded to 'cpu' which silently picked the
                     # wrong workflow on --desktop_windows_cuda (the spec's
                     # cpu-mode exclude list happened to allow alpha_wrap).
-                    spec_key_inline = 'gpu' if os.environ.get('COMFY_TEST_GPU', '0') == '1' else 'cpu'
+                    spec_key_inline = 'cuda' if os.environ.get('COMFY_TEST_CUDA', '0') == '1' else 'cpu'
                     spec_inline = data.get('test', {}).get('workflows', {}).get(spec_key_inline)
                     if spec_inline == 'all' or spec_inline is None:
                         cpu_mode = 'all'
@@ -1677,7 +1677,7 @@ def _hardware_info():
             capture_output=True, text=True, timeout=5,
         )
         if gpu.returncode == 0 and gpu.stdout.strip():
-            info["gpu"] = gpu.stdout.strip().splitlines()[0]
+            info["cuda"] = gpu.stdout.strip().splitlines()[0]
     except Exception:
         pass
     return info

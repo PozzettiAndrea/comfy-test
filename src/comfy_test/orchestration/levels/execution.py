@@ -109,13 +109,13 @@ def run(ctx: LevelContext) -> LevelContext:
         ctx.log(f"Workflow filter: running only {workflows[0]}")
 
     # Determine runner type and which workflows to run
-    is_gpu_runner = os.environ.get("COMFY_TEST_GPU") == "1"
+    is_cuda_runner = os.environ.get("COMFY_TEST_CUDA") == "1"
     cpu_workflows = set(ctx.config.workflow.cpu or [])
-    gpu_workflows = set(ctx.config.workflow.gpu or [])
+    cuda_workflows = set(ctx.config.workflow.cuda or [])
 
-    if is_gpu_runner:
-        allowed_workflows = gpu_workflows
-        runner_type = "GPU"
+    if is_cuda_runner:
+        allowed_workflows = cuda_workflows
+        runner_type = "CUDA"
     else:
         allowed_workflows = cpu_workflows
         runner_type = "CPU"
@@ -199,9 +199,9 @@ def run(ctx: LevelContext) -> LevelContext:
             spinner = ProgressSpinner(workflow_file.name, idx, total_workflows)
             spinner.start()
 
-            is_gpu_test = os.environ.get("COMFY_TEST_GPU") == "1"
+            is_cuda_test = os.environ.get("COMFY_TEST_CUDA") == "1"
             server_pid = getattr(ctx.server, 'pid', None)
-            resource_monitor = ResourceMonitor(interval=1.0, monitor_gpu=is_gpu_test, pid=server_pid)
+            resource_monitor = ResourceMonitor(interval=1.0, monitor_cuda=is_cuda_test, pid=server_pid)
             resource_monitor.start()
 
             try:

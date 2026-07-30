@@ -113,7 +113,7 @@ def isolated_environment(
     # Default vars to preserve
     if preserve_env_vars is None:
         preserve_env_vars = [
-            "COMFY_TEST_GPU",
+            "COMFY_TEST_CUDA",
             "COMFY_ENV_CUDA_VERSION",
             "CUDA_VISIBLE_DEVICES",
             "COMFY_TEST_IN_DOCKER",
@@ -222,7 +222,7 @@ class WindowsIsolation:
 
         # Clear polluting env vars
         cleaned = []
-        preserve = {"COMFY_TEST_GPU", "COMFY_ENV_CUDA_VERSION", "CUDA_VISIBLE_DEVICES", "COMFY_TEST_IN_DOCKER"}
+        preserve = {"COMFY_TEST_CUDA", "COMFY_ENV_CUDA_VERSION", "CUDA_VISIBLE_DEVICES", "COMFY_TEST_IN_DOCKER"}
         for key in list(os.environ.keys()):
             if key.startswith(("CUDA_", "TORCH_", "COMFY")) and key not in preserve:
                 del os.environ[key]

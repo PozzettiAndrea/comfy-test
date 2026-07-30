@@ -77,7 +77,7 @@ RUN Start-Process -Wait -FilePath C:\install\git.exe -ArgumentList '/VERYSILENT'
 # so ContainerUser inside the container can write through the mount.
 ENV COMFY_TEST_WORKSPACE_DIR=C:\\workspaces \
     COMFY_TEST_LOGS_DIR=C:\\logs \
-    COMFY_TEST_GPU=1
+    COMFY_TEST_CUDA=1
 RUN New-Item -ItemType Directory -Force -Path C:\workspaces, C:\logs, C:\node, C:\tools | Out-Null; \
     icacls C:\workspaces /grant 'ContainerUser:(OI)(CI)F' /T /Q | Out-Null; \
     icacls C:\logs       /grant 'ContainerUser:(OI)(CI)F' /T /Q | Out-Null; \

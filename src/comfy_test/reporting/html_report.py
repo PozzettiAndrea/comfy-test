@@ -18,19 +18,11 @@ from typing import Dict, List, Any, Optional
 import subprocess
 
 
-# Platform definitions for multi-platform index
-PLATFORMS = [
-    {'id': 'linux-cpu', 'label': 'Linux CPU'},
-    {'id': 'linux-cuda', 'label': 'Linux CUDA'},
-    {'id': 'windows-cpu', 'label': 'Windows CPU'},
-    {'id': 'windows-cuda', 'label': 'Windows CUDA'},
-    {'id': 'windows-portable-cpu', 'label': 'Win Portable CPU'},
-    {'id': 'windows-portable-cuda', 'label': 'Win Portable CUDA'},
-    {'id': 'macos-cpu', 'label': 'macOS CPU'},
-    {'id': 'macos-desktop', 'label': 'macOS Desktop'},
-    {'id': 'windows-desktop', 'label': 'Windows Desktop'},
-    {'id': 'windows-desktop-cuda', 'label': 'Windows Desktop CUDA'},
-]
+# Platform definitions for the multi-platform index — derived from the single
+# source of truth in comfy_test.platforms (id + label per platform).
+from ..platforms.registry import gallery_platforms
+
+PLATFORMS = gallery_platforms()
 
 
 def _load_template(name: str) -> str:
@@ -42,7 +34,7 @@ def _get_system_info() -> dict:
     """Get system info (CPU, GPU, OS) for report header."""
     info = {
         'cpu': 'Unknown CPU',
-        'gpu': 'None',
+        'cuda': 'None',
         'os': platform.system(),
     }
 
@@ -109,11 +101,11 @@ def _get_system_info() -> dict:
         from ..backends import active_backend
         gpus = active_backend().hardware_names()
         if gpus:
-            info['gpu'] = f"{gpus[0]} x{len(gpus)}" if len(gpus) > 1 else gpus[0]
+            info['cuda'] = f"{gpus[0]} x{len(gpus)}" if len(gpus) > 1 else gpus[0]
     except Exception:
         pass
 
-    if info['gpu'] == 'None':
+    if info['cuda'] == 'None':
         try:
             if platform.system() == "Linux":
                 result = subprocess.run(
@@ -127,7 +119,7 @@ def _get_system_info() -> dict:
                             if match:
                                 gpu_name = match.group(1).strip()
                                 gpu_name = re.sub(r'^(NVIDIA|AMD|Intel) Corporation\s*', r'\1 ', gpu_name)
-                                info['gpu'] = gpu_name
+                                info['cuda'] = gpu_name
                                 break
             elif platform.system() == "Darwin":
                 result = subprocess.run(
@@ -137,7 +129,7 @@ def _get_system_info() -> dict:
                 if result.returncode == 0:
                     match = re.search(r'Chipset Model:\s*(.+)', result.stdout)
                     if match:
-                        info['gpu'] = match.group(1).strip()
+                        info['cuda'] = match.group(1).strip()
         except Exception:
             pass
 
@@ -275,8 +267,8 @@ def _render_report(
         meta_chips_parts.append(f'<span class="meta-chip">{svg_os} {html.escape(hardware["os"])}</span>')
     if hardware.get("cpu"):
         meta_chips_parts.append(f'<span class="meta-chip">{svg_cpu} {html.escape(hardware["cpu"])}</span>')
-    if hardware.get("gpu") and hardware["gpu"] != "None":
-        meta_chips_parts.append(f'<span class="meta-chip">{svg_gpu} {html.escape(hardware["gpu"])}</span>')
+    if hardware.get("cuda") and hardware["cuda"] != "None":
+        meta_chips_parts.append(f'<span class="meta-chip">{svg_gpu} {html.escape(hardware["cuda"])}</span>')
     meta_chips = ' '.join(meta_chips_parts)
 
     # Calculate pass rate

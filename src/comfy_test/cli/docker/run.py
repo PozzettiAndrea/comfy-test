@@ -161,7 +161,7 @@ def _copy_local_node(nodelink: str, dest: Path) -> str:
     return node_name
 
 
-def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
+def _run_windows(args, docker_exe: str, target_platform: str, cuda: bool,
                  node_path: Optional[Path], node_name: str, logs_dir: Path,
                  timestamp: str) -> int:
     """Run docker test on a Windows host with process-isolated Windows containers.
@@ -258,12 +258,12 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
 
     # Build comfy-test args inside the container
     # Inner `comfy-test run` derives platform from the container's host OS.
-    # We pass --portable / --gpu / --workflow / --branch through.
+    # We pass --portable / --cuda / --workflow / --branch through.
     ct_args = ["run"]
     if args.branch:
         ct_args.extend(["--branch", args.branch])
-    if gpu:
-        ct_args.append("--gpu")
+    if cuda:
+        ct_args.append("--cuda")
     if args.portable:
         ct_args.append("--portable")
     if args.workflow:
@@ -294,7 +294,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
         if args.branch:
             docker_cmd += ["-e", f"COMFY_TEST_NODE_BRANCH={args.branch}"]
     docker_cmd += [
-        "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
+        "-e", f"COMFY_TEST_CUDA={'1' if cuda else '0'}",
     ]
     # Propagate Python pin (if set on host -- usually picked by the YAML dispatcher).
     py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
@@ -352,7 +352,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, gpu: bool,
     return result.returncode
 
 
-def _run_linux(args, docker_exe: str, gpu: bool,
+def _run_linux(args, docker_exe: str, cuda: bool,
                node_path: Optional[Path], node_name: str, logs_dir: Path, timestamp: str) -> int:
     """Run docker test on a Linux host with NVIDIA Container Toolkit.
 
@@ -369,12 +369,12 @@ def _run_linux(args, docker_exe: str, gpu: bool,
 
     # Build comfy-test args inside the container
     # Inner `comfy-test run` derives platform from the container (linux). We
-    # pass --gpu / --workflow / --branch through.
+    # pass --cuda / --workflow / --branch through.
     ct_args = ["run"]
     if args.branch:
         ct_args.extend(["--branch", args.branch])
-    if gpu:
-        ct_args.append("--gpu")
+    if cuda:
+        ct_args.append("--cuda")
     if args.workflow:
         ct_args.extend(["--workflow", args.workflow])
 
@@ -410,7 +410,7 @@ def _run_linux(args, docker_exe: str, gpu: bool,
         if args.branch:
             docker_cmd += ["-e", f"COMFY_TEST_NODE_BRANCH={args.branch}"]
     docker_cmd += [
-        "-e", f"COMFY_TEST_GPU={'1' if gpu else '0'}",
+        "-e", f"COMFY_TEST_CUDA={'1' if cuda else '0'}",
     ]
     py_pin = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
     if py_pin:
@@ -492,7 +492,7 @@ def cmd_docker_run(args) -> int:
         return 1
     target_platform = "windows-portable" if args.portable else host_platform
 
-    gpu = bool(args.gpu)
+    cuda = bool(args.cuda)
 
     # Docker preflight
     docker_exe = _find_docker()
@@ -550,10 +550,10 @@ def cmd_docker_run(args) -> int:
 
     # Dispatch to platform-specific runner
     if host_platform == "windows":
-        rc = _run_windows(args, docker_exe, target_platform, gpu,
+        rc = _run_windows(args, docker_exe, target_platform, cuda,
                           node_path, node_name, logs_dir, timestamp)
     else:
-        rc = _run_linux(args, docker_exe, gpu,
+        rc = _run_linux(args, docker_exe, cuda,
                         node_path, node_name, logs_dir, timestamp)
 
     # Older container images bake an older comfy-test that doesn't run
@@ -580,7 +580,7 @@ def add_docker_run_parser(subparsers):
     )
     p.add_argument("nodelink", help="Git URL (or local path) to the custom node")
     p.add_argument("--branch", "-b", default=None, help="Git branch to clone (default: repo default)")
-    p.add_argument("--gpu", action="store_true",
+    p.add_argument("--cuda", action="store_true",
                    help="Enable GPU mode (CUDA passthrough). Default: CPU only.")
     p.add_argument("--portable", action="store_true",
                    help="Windows only: test against portable ComfyUI")

@@ -12,9 +12,7 @@ from .paths import cmd_paths, add_paths_parser
 from .coverage import cmd_coverage, add_coverage_parser
 from .generate_index import (
     cmd_generate_index,
-    cmd_generate_root_index,
     add_generate_index_parser,
-    add_generate_root_index_parser,
 )
 from .settings import add_settings_parser
 from .docker import add_docker_parser
@@ -35,7 +33,6 @@ def main(args=None) -> int:
     add_paths_parser(subparsers)
     add_coverage_parser(subparsers)
     add_generate_index_parser(subparsers)
-    add_generate_root_index_parser(subparsers)
     add_settings_parser(subparsers)
     add_docker_parser(subparsers)
     add_vm_parser(subparsers)

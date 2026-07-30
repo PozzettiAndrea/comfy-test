@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 60
     env:
       PYTHONUNBUFFERED: "1"
-      COMFY_TEST_GPU: "0"
+      COMFY_TEST_CUDA: "0"
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
     steps:
 
