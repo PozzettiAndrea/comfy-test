@@ -41,7 +41,7 @@ def _download(url: str, dest: Path) -> None:
 
 # `desktop_mode` -> dict of platform-specific settings.
 # Scripts ship inside the package so they're available after pip install.
-_DESKTOP_PKG = Path(__file__).resolve().parent.parent / "desktop"
+_DESKTOP_PKG = Path(__file__).resolve().parent.parent / "platforms" / "desktop"
 _CDP_DRIVER = _DESKTOP_PKG / "cdp_driver.py"
 _MERGE_LOGS = _DESKTOP_PKG / "merge_logs.py"
 

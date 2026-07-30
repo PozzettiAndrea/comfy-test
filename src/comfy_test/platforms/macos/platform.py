@@ -2,124 +2,79 @@
 
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Callable, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
-from ...common.base_platform import TestPlatform, TestPaths
+from ..venv_server import VenvServerPlatform, COMFYUI_REPO
+from ...common.base_platform import TestPaths
 from ...common.config import resolve_torch_triple
 
 if TYPE_CHECKING:
     from ...common.config import TestConfig
 
 
-COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
+class MacOSPlatform(VenvServerPlatform):
+    """macOS: stdlib venv + uv-in-venv bootstrap, no PyTorch index override
+    (PyTorch ships no macOS `/whl/*` subindex), and MPS (never --cpu).
 
-
-class MacOSPlatform(TestPlatform):
-    """macOS platform implementation for ComfyUI testing.
-
-    Uses a virtual environment for isolation and safety.
     Supports both Intel and Apple Silicon Macs.
     """
 
-    @property
-    def name(self) -> str:
-        return "macos"
-
-    @property
-    def executable_suffix(self) -> str:
-        return ""
-
-    def is_ci(self) -> bool:
-        """Detect if running in CI environment."""
-        return os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
-
-    def is_cuda_mode(self) -> bool:
-        """Detect if GPU mode is enabled (MPS on Apple Silicon)."""
-        return os.environ.get("COMFY_TEST_CUDA", "0") not in ("0", "", "false", "no")
+    _name = "macos"
+    _pass_cpu_flag = False  # Apple Silicon MPS; ComfyUI auto-selects it without --cpu
 
     def _uv_install(self, python: Path, args: list, cwd: Path, env: Optional[dict] = None) -> None:
-        """Install packages using uv pip."""
+        """Install packages using uv pip (no torch index override on macOS)."""
         cmd = [str(python), "-m", "uv", "pip", "install"] + args
-
-        # Use local wheels if available
         local_wheels = os.environ.get("COMFY_LOCAL_WHEELS")
         if local_wheels and Path(local_wheels).exists():
             cmd.extend(["--find-links", local_wheels])
-
         cmd.extend(self._extra_index_args())
-
         self._run_command(cmd, cwd=cwd, env=env)
 
-    def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
-        """
-        Set up ComfyUI for testing on macOS.
+    def _install_reqs(self, requirements_file: Path, cwd: Path) -> None:
+        # Node requirements install via plain uv (no PyTorch index routing).
+        self._uv_install(self._venv_python, ["-r", str(requirements_file)], cwd)
 
-        1. Clone ComfyUI from GitHub
-        2. Create virtual environment
-        3. Install requirements
-        4. Install PyTorch (CPU or MPS for Apple Silicon)
-        """
+    def setup_comfyui(self, config: "TestConfig", work_dir: Path) -> TestPaths:
+        """Clone ComfyUI, create a stdlib venv, bootstrap uv, install torch + reqs."""
         work_dir = Path(work_dir).resolve()
         work_dir.mkdir(parents=True, exist_ok=True)
 
         comfyui_dir = work_dir / "ComfyUI"
-
         self.set_extra_pip_indices(config)
 
         # Clone ComfyUI
         self._log(f"Cloning ComfyUI ({config.comfyui_version})...")
         if comfyui_dir.exists():
             shutil.rmtree(comfyui_dir)
-
         clone_args = ["git", "clone", "--depth", "1"]
         if config.comfyui_version != "latest":
             clone_args.extend(["--branch", config.comfyui_version])
         clone_args.extend([COMFYUI_REPO, str(comfyui_dir)])
-
         self._run_command(clone_args, cwd=work_dir)
 
-        # Create custom_nodes directory
         custom_nodes_dir = comfyui_dir / "custom_nodes"
         custom_nodes_dir.mkdir(exist_ok=True)
 
-        # Create virtual environment
+        # Create virtual environment (stdlib venv), then bootstrap uv into it.
         self._log("Creating virtual environment...")
         venv_dir = work_dir / "venv"
-        self._run_command(
-            [sys.executable, "-m", "venv", str(venv_dir)],
-            cwd=work_dir,
-        )
-
-        # Get venv Python path
+        self._run_command([sys.executable, "-m", "venv", str(venv_dir)], cwd=work_dir)
         python = venv_dir / "bin" / "python"
+        self._venv_python = python
 
-        # Install uv into venv
         self._log("Installing uv into venv...")
-        self._run_command(
-            [str(python), "-m", "pip", "install", "uv"],
-            cwd=work_dir,
-        )
+        self._run_command([str(python), "-m", "pip", "install", "uv"], cwd=work_dir)
 
         # Install PyTorch (standard PyTorch works for both CPU and MPS on macOS).
-        # No --index-url override on macOS: PyTorch publishes no `/whl/*`
-        # subindex with macOS wheels (cpu/cu*/rocm are Linux+Windows only),
-        # so default PyPI is the authoritative source and ships the MPS-capable
-        # `macosx_*_arm64` wheel.
-        # Pin the family to a known-good version (default 2.10.0 from
-        # TORCH_TRIPLES). Why 2.10.0 specifically:
-        # - 2.12.0's only osx-arm64 wheel is tagged `macosx_14_0_arm64`, while
-        #   pixi targets macOS 13 in osx-arm64 by default, so the pixi solve
-        #   for isolation envs fails with "no wheels with a matching platform
-        #   tag (e.g., `macosx_13_0_arm64`)".
-        # - 2.11.0 has no `+cu128` wheel on PyTorch's index, so the GPU lane
-        #   silently fell through to PyPI's CPU-only Windows torch -- ComfyUI
-        #   then crashed at startup with "Torch not compiled with CUDA enabled".
-        # - 2.10.0 publishes the full triple on cu128 (Linux + Windows) AND
-        #   ships an osx-arm64 wheel tagged `macosx_11_0_arm64`, well below
-        #   pixi's macOS 13 floor.
+        # No --index-url override: PyTorch publishes no `/whl/*` subindex with
+        # macOS wheels, so default PyPI is authoritative and ships the MPS-capable
+        # macosx_*_arm64 wheel. Pin the family to a known-good version (default
+        # 2.10.0 from TORCH_TRIPLES) -- 2.12's only osx-arm64 wheel is tagged
+        # macosx_14_0 (pixi targets macOS 13) and 2.11 has no +cu128; 2.10 ships
+        # the full cu128 triple AND a macosx_11_0_arm64 wheel.
         env_torch = os.environ.get("COMFY_TEST_TORCH_VERSION", "").strip()
         torch_spec = env_torch or getattr(config, "torch_version", None)
         triple = resolve_torch_triple(torch_spec)
@@ -127,15 +82,10 @@ class MacOSPlatform(TestPlatform):
         if triple:
             t, tv, ta = triple
             self._log(f"Pinning torch family: torch=={t} torchvision=={tv} torchaudio=={ta}")
-            self._uv_install(
-                python,
-                [f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"],
-                work_dir,
-            )
+            self._uv_install(python, [f"torch=={t}", f"torchvision=={tv}", f"torchaudio=={ta}"], work_dir)
         else:
             self._uv_install(python, ["torch", "torchvision", "torchaudio"], work_dir)
 
-        # Install ComfyUI requirements
         self._log("Installing ComfyUI requirements...")
         requirements_file = comfyui_dir / "requirements.txt"
         if requirements_file.exists():
@@ -147,186 +97,3 @@ class MacOSPlatform(TestPlatform):
             python=python,
             custom_nodes_dir=custom_nodes_dir,
         )
-
-    def install_node(self, paths: TestPaths, node_dir: Path) -> None:
-        """
-        Install custom node into ComfyUI.
-
-        1. Copy to custom_nodes/
-        2. Install requirements.txt if present
-        3. Run install.py if present
-        """
-        node_dir = Path(node_dir).resolve()
-        node_name = node_dir.name
-
-        target_dir = paths.custom_nodes_dir / node_name
-
-        # Copy node (not symlink) for proper isolation and correct path resolution
-        self._log(f"Copying {node_name} to custom_nodes/...")
-        if target_dir.exists():
-            if target_dir.is_symlink():
-                target_dir.unlink()
-            else:
-                shutil.rmtree(target_dir)
-
-        # Parse .gitignore patterns
-        gitignore_patterns = set()
-        gitignore_path = node_dir / ".gitignore"
-        if gitignore_path.exists():
-            for line in gitignore_path.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    pattern = line.rstrip("/")
-                    gitignore_patterns.add(pattern)
-
-        # Always ignore .git
-        gitignore_patterns.add(".git")
-
-        def ignore_patterns(directory, files):
-            """Ignore files matching .gitignore patterns."""
-            ignored = []
-            for f in files:
-                if f in gitignore_patterns:
-                    ignored.append(f)
-                    continue
-                for pattern in gitignore_patterns:
-                    if pattern.startswith("*") and f.endswith(pattern[1:]):
-                        ignored.append(f)
-                        break
-                    elif pattern.startswith("_") and f.startswith(pattern.rstrip("*")):
-                        ignored.append(f)
-                        break
-            return ignored
-
-        shutil.copytree(node_dir, target_dir, ignore=ignore_patterns)
-
-        # Install requirements.txt first (install.py may depend on these)
-        requirements_file = target_dir / "requirements.txt"
-        if requirements_file.exists():
-            self._log("Installing node requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
-
-        # Run install.py if present (in the copy, so _env_* gets created there)
-        install_py = target_dir / "install.py"
-        if install_py.exists():
-            self._log("\nRunning install.py...")
-            install_env = {
-                "COMFY_ENV_CUDA_VERSION": "12.8",
-                "COMFY_ENV_CACHE_DIR": str(paths.work_dir / ".comfy-env"),
-            }
-            result = self._run_command(
-                [str(paths.python), str(install_py)],
-                cwd=target_dir,
-                env=install_env,
-                check=False,
-                verbose=True,  # install.py prints structured progress; stream live
-            )
-            if result.returncode != 0:
-                self._log(f"Warning: install.py failed (exit code {result.returncode}), continuing...")
-                if result.stderr:
-                    for line in result.stderr.strip().splitlines()[-20:]:
-                        self._log(f"  [!] {line}")
-
-    def start_server(
-        self,
-        paths: TestPaths,
-        config: "TestConfig",
-        port: int = 8188,
-        extra_env: Optional[dict] = None,
-        extra_args: Optional[list[str]] = None,
-    ) -> subprocess.Popen:
-        """Start ComfyUI server on macOS."""
-        self._log(f"Starting ComfyUI server on port {port}...")
-
-        cmd = [
-            str(paths.python),
-            str(paths.comfyui_dir / "main.py"),
-            "--listen", "127.0.0.1",
-            "--port", str(port),
-        ]
-
-        # Don't pass --cpu on macOS: the hosted macos-latest runner is Apple
-        # Silicon with usable MPS, and that's what real macOS users hit. Forcing
-        # CPU here misses MPS-specific bugs (e.g. torch's stricter empty-tensor
-        # asserts in the MPS backend) that only surface in production. ComfyUI
-        # auto-selects MPS via torch.backends.mps.is_available() in
-        # comfy/model_management.py when no --cpu flag is passed.
-
-        if extra_args:
-            cmd.extend(extra_args)
-
-        # Set environment
-        env = os.environ.copy()
-        if extra_env:
-            env.update(extra_env)
-
-        process = subprocess.Popen(
-            cmd,
-            cwd=paths.comfyui_dir,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-        return process
-
-    def cleanup(self, paths: TestPaths) -> None:
-        """Clean up test environment on macOS."""
-        self._log(f"Cleaning up {paths.work_dir}...")
-
-        if paths.work_dir.exists():
-            shutil.rmtree(paths.work_dir, ignore_errors=True)
-
-    def install_node_from_repo(self, paths: TestPaths, repo: str, name: str) -> None:
-        """
-        Install a custom node from a GitHub repository.
-
-        1. Git clone into custom_nodes/
-        2. Install requirements.txt if present
-        3. Run install.py if present
-        """
-        target_dir = paths.custom_nodes_dir / name
-        # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
-        # so private node deps clone the same way the public ones do.
-        from ...cli._git_auth import authenticated_github_url, git_env, tokens_to_redact
-        git_url = authenticated_github_url(repo)
-
-        # Skip if already installed
-        if target_dir.exists():
-            self._log(f"  {name} already exists, skipping...")
-            return
-
-        # redact= keeps the PAT out of session.log; see linux/platform.py.
-        self._log(f"  Cloning {repo}...")
-        self._run_command(
-            ["git", "clone", "--depth", "1", git_url, str(target_dir)],
-            cwd=paths.custom_nodes_dir,
-            env=git_env(),
-            redact=tokens_to_redact(),
-        )
-
-        # Install requirements.txt first
-        requirements_file = target_dir / "requirements.txt"
-        if requirements_file.exists():
-            self._log(f"  Installing {name} requirements...")
-            self._uv_install(paths.python, ["-r", str(requirements_file)], target_dir)
-
-        # Run install.py if present
-        install_py = target_dir / "install.py"
-        if install_py.exists():
-            self._log(f"  Running {name} install.py...")
-            install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
-            result = self._run_command(
-                [str(paths.python), str(install_py)],
-                cwd=target_dir,
-                env=install_env,
-                check=False,
-            )
-            if result.returncode != 0:
-                self._log(f"Warning: {name} install.py failed (exit code {result.returncode}), continuing...")
-                if result.stderr:
-                    for line in result.stderr.strip().splitlines()[-20:]:
-                        self._log(f"  [!] {line}")
