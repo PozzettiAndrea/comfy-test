@@ -28,7 +28,7 @@
       <div id="branch-tabs"></div>
     </div>
   </header>
-  <iframe id="frame" src="about:blank"></iframe>
+  <iframe id="frame" src="about:blank" allow="fullscreen" allowfullscreen></iframe>
   <script>
     const branches = $branches_json;
     const tabs = document.getElementById('branch-tabs');
@@ -95,7 +95,7 @@
 
     // Forward keyboard events down to iframe chain
     document.onkeydown = function(e) {
-      if (['Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && activeTab) {
+      if (['Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'f', 'F'].includes(e.key) && activeTab) {
         e.preventDefault();
         frame.contentWindow.postMessage({ type: 'comfytest-key', key: e.key }, '*');
       }
