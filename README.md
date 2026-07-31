@@ -38,19 +38,23 @@ A minimal ComfyUI workflow that uses your nodes. Export from ComfyUI.
 
 ## Test Levels
 
-comfy-test runs 7 test levels in sequence:
+comfy-test runs up to 10 test levels in sequence:
 
 | Level | Name | What It Does |
 |-------|------|--------------|
-| 1 | **SYNTAX** | Check project structure (pyproject.toml/requirements.txt), CP1252 compatibility |
-| 2 | **INSTALL** | Clone ComfyUI, create environment, install node + dependencies |
-| 3 | **REGISTRATION** | Start server, verify nodes appear in `/object_info` |
-| 4 | **INSTANTIATION** | Test each node's constructor |
-| 5 | **STATIC_CAPTURE** | Screenshot workflows (no execution) |
-| 6 | **VALIDATION** | 4-level workflow validation (schema, graph, introspection, partial execution) |
-| 7 | **EXECUTION** | Run workflows end-to-end, capture outputs |
+| 1 | **SYNTAX** | Check project structure (pyproject.toml/requirements.txt), CP1252 compatibility, forbidden patterns |
+| 2 | **COVERAGE** | Every registered node is used by at least one bundled workflow (opt-in: fails on unused nodes) |
+| 3 | **INSTALL** | Clone ComfyUI, create environment, install node + dependencies |
+| 4 | **REGISTRATION** | Start server, verify nodes appear in `/object_info` |
+| 5 | **INSTANTIATION** | Test each node's constructor |
+| 6 | **STATIC_CAPTURE** | Screenshot workflows (no execution) |
+| 7 | **VALIDATION** | 4-level workflow validation (schema, graph, introspection, partial execution) |
+| 8 | **EXECUTION_LIGHT** | Run workflows end-to-end, one screenshot each (no video; for weak runners — use instead of EXECUTION) |
+| 9 | **EXECUTION** | Run workflows end-to-end, capture outputs + per-frame video |
+| 10 | **CUSTOM** | Your own hook (`[test] custom = "tests/my_check.py"` exposing `run(ctx)`); runs last against the live server |
 
-Each level depends on previous levels. You can run up to a specific level with `--level`:
+The default set is levels 1, 3-7, 9 (`coverage` and `execution_light` are opt-in; `levels = "all"` runs
+everything). Each level depends on previous levels. You can run up to a specific level with `--level`:
 
 ```bash
 comfy-test run --level registration  # Runs: SYNTAX -> INSTALL -> REGISTRATION
@@ -82,10 +86,15 @@ packages = ["nvdiffrast", "flash-attn"]
 
 ```toml
 [test]
-# Everything has sensible defaults - this is all you need
+# Levels default to: syntax, install, registration, instantiation,
+# static_capture, validation, execution
 
 [test.workflows]
 cpu = "all"
+
+[test.platforms]
+# Explicit opt-in allowlist — only listed platforms run.
+platforms = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 ```
 
 ### Full Config Example
@@ -100,45 +109,39 @@ comfyui_version = "latest"  # or a tag like "v0.2.0" or commit hash
 # Python version (default: random from 3.11, 3.12, 3.13)
 python_version = "3.11"
 
-# Test levels to run (default: all)
-# Options: syntax, install, registration, instantiation, static_capture, validation, execution
-levels = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"]
-# Or use: levels = "all"
+# Test levels to run. Default: syntax, install, registration, instantiation,
+# static_capture, validation, execution. Options additionally: coverage,
+# execution_light, custom. Or run everything:
+levels = "all"
 
-# Enable/disable platforms (all enabled by default)
+# Optional custom hook: a Python file exposing run(ctx) — raise to fail.
+# Runs last, with the live server available via ctx.server / ctx.api.
+custom = "tests/my_check.py"
+
+# Platforms are an explicit opt-in ALLOWLIST — only listed targets run.
+# Valid tokens: linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu,
+# macos-desktop, windows-desktop, linux-cuda, windows-cuda,
+# windows-portable-cuda, windows-desktop-cuda
+# (bare "linux"/"macos"/"windows"/"windows_portable" mean the cpu variant)
 [test.platforms]
-linux = true
-macos = true
-windows = true
-windows_portable = true
+platforms = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 
-# Workflow configuration
+# Workflow configuration — accelerator is named by backend: cpu / cuda / rocm.
 [test.workflows]
 # Workflows to run on CPU runners (GitHub-hosted)
-cpu = "all"  # or list specific files: ["test_basic.json", "test_advanced.json"]
+cpu = "all"  # or a list: ["test_basic.json"], or all-except: ["!heavy.json"]
 
-# Workflows to run on GPU runners (self-hosted)
-gpu = ["test_gpu.json"]
+# Workflows to run on CUDA runners (self-hosted); rocm reserved for later
+cuda = ["test_cuda.json"]
 
 # Timeout for workflow execution in seconds (default: 3600)
 timeout = 120
 
-# Platform-specific settings
+# Platform-specific settings (enablement comes from the allowlist above)
 [test.linux]
-enabled = true
 skip_workflow = false  # Skip workflow execution, only verify registration
 
-[test.macos]
-enabled = true
-skip_workflow = false
-
-[test.windows]
-enabled = true
-skip_workflow = false
-
 [test.windows_portable]
-enabled = true
-skip_workflow = false
 comfyui_portable_version = "latest"  # Portable-specific version
 ```
 
@@ -147,8 +150,9 @@ comfyui_portable_version = "latest"  # Portable-specific version
 Workflows are auto-discovered from the `workflows/` folder:
 - All `.json` files in `workflows/` are found automatically
 - Use `cpu = "all"` to run all discovered workflows on CPU
-- Use `gpu = "all"` to run all discovered workflows on GPU
+- Use `cuda = "all"` to run all discovered workflows on CUDA runners
 - Or specify individual files: `cpu = ["basic.json", "advanced.json"]`
+- Or exclude: `cpu = ["!heavy.json"]` runs everything except `heavy.json`
 
 ## CLI
 

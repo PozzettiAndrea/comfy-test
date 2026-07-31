@@ -1,4 +1,4 @@
-name: Test Windows Desktop (GPU)
+name: Test Windows Desktop (CUDA)
 
 on:
   workflow_call:
@@ -12,11 +12,11 @@ on:
         default: "main"
       runs_on:
         type: string
-        default: '["self-hosted", "windows", "gpu"]'
+        default: '["self-hosted", "windows", "cuda"]'
 
 jobs:
-  windows-desktop-gpu-test:
-    name: windows-desktop-gpu-test
+  windows-desktop-cuda-test:
+    name: windows-desktop-cuda-test
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 60
     env:
@@ -137,7 +137,7 @@ jobs:
           git clone --depth 1 -b ${{ inputs.node_branch }} \
             "https://github.com/${{ inputs.node_repo }}.git" node_source
           cd node_source
-          python -m comfy_test run --server-url http://127.0.0.1:8000 --gpu
+          python -m comfy_test run --server-url http://127.0.0.1:8000 --cuda
 
       # --- Cleanup ---
       - name: Stop app
