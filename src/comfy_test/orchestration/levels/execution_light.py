@@ -261,6 +261,7 @@ def run(ctx: LevelContext) -> LevelContext:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "platform": ctx.platform_name,
         "hardware": hardware,
+        "comfyui_version": ctx.comfyui_version,
         "commit_hash": commit_hash,
         # GHA run URL for Goto-mode in the dashboard (see execution.py).
         "run_url": os.environ.get("COMFY_TEST_RUN_URL") or None,

@@ -269,6 +269,12 @@ def _render_report(
         meta_chips_parts.append(f'<span class="meta-chip">{svg_cpu} {html.escape(hardware["cpu"])}</span>')
     if hardware.get("cuda") and hardware["cuda"] != "None":
         meta_chips_parts.append(f'<span class="meta-chip">{svg_gpu} {html.escape(hardware["cuda"])}</span>')
+    comfyui_version = results.get("comfyui_version")
+    if comfyui_version:
+        # Provenance: which ComfyUI core this result was produced against.
+        svg_box = '<svg viewBox="0 0 16 16"><path d="M8 0l7 4v8l-7 4-7-4V4l7-4zm0 1.7L2.7 4.6 8 7.5l5.3-2.9L8 1.7zM2 5.8v5.6l5.5 3.1V8.9L2 5.8zm12 0L8.5 8.9v5.6L14 11.4V5.8z"/></svg>'
+        meta_chips_parts.append(
+            f'<span class="meta-chip">{svg_box} ComfyUI {html.escape(str(comfyui_version))}</span>')
     meta_chips = ' '.join(meta_chips_parts)
 
     # Calculate pass rate

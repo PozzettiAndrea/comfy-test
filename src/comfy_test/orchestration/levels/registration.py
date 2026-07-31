@@ -55,8 +55,16 @@ def run(ctx: LevelContext) -> LevelContext:
     registered_nodes = tuple(object_info.keys())
     ctx.log(f"Found {len(registered_nodes)} registered nodes")
 
+    # Provenance: the running server's own version report is authoritative
+    # (overrides the pyproject read from INSTALL).
+    comfyui_version = (api.get_system_stats().get("system") or {}).get("comfyui_version") \
+        or ctx.comfyui_version
+    if comfyui_version:
+        ctx.log(f"ComfyUI version (server-reported): {comfyui_version}")
+
     return ctx.with_updates(
         server=server,
         api=api,
         registered_nodes=registered_nodes,
+        comfyui_version=comfyui_version,
     )

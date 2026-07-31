@@ -51,6 +51,10 @@ class LevelContext:
     api: Optional["ComfyUIAPI"] = None
     registered_nodes: tuple[str, ...] = ()
     cuda_packages: tuple[str, ...] = ()
+    # ComfyUI version actually under test. Set from the cloned/extracted tree's
+    # pyproject.toml at INSTALL, refined from the live server's /system_stats at
+    # REGISTRATION. Written into results.json for provenance.
+    comfyui_version: Optional[str] = None
     env_vars: Optional[dict[str, str]] = None
 
     def with_updates(self, **kwargs) -> "LevelContext":

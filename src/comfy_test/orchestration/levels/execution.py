@@ -312,6 +312,7 @@ def run(ctx: LevelContext) -> LevelContext:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "platform": ctx.platform_name,
         "hardware": hardware,
+        "comfyui_version": ctx.comfyui_version,
         "commit_hash": commit_hash,
         # GHA run that produced this result. Dashboard's Goto-mode reads it
         # to deep-link cells back to the run. Set by dispatch-test.yml's

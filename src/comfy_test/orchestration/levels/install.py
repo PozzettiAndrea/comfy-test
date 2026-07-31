@@ -95,12 +95,30 @@ def run(ctx: LevelContext) -> LevelContext:
     if ctx.vram_debug:
         _install_vram_debug(ctx, paths)
 
+    # Provenance: ComfyUI version from the cloned/extracted tree's pyproject
+    # (REGISTRATION refines this from the live server's /system_stats).
+    comfyui_version = _read_comfyui_version(paths.comfyui_dir)
+    if comfyui_version:
+        ctx.log(f"ComfyUI under test: {comfyui_version}")
+
     return ctx.with_updates(
         platform=platform,
         paths=paths,
         cuda_packages=tuple(cuda_packages),
         env_vars=env_vars,
+        comfyui_version=comfyui_version,
     )
+
+
+def _read_comfyui_version(comfyui_dir: Path) -> str | None:
+    """Version from ComfyUI's pyproject.toml (works for git clones and the
+    portable bundle, which ships the source tree without .git)."""
+    try:
+        import tomllib
+        with open(comfyui_dir / "pyproject.toml", "rb") as f:
+            return tomllib.load(f).get("project", {}).get("version") or None
+    except Exception:
+        return None
 
 
 def _setup_full(

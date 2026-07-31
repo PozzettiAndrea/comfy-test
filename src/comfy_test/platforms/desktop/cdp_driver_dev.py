@@ -1682,12 +1682,21 @@ def _hardware_info():
         pass
     return info
 
+def _comfyui_version():
+    """ComfyUI core version from the app's own server (/system_stats). None on failure."""
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=5) as r:
+            return (json.loads(r.read()).get('system') or {}).get('comfyui_version')
+    except Exception:
+        return None
+
 _passed = sum(1 for w in _workflow_results if w.get("status") == "pass")
 _failed = sum(1 for w in _workflow_results if w.get("status") == "fail")
 _results_data = {
     "timestamp":   _dt.now(_tz.utc).isoformat(),
     "platform":    os.environ.get("COMFY_TEST_DESKTOP_PLATFORM", "unknown_desktop"),
     "hardware":    _hardware_info(),
+    "comfyui_version": _comfyui_version(),
     "commit_hash": os.environ.get("COMFY_TEST_NODE_SHA") or None,
     # GHA run URL for Goto-mode in the dashboard. Set by dispatch-test.yml's
     # job-level env (github.* expansion).

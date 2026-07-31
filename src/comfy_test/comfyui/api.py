@@ -47,6 +47,20 @@ class ComfyUIAPI:
         except requests.RequestException:
             return False
 
+    def get_system_stats(self) -> Dict[str, Any]:
+        """Fetch /system_stats (ComfyUI version, python/torch versions, devices).
+
+        Returns {} on any failure -- provenance capture must never fail a test.
+        """
+        try:
+            response = self.session.get(
+                f"{self.base_url}/system_stats", timeout=self.timeout)
+            if response.status_code == 200:
+                return response.json()
+        except (requests.RequestException, ValueError):
+            pass
+        return {}
+
     def get_object_info(self) -> Dict[str, Any]:
         """Get information about all registered nodes.
 
