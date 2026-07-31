@@ -8,7 +8,7 @@ Config file: comfy-test.toml
 Example:
     [test]
     name = "ComfyUI-MyNode"
-    levels = ["syntax", "install", "registration", "instantiation", "static_capture", "execution"]
+    levels = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"]  # the default; or "all"
 
     [test.workflows]
     timeout = 120
@@ -35,7 +35,10 @@ else:
     except ImportError:
         tomllib = None  # type: ignore
 
-from .config import TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig
+from .config import (
+    TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig,
+    ALL_LEVELS, DEFAULT_LEVELS,
+)
 from .errors import ConfigError
 from ..platforms.registry import resolve as _resolve_platform, allowed_tokens
 
@@ -144,7 +147,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         comfyui_version = "latest"
         python_version = "3.10"
         timeout = 300
-        levels = ["syntax", "install", "registration", "instantiation", "execution"]
+        levels = ["syntax", "install", "execution"]  # any subset, or "all"
         # Extra PyPI indexes (added as --extra-index-url, alongside PyTorch + pypi.org)
         extra_pip_indices = ["https://pypi.example.com/simple"]
 
@@ -194,12 +197,16 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     python_version = test_section.get("python_version")  # None = random selection
     timeout = 600  # Fixed timeout for setup operations
 
-    # Parse levels - default to all levels, supports "all" or list.
-    # Accept hyphens as well as underscores (e.g. "execution-light" -> "execution_light").
-    levels_raw = test_section.get("levels", ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution"])
-    if levels_raw == "all":
-        levels_raw = ["syntax", "install", "registration", "instantiation", "static_capture", "validation", "execution_light", "execution"]
-    levels = [TestLevel(l.replace("-", "_")) for l in levels_raw]
+    # Parse levels. Default + "all" derive from the single source of truth
+    # (config.DEFAULT_LEVELS / ALL_LEVELS) so they can't drift; an explicit list
+    # is taken as-is, accepting hyphens or underscores ("execution-light").
+    levels_raw = test_section.get("levels")
+    if levels_raw is None:
+        levels = list(DEFAULT_LEVELS)
+    elif levels_raw == "all":
+        levels = list(ALL_LEVELS)
+    else:
+        levels = [TestLevel(l.replace("-", "_")) for l in levels_raw]
 
     # Platforms are an explicit opt-in allowlist, validated against the platform
     # registry (comfy_test.platforms). Tokens are platform ids or aliases, e.g.:

@@ -142,9 +142,27 @@ class TestLevel(str, Enum):
             for dep in cls.get_dependencies(level):
                 all_levels.add(dep)
 
-        # Return in execution order
-        order = [cls.SYNTAX, cls.COVERAGE, cls.INSTALL, cls.REGISTRATION, cls.INSTANTIATION, cls.STATIC_CAPTURE, cls.VALIDATION, cls.EXECUTION_LIGHT, cls.EXECUTION]
-        return [l for l in order if l in all_levels]
+        # Return in execution order (the enum is declared in that order).
+        return [l for l in cls if l in all_levels]
+
+
+# Canonical level sets — the single source of truth. Nothing else may hand-copy
+# a level list; derive from these (or from TestLevel directly).
+ALL_LEVELS = list(TestLevel)  # every level, in execution order (== enum order)
+
+# Default when a node's comfy-test.toml omits `levels`. Deliberately excludes:
+#   - coverage: opt-in — it RAISES if a registered node isn't used by any
+#     workflow, so it can't be a silent default (would fail existing nodes).
+#   - execution_light: redundant with execution (same run, minus per-frame video).
+DEFAULT_LEVELS = [
+    TestLevel.SYNTAX,
+    TestLevel.INSTALL,
+    TestLevel.REGISTRATION,
+    TestLevel.INSTANTIATION,
+    TestLevel.STATIC_CAPTURE,
+    TestLevel.VALIDATION,
+    TestLevel.EXECUTION,
+]
 
 
 @dataclass
