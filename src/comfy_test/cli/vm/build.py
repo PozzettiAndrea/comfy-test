@@ -126,7 +126,7 @@ _GUEST_CHECKLIST = """\
  10. From the HOST, snapshot the clean state:
        comfy-test vm snapshot --name clean-baseline
 
- 11. dispatch-test.yml's windows-desktop-gpu job calls
+ 11. dispatch-test.yml's windows-desktop-cuda job calls
        comfy-test vm restore --snapshot clean-baseline
      before each run. Per-test isolation done.
 

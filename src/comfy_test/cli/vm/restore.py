@@ -1,7 +1,7 @@
 """`comfy-test vm restore` -- revert the baseline VM to its clean snapshot.
 
 This is the per-test-run command that gives us "fresh state" isolation.
-Used by dispatch-test.yml's windows-desktop-gpu job as the first step:
+Used by dispatch-test.yml's windows-desktop-cuda job as the first step:
     comfy-test vm restore && comfy-test vm start
 """
 

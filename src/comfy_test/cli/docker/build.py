@@ -1,7 +1,7 @@
 """`comfy-test docker build` -- build the comfy-test GPU image.
 
 OS-agnostic Python orchestrator. Replaces the platform-specific
-`docker/{linux,windows}-gpu/build.{sh,ps1}` shell scripts.
+`_docker/{linux,windows}-cuda/build.{sh,ps1}` shell scripts.
 
 Linux flow:
     Stage Dockerfile + entrypoint.sh into a tempdir, run `docker build`,
@@ -509,7 +509,7 @@ def add_docker_build_parser(subparsers):
         help="Build the comfy-test GPU image (auto-detects Linux vs Windows host)",
     )
     p.add_argument("--tag", default=None,
-                   help="Image tag (default: comfy-test-{linux,windows}-gpu:full)")
+                   help="Image tag (default: comfy-test-{linux,windows}-cuda:full)")
     p.add_argument("-y", "--force", action="store_true",
                    help="Overwrite existing image without prompting")
     p.add_argument("--no-smoke", action="store_true",
