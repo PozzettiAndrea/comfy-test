@@ -65,6 +65,30 @@ def cmd_run(args) -> int:
         print("[comfy-test] --desktop and --desktop-dev are mutually exclusive",
               file=sys.stderr)
         return 1
+    if (getattr(args, "desktop", False) or getattr(args, "desktop_dev", False)) \
+            and not getattr(args, "nodelink", None):
+        # Desktop modes install from GitHub via the app's Manager, so the
+        # runner must know the repo (the runners crash on nodelink=None).
+        # Bare invocation is the cwd flow for server modes; here, derive
+        # owner/repo from the cwd's origin remote instead.
+        import re
+        import subprocess as _sp
+        try:
+            _origin = _sp.run(["git", "remote", "get-url", "origin"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            _origin = ""
+        if _origin.startswith("git@github.com:"):
+            _origin = "https://github.com/" + _origin.split(":", 1)[1]
+        _origin = re.sub(r"https://[^@/]+@", "https://", _origin)  # strip embedded creds
+        _origin = _origin.removesuffix(".git")
+        if "github.com" not in _origin:
+            print("[comfy-test] desktop mode installs from GitHub -- pass a repo "
+                  "(comfy-test run <owner/repo> --desktop) or run from a clone "
+                  "with a GitHub 'origin' remote.", file=sys.stderr)
+            return 1
+        print(f"[comfy-test] desktop: using repo from cwd origin: {_origin}")
+        args.nodelink = _origin
     if getattr(args, "desktop", False):
         if host not in ("darwin", "win32"):
             print("[comfy-test] --desktop is only valid on macOS or Windows", file=sys.stderr)
