@@ -314,16 +314,7 @@ class ComfyUIServer:
         Returns:
             List of error messages (empty if no errors)
         """
-        errors = []
-        for line in self._output_lines:
-            # ComfyUI logs import errors like:
-            # "Cannot import <module_path> module for custom nodes: <error>"
-            if "Cannot import" in line and "module for custom nodes" in line:
-                errors.append(line)
-            # Also catch general import errors in traceback
-            elif "IMPORT FAILED" in line:
-                errors.append(line)
-        return errors
+        return scan_import_errors(self._output_lines)
 
     def __enter__(self) -> "ComfyUIServer":
         self.start()
@@ -331,3 +322,90 @@ class ComfyUIServer:
 
     def __exit__(self, *args) -> None:
         self.stop()
+
+
+def scan_import_errors(lines) -> List[str]:
+    """Scan server-output lines for custom-node import failures.
+
+    Shared by ComfyUIServer (in-memory output) and AttachedServer (log file).
+    """
+    errors = []
+    for line in lines:
+        # ComfyUI logs import errors like:
+        # "Cannot import <module_path> module for custom nodes: <error>"
+        if "Cannot import" in line and "module for custom nodes" in line:
+            errors.append(line)
+        elif "IMPORT FAILED" in line:
+            errors.append(line)
+    return errors
+
+
+class AttachedServer:
+    """Wrap an externally-managed ComfyUI server (CI boots it; we attach).
+
+    The per-platform CI workflows build the env, boot `main.py`, then invoke
+    `comfy-test run --server-url http://127.0.0.1:8188 ...`. This duck-types
+    the slice of ComfyUIServer the levels use — `base_url`, `pid`, `get_api`,
+    log listeners, `get_import_errors`, `stop` — against that external server.
+    Startup output is read from `log_file` (the workflow's server.log), and a
+    tail thread feeds new lines to listeners during workflow execution.
+    `stop()` only stops the tail thread; the external server is CI's to kill.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        log_file: Optional[Path] = None,
+        log_callback: Optional[Callable[[str], None]] = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.pid = None  # external process; resource monitors treat None as "skip"
+        self._log = log_callback or (lambda msg: print(msg))
+        self._log_file = Path(log_file) if log_file else None
+        self._listeners: List[Callable[[str], None]] = []
+        self._output_lines: List[str] = []
+        self._tail_pos = 0
+        self._stop_tail = False
+        self._tail_thread: Optional[threading.Thread] = None
+        if self._log_file and self._log_file.exists():
+            text = self._log_file.read_text(encoding="utf-8", errors="replace")
+            self._output_lines = text.splitlines()
+            self._tail_pos = len(text)
+            self._tail_thread = threading.Thread(target=self._tail, daemon=True)
+            self._tail_thread.start()
+
+    def _tail(self) -> None:
+        while not self._stop_tail:
+            try:
+                with open(self._log_file, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(self._tail_pos)
+                    chunk = f.read()
+                    self._tail_pos = f.tell()
+                for line in chunk.splitlines():
+                    self._output_lines.append(line)
+                    for cb in list(self._listeners):
+                        try:
+                            cb(line)
+                        except Exception:
+                            pass
+            except OSError:
+                pass
+            time.sleep(0.5)
+
+    def add_log_listener(self, callback: Callable[[str], None]) -> None:
+        self._listeners.append(callback)
+
+    def remove_log_listener(self, callback: Callable[[str], None]) -> None:
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
+    def get_api(self) -> ComfyUIAPI:
+        return ComfyUIAPI(self.base_url)
+
+    def get_import_errors(self) -> List[str]:
+        return scan_import_errors(self._output_lines)
+
+    def stop(self) -> None:
+        self._stop_tail = True
+        if self._tail_thread:
+            self._tail_thread.join(timeout=2)

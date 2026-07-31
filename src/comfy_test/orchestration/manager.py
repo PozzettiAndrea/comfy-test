@@ -179,6 +179,7 @@ class TestManager:
         work_dir: Optional[Path] = None,
         novram: bool = False,
         vram_debug: bool = False,
+        server_url: Optional[str] = None,
     ) -> TestResult:
         """Run tests on a specific platform.
 
@@ -272,6 +273,7 @@ class TestManager:
             workflow_filter=workflow_filter,
             novram=novram,
             vram_debug=vram_debug,
+            server_url=server_url,
         )
 
         try:

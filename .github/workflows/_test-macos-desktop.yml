@@ -90,10 +90,11 @@ jobs:
           OUT="$DEBUG_ROOT/electron_inspect"
           mkdir -p "$OUT/frames"
 
-          # Driver script lives at .github/workflows/scripts/cdp_driver.py in the comfy-test repo. We fetch it from main rather than embedding inline because the heredoc exceeded GitHub's 21000-char per-expression limit.
-
-
-          curl -L -o /tmp/cdp_driver.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/.github/workflows/scripts/cdp_driver.py
+          # The CDP driver ships inside the comfy-test package
+          # (comfy_test/platforms/desktop/) — copy it from the installed wheel
+          # so the driver always matches the package version, never main.
+          pip3 install --quiet comfy-test
+          python3 -c "import shutil,pathlib,comfy_test.platforms.desktop as d; shutil.copy(pathlib.Path(d.__file__).parent/'cdp_driver.py','/tmp/cdp_driver.py')"
 
           # Launch the .app with CDP enabled. `open --args` forwards flags to argv.
           open "${{ github.workspace }}/ComfyUI.app" --args --remote-debugging-port=9222
@@ -248,7 +249,7 @@ jobs:
           # Merge chronologically — html_report serves logs/<name>.log
           # under each workflow card, so logs/system.log shows up under
           # the 'system' card on the per-platform page.
-          curl -L -o /tmp/merge_logs.py https://raw.githubusercontent.com/PozzettiAndrea/comfy-test/main/.github/workflows/scripts/merge_logs.py
+          python3 -c "import shutil,pathlib,comfy_test.platforms.desktop as d; shutil.copy(pathlib.Path(d.__file__).parent/'merge_logs.py','/tmp/merge_logs.py')"
           python3 /tmp/merge_logs.py "$DEST" || true
           echo "--- collected ---"
           ls -la "$DEST" || true

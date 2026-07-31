@@ -142,9 +142,13 @@ def cmd_run(args) -> int:
 
     print(f"[comfy-test] Testing: {node_dir.name}")
 
+    attach_mode = bool(getattr(args, "server_url", None))
+
     try:
-        # Check if paths are configured
-        if not are_paths_configured():
+        # Check if paths are configured. Attach mode needs no workspace (the
+        # CI workflow prebuilt the env), so never run the interactive wizard
+        # there -- stdin is not a TTY in CI and input() would crash.
+        if not attach_mode and not are_paths_configured():
             run_setup_wizard()
 
         # Load config
@@ -153,20 +157,25 @@ def cmd_run(args) -> int:
         else:
             config = discover_config()
 
-        # Create workspace directory
-        workspaces_dir = get_workspace_dir()
-        workspaces_dir.mkdir(exist_ok=True)
-
         timestamp = datetime.now().strftime("%H%M")
         short_name = node_dir.name.removeprefix("ComfyUI-")
-        work_dir = workspaces_dir / f"{short_name}-{timestamp}"
-        if work_dir.exists():
-            if not args.force:
-                print(f"Workspace already exists: {work_dir}", file=sys.stderr)
-                print("Use --force to overwrite.", file=sys.stderr)
-                return 1
-            shutil.rmtree(work_dir)
-        work_dir.mkdir()
+
+        if attach_mode:
+            # No workspace: nothing is built. Scratch space only.
+            work_dir = Path(tempfile.mkdtemp(prefix=f"comfy-test-attach-{short_name}-"))
+        else:
+            # Create workspace directory
+            workspaces_dir = get_workspace_dir()
+            workspaces_dir.mkdir(exist_ok=True)
+
+            work_dir = workspaces_dir / f"{short_name}-{timestamp}"
+            if work_dir.exists():
+                if not args.force:
+                    print(f"Workspace already exists: {work_dir}", file=sys.stderr)
+                    print("Use --force to overwrite.", file=sys.stderr)
+                    return 1
+                shutil.rmtree(work_dir)
+            work_dir.mkdir()
 
         print(f"[comfy-test] Workspace: {work_dir}")
 
@@ -227,6 +236,7 @@ def cmd_run(args) -> int:
             work_dir=work_dir,
             novram=novram,
             vram_debug=vram_debug,
+            server_url=getattr(args, "server_url", None),
         )]
 
         # Copy per-platform server.log into output_dir so it ships with the
@@ -339,6 +349,12 @@ def add_run_parser(subparsers):
         "--cuda",
         action="store_true",
         help="Enable CUDA mode (uses real CUDA instead of mocking)",
+    )
+    run_parser.add_argument(
+        "--server-url",
+        help="Attach to an externally-managed ComfyUI server (CI boots it) "
+             "instead of building an env + starting one. Run from the node's "
+             "directory inside <ComfyUI>/custom_nodes/.",
     )
     run_parser.add_argument(
         "--portable",

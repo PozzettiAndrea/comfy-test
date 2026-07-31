@@ -41,6 +41,10 @@ class LevelContext:
     # Optional overrides
     work_dir: Optional[Path] = None  # Custom work directory (default: temp)
     workflow_filter: Optional[str] = None  # Run only this workflow
+    # Attach mode: URL of an externally-managed ComfyUI server (CI boots it).
+    # When set, INSTALL derives paths instead of building, and REGISTRATION
+    # attaches instead of starting a server.
+    server_url: Optional[str] = None
     novram: bool = False  # Pass --novram to ComfyUI
     vram_debug: bool = False  # Enable VRAM debug logging
 

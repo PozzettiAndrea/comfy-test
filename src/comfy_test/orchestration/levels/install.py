@@ -48,23 +48,40 @@ def run(ctx: LevelContext) -> LevelContext:
     ctx.log(f"\n[DEBUG] server={ctx.server}, api={ctx.api}")
     platform = get_platform(ctx.platform_name, ctx.log)
 
-    # Determine work directory
-    if ctx.work_dir:
-        work_path = ctx.work_dir
-        work_path.mkdir(parents=True, exist_ok=True)
+    if ctx.server_url:
+        # Attach mode: CI prebuilt everything (venv, ComfyUI clone, node copy,
+        # deps, validate-endpoint) and runs us from the node's directory inside
+        # custom_nodes/. Derive paths from that layout instead of building.
+        import sys
+        node_dir = Path(ctx.node_dir).resolve()
+        custom_nodes_dir = node_dir.parent
+        comfyui_dir = custom_nodes_dir.parent
+        paths = TestPaths(
+            work_dir=comfyui_dir.parent,
+            comfyui_dir=comfyui_dir,
+            python=Path(sys.executable),
+            custom_nodes_dir=custom_nodes_dir,
+        )
+        ctx.log(f"Attach mode: using prebuilt env at {comfyui_dir} "
+                f"(server: {ctx.server_url})")
     else:
-        # Create temporary directory - caller is responsible for cleanup
-        work_path = Path(tempfile.mkdtemp(prefix="comfy_test_"))
+        # Determine work directory
+        if ctx.work_dir:
+            work_path = ctx.work_dir
+            work_path.mkdir(parents=True, exist_ok=True)
+        else:
+            # Create temporary directory - caller is responsible for cleanup
+            work_path = Path(tempfile.mkdtemp(prefix="comfy_test_"))
 
-    paths = _setup_full(ctx, platform, work_path)
+        paths = _setup_full(ctx, platform, work_path)
 
-    # Install validation endpoint (always needed for VALIDATION level)
-    ctx.log("Installing validation endpoint...")
-    platform.install_node_from_repo(
-        paths,
-        "PozzettiAndrea/ComfyUI-validate-endpoint",
-        "ComfyUI-validate-endpoint"
-    )
+        # Install validation endpoint (always needed for VALIDATION level)
+        ctx.log("Installing validation endpoint...")
+        platform.install_node_from_repo(
+            paths,
+            "PozzettiAndrea/ComfyUI-validate-endpoint",
+            "ComfyUI-validate-endpoint"
+        )
 
     # Get CUDA packages from comfy-env.toml. Whether we mock them depends on
     # whether the per-node pixi env actually has them installed -- not on the
