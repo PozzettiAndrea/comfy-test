@@ -208,6 +208,12 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     else:
         levels = [TestLevel(l.replace("-", "_")) for l in levels_raw]
 
+    # A configured custom hook ([test] custom = "...") auto-enables the CUSTOM
+    # level (runs last), so setting the hook is enough -- no need to also list it.
+    custom_hook = test_section.get("custom")
+    if custom_hook and TestLevel.CUSTOM not in levels:
+        levels.append(TestLevel.CUSTOM)
+
     # Platforms are an explicit opt-in allowlist, validated against the platform
     # registry (comfy_test.platforms). Tokens are platform ids or aliases, e.g.:
     #   [test.platforms] platforms = ["linux-cpu", "windows-cuda", "macos-desktop"]
@@ -301,6 +307,8 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
                     'e.g. extra_pip_indices = ["https://pypi.example.com/simple"]',
                 )
             kwargs["extra_pip_indices"] = indices
+        if custom_hook:
+            kwargs["custom"] = custom_hook
 
         return TestConfig(**kwargs)
     except ValueError as e:

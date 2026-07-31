@@ -12,6 +12,7 @@ from .static_capture import run as run_static_capture
 from .validation import run as run_validation
 from .execution_light import run as run_execution_light
 from .execution import run as run_execution
+from .custom import run as run_custom
 
 __all__ = [
     "run_syntax",
@@ -23,4 +24,5 @@ __all__ = [
     "run_validation",
     "run_execution_light",
     "run_execution",
+    "run_custom",
 ]

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional, Callable, List
 
-from ..common.config import TestConfig, TestLevel
+from ..common.config import TestConfig, TestLevel, ALL_LEVELS
 from ..common.errors import TestError
 from .context import LevelContext
 from .results import TestResult
@@ -21,6 +21,7 @@ from .levels import (
     run_validation,
     run_execution_light,
     run_execution,
+    run_custom,
 )
 
 
@@ -35,20 +36,10 @@ LEVEL_RUNNERS = {
     TestLevel.VALIDATION: run_validation,
     TestLevel.EXECUTION_LIGHT: run_execution_light,
     TestLevel.EXECUTION: run_execution,
+    TestLevel.CUSTOM: run_custom,
 }
 
-# All levels in execution order
-ALL_LEVELS = [
-    TestLevel.SYNTAX,
-    TestLevel.COVERAGE,
-    TestLevel.INSTALL,
-    TestLevel.REGISTRATION,
-    TestLevel.INSTANTIATION,
-    TestLevel.STATIC_CAPTURE,
-    TestLevel.VALIDATION,
-    TestLevel.EXECUTION_LIGHT,
-    TestLevel.EXECUTION,
-]
+# Execution order is the single-sourced ALL_LEVELS (== list(TestLevel)).
 
 
 class TestManager:

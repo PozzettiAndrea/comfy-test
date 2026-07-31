@@ -106,6 +106,7 @@ class TestLevel(str, Enum):
     VALIDATION = "validation"
     EXECUTION_LIGHT = "execution_light"
     EXECUTION = "execution"
+    CUSTOM = "custom"  # node-supplied hook ([test] custom = "..."); runs last
 
     @classmethod
     def get_dependencies(cls, level: "TestLevel") -> List["TestLevel"]:
@@ -124,6 +125,8 @@ class TestLevel(str, Enum):
             cls.VALIDATION: [cls.INSTALL],
             cls.EXECUTION_LIGHT: [cls.INSTALL],
             cls.EXECUTION: [cls.INSTALL],
+            # Custom hook needs a live server + api, so it pulls in registration.
+            cls.CUSTOM: [cls.INSTALL, cls.REGISTRATION],
         }
         return deps.get(level, [])
 
@@ -274,6 +277,9 @@ class TestConfig:
     # Extra PyPI indexes passed to uv/pip as --extra-index-url (in addition to the
     # built-in PyTorch wheel index + pypi.org). For private mirrors / Artifactory.
     extra_pip_indices: List[str] = field(default_factory=list)
+    # Path (relative to the node repo) to a custom test hook: a Python file
+    # exposing run(ctx) or check(ctx). Runs as the CUSTOM level (last). None = none.
+    custom: Optional[str] = None
     timeout: int = 600
     res: int = 1080  # Viewport height (width = height * 16/9)
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
