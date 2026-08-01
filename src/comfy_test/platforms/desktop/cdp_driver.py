@@ -192,45 +192,74 @@ def fill_with_cursor(page, sel, text):
 # isolation (no state-bleed between workflows).
 # ============================================================================
 
+# App-name candidates for the Electron bundle / productName. The Desktop
+# app was renamed from 'ComfyUI' to 'Comfy Desktop'; keep both so a rename
+# either way doesn't break the driver. Order: newest first.
+_APP_NAMES = ('Comfy Desktop', 'ComfyUI')
+
+
 def _kill_comfy_proc():
     try:
         if sys.platform == 'win32':
-            subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
-                           capture_output=True, timeout=10)
+            for exe in ('ComfyUI.exe', 'Comfy Desktop.exe'):
+                subprocess.run(['taskkill', '/F', '/IM', exe],
+                               capture_output=True, timeout=10)
         else:
-            subprocess.run(['pkill', '-f', 'ComfyUI'],
+            # pkill -f BSD alternation: match either name in one call.
+            subprocess.run(['pkill', '-f', 'Comfy Desktop|ComfyUI'],
                            capture_output=True, timeout=10)
     except Exception as e:
         log(f'  loop: kill error (ignored): {e}')
 
 
-def _devtools_active_port_path():
-    """Electron writes the chosen --remote-debugging-port to this file in
-    its userData dir. Format:
-        <port>
-        /devtools/browser/<guid>
-    For ComfyUI Desktop, userData is %APPDATA%\\ComfyUI on Windows and
-    ~/Library/Application Support/ComfyUI on macOS. Resolve robustly so
-    SYSTEM-context APPDATA inherited from agent harnesses doesn't trip us."""
+def _devtools_active_port_candidates():
+    """All plausible <userData>/DevToolsActivePort locations across app-name
+    variants (ComfyUI vs Comfy Desktop) and env-var contexts."""
+    out = []
     if sys.platform == 'win32':
+        roots = []
         appdata = os.environ.get('APPDATA', '')
         if appdata and 'systemprofile' not in appdata.lower():
-            return Path(appdata) / 'ComfyUI' / 'DevToolsActivePort'
+            roots.append(Path(appdata))
         up = os.environ.get('USERPROFILE', '')
         if up and 'systemprofile' not in up.lower():
-            return Path(up) / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+            roots.append(Path(up) / 'AppData' / 'Roaming')
         username = os.environ.get('USERNAME', '')
         if username and username.upper() != 'SYSTEM':
-            return Path('C:/Users') / username / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+            roots.append(Path('C:/Users') / username / 'AppData' / 'Roaming')
         from glob import glob as _glob
-        for p in _glob(r'C:\Users\*\AppData\Roaming\ComfyUI'):
-            if 'systemprofile' in p.lower():
-                continue
-            return Path(p) / 'DevToolsActivePort'
-        return Path.home() / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
-    if sys.platform == 'darwin':
-        return Path.home() / 'Library' / 'Application Support' / 'ComfyUI' / 'DevToolsActivePort'
-    return Path.home() / '.config' / 'ComfyUI' / 'DevToolsActivePort'
+        for name in _APP_NAMES:
+            for p in _glob(rf'C:\Users\*\AppData\Roaming\{name}'):
+                if 'systemprofile' not in p.lower():
+                    roots.append(Path(p).parent)
+        if not roots:
+            roots.append(Path.home() / 'AppData' / 'Roaming')
+        for root in roots:
+            for name in _APP_NAMES:
+                out.append(root / name / 'DevToolsActivePort')
+    elif sys.platform == 'darwin':
+        for name in _APP_NAMES:
+            out.append(Path.home() / 'Library' / 'Application Support' /
+                       name / 'DevToolsActivePort')
+    else:
+        for name in _APP_NAMES:
+            out.append(Path.home() / '.config' / name / 'DevToolsActivePort')
+    # Dedupe preserving order.
+    seen = set()
+    deduped = []
+    for p in out:
+        k = str(p).lower()
+        if k not in seen:
+            seen.add(k)
+            deduped.append(p)
+    return deduped
+
+
+def _devtools_active_port_path():
+    """Preferred (newest) DevToolsActivePort location. Used as the
+    pre-launch cleanup write target; readers should iterate the full
+    candidate list from _devtools_active_port_candidates()."""
+    return _devtools_active_port_candidates()[0]
 
 
 def _launch_comfy_random_port():
@@ -240,39 +269,64 @@ def _launch_comfy_random_port():
     Playwright, Selenium, chromedp) -- sidesteps the Windows orphan-LISTEN
     socket problem entirely because each launch picks a fresh port the
     kernel guarantees is unbound. Returns the chosen port (int) or None."""
-    devtools_file = _devtools_active_port_path()
-    # Clear stale file from prior instance so we don't read its old port.
-    try:
-        devtools_file.unlink()
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        log(f'  loop: DevToolsActivePort cleanup err (ignored): {e}')
+    # Clear stale file under every candidate app-name userData dir so we
+    # don't read an old port from either.
+    devtools_candidates = _devtools_active_port_candidates()
+    for devtools_file in devtools_candidates:
+        try:
+            devtools_file.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log(f'  loop: DevToolsActivePort cleanup err (ignored): {e}')
 
     if sys.platform == 'win32':
-        app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE') or os.path.join(
-            os.environ.get('LOCALAPPDATA', ''), 'Programs', 'ComfyUI', 'ComfyUI.exe')
+        app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE')
+        if not app_exe:
+            # Try both new and legacy install paths.
+            localappdata = os.environ.get('LOCALAPPDATA', '')
+            for name, exe in (('Comfy Desktop', 'Comfy Desktop.exe'),
+                              ('ComfyUI', 'ComfyUI.exe')):
+                candidate = os.path.join(localappdata, 'Programs', name, exe)
+                if os.path.exists(candidate):
+                    app_exe = candidate
+                    break
+            if not app_exe:
+                app_exe = os.path.join(localappdata, 'Programs', 'ComfyUI', 'ComfyUI.exe')
         subprocess.Popen([app_exe, '--remote-debugging-port=0'],
                          stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL,
                          creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
     else:
-        app_path = os.environ.get('COMFY_DESKTOP_APP_PATH') or os.path.join(
-            os.environ.get('GITHUB_WORKSPACE', ''), 'ComfyUI.app')
+        app_path = os.environ.get('COMFY_DESKTOP_APP_PATH')
+        if not app_path:
+            workspace = os.environ.get('GITHUB_WORKSPACE', '')
+            for candidate_name in ('Comfy Desktop.app', 'ComfyUI.app'):
+                candidate = os.path.join(workspace, candidate_name)
+                if os.path.exists(candidate):
+                    app_path = candidate
+                    break
+            if not app_path:
+                app_path = os.path.join(workspace, 'Comfy Desktop.app')
         subprocess.Popen(['open', app_path, '--args', '--remote-debugging-port=0'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    log(f'  loop: waiting for DevToolsActivePort at {devtools_file}')
+    log(f'  loop: waiting for DevToolsActivePort at any of: '
+        f'{[str(p) for p in devtools_candidates]}')
     for i in range(240):
-        if devtools_file.exists():
+        for devtools_file in devtools_candidates:
+            if not devtools_file.exists():
+                continue
             try:
                 content = devtools_file.read_text(encoding='utf-8').strip()
-                if content:
-                    port = int(content.splitlines()[0])
-                    log(f'  loop: DevToolsActivePort -> {port} after {i+1}s')
-                    return port
+                if not content:
+                    continue
+                port = int(content.splitlines()[0])
+                log(f'  loop: DevToolsActivePort resolved to {devtools_file} '
+                    f'-> {port} after {i+1}s')
+                return port
             except Exception as e:
-                log(f'  loop: DevToolsActivePort parse err: {e}')
+                log(f'  loop: DevToolsActivePort parse err at {devtools_file}: {e}')
         time.sleep(1)
     log(f'  loop: DevToolsActivePort never appeared after 240s')
     return None
@@ -1181,10 +1235,11 @@ with sync_playwright() as p:
             except Exception: pass
             try:
                 if IS_WIN:
-                    subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
-                                   capture_output=True, timeout=10)
+                    for exe in ('ComfyUI.exe', 'Comfy Desktop.exe'):
+                        subprocess.run(['taskkill', '/F', '/IM', exe],
+                                       capture_output=True, timeout=10)
                 else:
-                    subprocess.run(['pkill', '-f', 'ComfyUI'],
+                    subprocess.run(['pkill', '-f', 'Comfy Desktop|ComfyUI'],
                                    capture_output=True, timeout=10)
             except Exception as e:
                 log(f'  app: kill error: {e}')
@@ -1200,16 +1255,33 @@ with sync_playwright() as p:
         # the bash launch -- uv's progress dumps tons of noise.
         if IS_WIN:
             # COMFY_DESKTOP_APP_EXE lets _desktop_runner.py point us at its
-            # cached ComfyUI.exe; CI uses the NSIS-installed path.
-            app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE') or os.path.join(
-                os.environ['LOCALAPPDATA'], 'Programs', 'ComfyUI', 'ComfyUI.exe')
+            # cached exe; CI uses the NSIS-installed path.
+            app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE')
+            if not app_exe:
+                localappdata = os.environ.get('LOCALAPPDATA', '')
+                for name, exe in (('Comfy Desktop', 'Comfy Desktop.exe'),
+                                  ('ComfyUI', 'ComfyUI.exe')):
+                    candidate = os.path.join(localappdata, 'Programs', name, exe)
+                    if os.path.exists(candidate):
+                        app_exe = candidate
+                        break
+                if not app_exe:
+                    app_exe = os.path.join(localappdata, 'Programs', 'ComfyUI', 'ComfyUI.exe')
             subprocess.Popen([app_exe, f'--remote-debugging-port={_CDP_PORT}'],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL,
                              creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
         else:
-            app_path = os.environ.get('COMFY_DESKTOP_APP_PATH') or os.path.join(
-                os.environ.get('GITHUB_WORKSPACE', ''), 'ComfyUI.app')
+            app_path = os.environ.get('COMFY_DESKTOP_APP_PATH')
+            if not app_path:
+                workspace = os.environ.get('GITHUB_WORKSPACE', '')
+                for name in ('Comfy Desktop.app', 'ComfyUI.app'):
+                    candidate = os.path.join(workspace, name)
+                    if os.path.exists(candidate):
+                        app_path = candidate
+                        break
+                if not app_path:
+                    app_path = os.path.join(workspace, 'Comfy Desktop.app')
             subprocess.Popen(['open', app_path, '--args', f'--remote-debugging-port={_CDP_PORT}'],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)

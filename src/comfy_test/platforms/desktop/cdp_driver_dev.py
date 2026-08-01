@@ -1,6 +1,13 @@
-import json, os, subprocess, sys, time, urllib.request
+import json, os, re as _re, subprocess, sys, time, urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+# ComfyUI HTTP port. Discovered lazily inside _walk_first_run_wizard's
+# _discover_comfy_port() from CDP's page list (whichever 127.0.0.1:<port>
+# URL is loaded is the right one). Comfy Desktop 1.0.34 uses 8188; older
+# builds used 8000. All downstream server checks read this instead of
+# hardcoding.
+_COMFY_PORT = None
 
 t0 = time.time()
 import builtins as _b
@@ -124,6 +131,277 @@ try:
 except Exception as e:
     log(f'targets list: {e}')
 
+
+def _prune_blank_targets(cdp_port):
+    """Playwright's connect_over_cdp attaches to every page target and hangs
+    forever on any that never fires Target.attachedToTarget (blank URLs,
+    Electron helper limbo, etc). Close those via the browser CDP endpoint
+    before every connect_over_cdp. Idempotent — safe to call multiple times.
+
+    Only pages with an empty URL are pruned; ComfyUI + normal Electron
+    chrome helpers (Title Bar / Title Popup / System Modal) stay alive.
+    """
+    import websocket as _ws
+    try:
+        pages = json.loads(urllib.request.urlopen(
+            f'http://localhost:{cdp_port}/json/list', timeout=2).read())
+        blanks = [p for p in pages
+                  if p.get('type') == 'page' and not p.get('url')]
+        if not blanks:
+            return
+        ver = json.loads(urllib.request.urlopen(
+            f'http://localhost:{cdp_port}/json/version', timeout=2).read())
+        bws = _ws.create_connection(ver['webSocketDebuggerUrl'],
+                                    timeout=5,
+                                    origin=f'http://localhost:{cdp_port}')
+        try:
+            for i, p in enumerate(blanks, 1):
+                bws.send(json.dumps({
+                    "id": i, "method": "Target.closeTarget",
+                    "params": {"targetId": p['id']},
+                }))
+                while True:
+                    r = json.loads(bws.recv())
+                    if r.get("id") == i:
+                        log(f'  prune: closed blank target {p["id"][:12]}')
+                        break
+        finally:
+            bws.close()
+    except Exception as e:
+        log(f'  prune: skipped (non-fatal): {e}')
+
+
+# ---------------------------------------------------------------------------
+# First-run wizard walker (raw CDP over websocket-client).
+#
+# Why not playwright: as of Comfy Desktop 1.0.34, `p.chromium.connect_over_cdp`
+# hangs at Target attachment forever (180s timeout). Best guess: the setup
+# wizard spawns 6 child pages (panel/titleBar/titlePopup/systemModal + two
+# empty helpers) and playwright can't finish enumerating them via
+# `Target.attachedToTarget`. We DO know that after the wizard has committed
+# the app to normal ComfyUI mode there's a single main page, at which point
+# connect_over_cdp works fine.
+#
+# So: drive the wizard past chooser → configure → workflow → install via
+# raw CDP, then hand off to playwright for the rest of the flow (Manager
+# install, node install, workflow runs).
+#
+# The walker is idempotent: each iteration inspects the current DOM and
+# does whichever action matches. Safe to re-enter mid-way (e.g. if the
+# chooser was already completed by a previous test run).
+# ---------------------------------------------------------------------------
+def _walk_first_run_wizard(cdp_port, timeout=1200):
+    import websocket  # from websocket-client, added to venv by _desktop_runner
+    def _ws_id():
+        _ws_id.n += 1
+        return _ws_id.n
+    _ws_id.n = 0
+
+    def _attach_panel():
+        """Find the panel.html page + open a WS to it. Returns (ws, url)."""
+        pages = json.loads(urllib.request.urlopen(
+            f'http://localhost:{cdp_port}/json/list', timeout=3).read())
+        cand = None
+        for p in pages:
+            if p.get('type') == 'page' and 'panel.html' in p.get('url', ''):
+                cand = p
+                break
+        if not cand:
+            return None, None
+        return (websocket.create_connection(cand['webSocketDebuggerUrl'],
+                                            timeout=10,
+                                            origin=f'http://localhost:{cdp_port}'),
+                cand['url'])
+
+    def _eval(ws, expr):
+        i = _ws_id()
+        ws.send(json.dumps({"id": i, "method": "Runtime.evaluate",
+                            "params": {"expression": expr, "returnByValue": True}}))
+        while True:
+            r = json.loads(ws.recv())
+            if r.get("id") == i:
+                return r.get("result", {}).get("result", {}).get("value")
+
+    def _discover_comfy_port():
+        """Comfy Desktop 1.0.34 serves ComfyUI on :8188; earlier versions
+        used :8000. Pull the port out of the CDP page list — whichever
+        127.0.0.1:<port> URL is currently loaded is the right one. Falls
+        back to trying both known ports if no page URL matches yet."""
+        try:
+            pages = json.loads(urllib.request.urlopen(
+                f'http://localhost:{cdp_port}/json/list', timeout=2).read())
+            for p in pages:
+                u = p.get('url', '')
+                m = _re.search(r'127\.0\.0\.1:(\d+)', u)
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+        for candidate in (8188, 8000):
+            try:
+                urllib.request.urlopen(f'http://127.0.0.1:{candidate}/system_stats',
+                                       timeout=1)
+                return candidate
+            except Exception:
+                pass
+        return None
+
+    def _server_up():
+        global _COMFY_PORT
+        if _COMFY_PORT is None:
+            _COMFY_PORT = _discover_comfy_port()
+        if _COMFY_PORT is None:
+            return False
+        try:
+            urllib.request.urlopen(
+                f'http://127.0.0.1:{_COMFY_PORT}/system_stats', timeout=2)
+            return True
+        except Exception:
+            return False
+
+    # JS payloads run inside the panel.html page context.
+    _JS_CLICK_LOCAL = """
+        (() => { const b=[...document.querySelectorAll('button,[role=button]')]
+            .find(x=>(x.innerText||'').startsWith('Full control'));
+          if(!b) return 'no Local button';
+          b.click(); return 'clicked Local'; })()
+    """
+    _JS_TOGGLE_CBS = r"""
+        (() => { const out=[];
+          for(const cb of document.querySelectorAll('input[type=checkbox]')){
+            let label=''; if(cb.id){const l=document.querySelector('label[for="'+cb.id+'"]'); if(l) label=l.innerText;}
+            if(!label) label=(cb.closest('label')?.innerText)||(cb.parentElement?.innerText)||'';
+            label=label.trim();
+            const wantEULA=/EULA|Terms of Service|agree/i.test(label);
+            const wantTelemOff=/improve Comfy|anonymous usage/i.test(label);
+            if(wantEULA && !cb.checked){cb.click(); out.push('EULA->on');}
+            else if(wantTelemOff && cb.checked){cb.click(); out.push('telem->off');}
+          }
+          return JSON.stringify(out);
+        })()
+    """
+    def _JS_CLICK_BTN(label):
+        # Exact text match, skip disabled buttons.
+        return f"""
+        (() => {{ const b=[...document.querySelectorAll('button,[role=button]')]
+            .find(x=>(x.innerText||'').trim()==={label!r});
+          if(!b) return 'no {label} button';
+          if(b.disabled||b.getAttribute('aria-disabled')==='true') return '{label} disabled';
+          b.click(); return 'clicked {label}'; }})()
+        """
+
+    # Prune logic lives at module scope (_prune_blank_targets) so the same
+    # helper serves every connect_over_cdp callsite; here we just call it.
+    def _prune_stuck_targets():
+        _prune_blank_targets(cdp_port)
+
+    def _dismiss_templates_modal():
+        """After first ComfyUI load, a Templates modal auto-opens. ESC
+        dismisses it. Playwright's own logic handles this later too, but
+        doing it here means the driver starts on a clean canvas."""
+        try:
+            pages = json.loads(urllib.request.urlopen(
+                f'http://localhost:{cdp_port}/json/list', timeout=2).read())
+            comfy = next((p for p in pages
+                          if p.get('type') == 'page'
+                          and '127.0.0.1' in p.get('url', '')), None)
+            if not comfy: return
+            pws = websocket.create_connection(comfy['webSocketDebuggerUrl'],
+                                              timeout=5,
+                                              origin=f'http://localhost:{cdp_port}')
+            try:
+                for evt_type in ('keyDown', 'keyUp'):
+                    i = _ws_id()
+                    pws.send(json.dumps({"id": i, "method": "Input.dispatchKeyEvent",
+                                         "params": {"type": evt_type, "key": "Escape",
+                                                    "code": "Escape",
+                                                    "windowsVirtualKeyCode": 27}}))
+                    while True:
+                        r = json.loads(pws.recv())
+                        if r.get("id") == i: break
+                log('[wizard-raw] sent ESC to close Templates modal')
+            finally:
+                pws.close()
+        except Exception as e:
+            log(f'[wizard-raw] templates-dismiss failed (non-fatal): {e}')
+
+    start = time.time()
+    last_screen = None
+    ws = None
+    log(f'[wizard-raw] start (cdp port {cdp_port})')
+    while time.time() - start < timeout:
+        if _server_up():
+            log(f'[wizard-raw] /system_stats up after {int(time.time()-start)}s')
+            if ws:
+                try: ws.close()
+                except Exception: pass
+            # Give ComfyUI a beat to finish loading + open its Templates
+            # modal, then dismiss it and prune blank-URL targets so
+            # playwright's connect_over_cdp doesn't hang on them.
+            time.sleep(3)
+            _dismiss_templates_modal()
+            _prune_stuck_targets()
+            return True
+        try:
+            if ws is None:
+                ws, url = _attach_panel()
+                if ws is None:
+                    log('[wizard-raw]   no panel.html target yet, retry in 1s')
+                    time.sleep(1)
+                    continue
+                log(f'[wizard-raw] attached to {url}')
+            txt = _eval(ws, 'document.body.innerText') or ''
+            # Screen detection heuristics from actual DOM samples.
+            if 'How do you want to run Comfy' in txt:
+                screen = 'chooser'
+            elif 'Configure Comfy Desktop' in txt:
+                screen = 'configure'
+            elif 'Choose a starter workflow' in txt:
+                screen = 'workflow_chooser'
+            elif ('Downloading ComfyUI' in txt or 'Unpacking the install' in txt
+                  or 'Set up environment' in txt):
+                screen = 'installing'
+            else:
+                screen = 'unknown'
+            if screen != last_screen:
+                log(f'[wizard-raw] screen: {screen}')
+                last_screen = screen
+
+            if screen == 'chooser':
+                log(f'[wizard-raw]   {_eval(ws, _JS_CLICK_LOCAL)}')
+                log(f'[wizard-raw]   cbs: {_eval(ws, _JS_TOGGLE_CBS)}')
+                time.sleep(0.4)
+                log(f'[wizard-raw]   {_eval(ws, _JS_CLICK_BTN("Continue"))}')
+            elif screen == 'configure':
+                log(f'[wizard-raw]   {_eval(ws, _JS_CLICK_BTN("Continue"))}')
+            elif screen == 'workflow_chooser':
+                log(f'[wizard-raw]   {_eval(ws, _JS_CLICK_BTN("Skip & Install"))}')
+            elif screen == 'installing':
+                # nothing to click, just wait for /system_stats to come up
+                pass
+            time.sleep(2)
+        except Exception as e:
+            log(f'[wizard-raw] error: {e.__class__.__name__}: {e}; reattaching')
+            try:
+                if ws: ws.close()
+            except Exception: pass
+            ws = None
+            time.sleep(1)
+    log(f'[wizard-raw] TIMEOUT after {timeout}s without /system_stats')
+    if ws:
+        try: ws.close()
+        except Exception: pass
+    return False
+
+
+# Drive the wizard now. If it never gets ComfyUI's server up, don't even
+# try to attach playwright — it'll just hang on the still-alive wizard
+# targets.
+if not _walk_first_run_wizard(_CDP_PORT):
+    log('[wizard-raw] giving up; ComfyUI server never came up')
+    sys.exit(1)
+
+
 # Visible cursor injected into the page so the captured video shows
 # where the driver clicks. The CSS transform transitions over 300ms,
 # so move-then-wait-then-click looks like a smooth pointer move.
@@ -150,6 +428,74 @@ def install_cursor(page):
         page.evaluate(CURSOR_JS)
     except Exception as e:
         log(f'  cursor inject failed: {e}')
+
+
+# Test-harness banner: yellow fixed-position strip across the top of the
+# ComfyUI window. Used to announce shell steps we run BEHIND Manager's
+# install (e.g. `git checkout dev` after Manager clones main) so a viewer
+# of the video is never misled about what happened.
+_DISCLAIMER_JS = r'''
+(lines, ttlMs) => {
+  const id = '__cm_test_disclaimer';
+  const prev = document.getElementById(id);
+  if (prev) prev.remove();
+  const b = document.createElement('div');
+  b.id = id;
+  b.style.cssText = [
+    'position:fixed','top:0','left:0','right:0','z-index:2147483647',
+    'background:#ffcc00','color:#000',
+    'font-family:"SF Mono","Monaco",ui-monospace,monospace','font-size:12px',
+    'padding:8px 12px','box-shadow:0 2px 8px rgba(0,0,0,0.4)',
+    'white-space:pre-wrap','line-height:1.4','pointer-events:none',
+    'border-bottom:2px solid #000'
+  ].join(';');
+  b.textContent = lines.join('\n');
+  document.documentElement.appendChild(b);
+  if (ttlMs && ttlMs > 0) {
+    setTimeout(() => { const el = document.getElementById(id); if (el) el.remove(); }, ttlMs);
+  }
+}
+'''
+
+def _show_test_disclaimer(page, lines, duration=None):
+    """Inject a yellow banner into the ComfyUI window announcing test-harness
+    shell steps. `duration` in seconds; None = manual dismiss via
+    _hide_test_disclaimer."""
+    ttl_ms = int(duration * 1000) if duration else 0
+    try:
+        page.evaluate(_DISCLAIMER_JS, [lines, ttl_ms])
+    except Exception as e:
+        log(f'  disclaimer inject failed: {e}')
+
+
+def _hide_test_disclaimer(page):
+    try:
+        page.evaluate("() => { const el = document.getElementById('__cm_test_disclaimer'); if (el) el.remove(); }")
+    except Exception:
+        pass
+
+
+def _find_active_comfy_install():
+    """Read Comfy Desktop's installations.json and return
+    (install_path, comfy_root, custom_nodes, venv_python) for the active
+    standalone install. Raises RuntimeError if not found."""
+    installations_json = (Path.home() / 'Library' / 'Application Support' /
+                          'Comfy Desktop' / 'installations.json')
+    try:
+        for inst in json.loads(installations_json.read_text()):
+            if inst.get('sourceId') == 'standalone' and inst.get('installPath'):
+                install_path = Path(inst['installPath'])
+                break
+        else:
+            raise RuntimeError('no standalone install in installations.json')
+    except FileNotFoundError:
+        raise RuntimeError(f'{installations_json} not found (Comfy Desktop not launched?)')
+    comfy_root = install_path / 'ComfyUI'
+    custom_nodes = comfy_root / 'custom_nodes'
+    venv_python = comfy_root / '.venv' / 'bin' / 'python'
+    if not venv_python.exists():
+        venv_python = install_path / 'standalone-env' / 'bin' / 'python'
+    return install_path, comfy_root, custom_nodes, venv_python
 
 def click_with_cursor(page, loc, timeout=3000):
     try:
@@ -210,27 +556,40 @@ def _devtools_active_port_path():
         <port>
         /devtools/browser/<guid>
     For ComfyUI Desktop, userData is %APPDATA%\\ComfyUI on Windows and
-    ~/Library/Application Support/ComfyUI on macOS. Resolve robustly so
-    SYSTEM-context APPDATA inherited from agent harnesses doesn't trip us."""
+    ~/Library/Application Support/ComfyUI on macOS. Recent builds (1.0.34+)
+    renamed the app to 'Comfy Desktop' so also check that path. Resolve
+    robustly so SYSTEM-context APPDATA inherited from agent harnesses
+    doesn't trip us."""
+    # Try new "Comfy Desktop" name first, fall back to legacy "ComfyUI"
+    # for older builds.
+    _APP_DIRS = ('Comfy Desktop', 'ComfyUI')
+    def _pick(base):
+        for name in _APP_DIRS:
+            p = base / name / 'DevToolsActivePort'
+            if p.exists():
+                return p
+        # None exists yet — return the new-name path so watchers can
+        # wait for it to appear.
+        return base / _APP_DIRS[0] / 'DevToolsActivePort'
     if sys.platform == 'win32':
         appdata = os.environ.get('APPDATA', '')
         if appdata and 'systemprofile' not in appdata.lower():
-            return Path(appdata) / 'ComfyUI' / 'DevToolsActivePort'
+            return _pick(Path(appdata))
         up = os.environ.get('USERPROFILE', '')
         if up and 'systemprofile' not in up.lower():
-            return Path(up) / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+            return _pick(Path(up) / 'AppData' / 'Roaming')
         username = os.environ.get('USERNAME', '')
         if username and username.upper() != 'SYSTEM':
-            return Path('C:/Users') / username / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+            return _pick(Path('C:/Users') / username / 'AppData' / 'Roaming')
         from glob import glob as _glob
-        for p in _glob(r'C:\Users\*\AppData\Roaming\ComfyUI'):
+        for p in _glob(r'C:\Users\*\AppData\Roaming'):
             if 'systemprofile' in p.lower():
                 continue
-            return Path(p) / 'DevToolsActivePort'
-        return Path.home() / 'AppData' / 'Roaming' / 'ComfyUI' / 'DevToolsActivePort'
+            return _pick(Path(p))
+        return _pick(Path.home() / 'AppData' / 'Roaming')
     if sys.platform == 'darwin':
-        return Path.home() / 'Library' / 'Application Support' / 'ComfyUI' / 'DevToolsActivePort'
-    return Path.home() / '.config' / 'ComfyUI' / 'DevToolsActivePort'
+        return _pick(Path.home() / 'Library' / 'Application Support')
+    return _pick(Path.home() / '.config')
 
 
 def _launch_comfy_random_port():
@@ -350,6 +709,7 @@ def _restart_comfy(p_arg, current_browser):
         log('  loop: failed to obtain CDP port from DevToolsActivePort; bailing')
         return None, current_browser
     log(f'  loop: reconnecting Playwright on port {new_port}')
+    _prune_blank_targets(new_port)
     new_browser = p_arg.chromium.connect_over_cdp(f'http://localhost:{new_port}')
     _browser_ref[0] = new_browser
     _capture_warned[0] = False
@@ -361,7 +721,7 @@ def _restart_comfy(p_arg, current_browser):
     log(f'  loop: attached to {new_page.url}')
     for i in range(180):
         try:
-            urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
+            urllib.request.urlopen(f'http://127.0.0.1:{_COMFY_PORT or 8188}/system_stats', timeout=2)
             log(f'  loop: server ready after {i+1}s')
             break
         except Exception:
@@ -745,6 +1105,7 @@ def _parse_cpu_spec():
 
 
 with sync_playwright() as p:
+    _prune_blank_targets(_CDP_PORT)
     browser = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
     _browser_ref[0] = browser
     page = main_page(browser)
@@ -786,7 +1147,7 @@ with sync_playwright() as p:
 
     def server_up():
         try:
-            urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
+            urllib.request.urlopen(f'http://127.0.0.1:{_COMFY_PORT or 8188}/system_stats', timeout=2)
             return True
         except Exception:
             return False
@@ -905,6 +1266,7 @@ with sync_playwright() as p:
         try: old_browser.close()
         except Exception: pass
         try:
+            _prune_blank_targets(_CDP_PORT)
             nb = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
             _browser_ref[0] = nb
             _capture_warned[0] = False
@@ -926,7 +1288,7 @@ with sync_playwright() as p:
     _stab_start = time.time()
     while time.time() - _stab_start < _max_s:
         try:
-            urllib.request.urlopen('http://127.0.0.1:8000/system_stats', timeout=2)
+            urllib.request.urlopen(f'http://127.0.0.1:{_COMFY_PORT or 8188}/system_stats', timeout=2)
             if _last_up is None:
                 _last_up = time.time()
                 log(f'  app: /system_stats up; awaiting {_stable_s}s of stability')
@@ -973,18 +1335,10 @@ with sync_playwright() as p:
     # all, longer deadline (modal can render >8s after server-up on a
     # CI runner), and Escape fallback so a stuck modal doesn't block
     # downstream Extensions/Templates steps.
+    # Cloud upsell was removed from Comfy Desktop 1.0.34+ — don't waste
+    # 30s polling for a button that isn't rendered anymore. If it comes
+    # back in a future build, re-add here.
     POST_ACTIONS = [
-        ('Cloud upsell',  'cloud',
-         ['button:has-text("Continue Locally"):visible',
-          'button:has-text("Use Local"):visible',
-          'button:has-text("Stay Local"):visible',
-          'button:has-text("Run Locally"):visible',
-          'button:has-text("Local Install"):visible',
-          'button:has-text("No thanks"):visible',
-          'button:has-text("Skip"):visible',
-          'button:has-text("Maybe later"):visible',
-          'button[aria-label="Close"]:visible'],
-         30),
         ('Close Templates', 'templates',
          ['button[aria-label="Close"]:visible'], 8),
         ('Extensions', 'extensions',
@@ -1030,116 +1384,332 @@ with sync_playwright() as p:
     # before app launch.
     node_repo = os.environ.get('NODE_REPO', '')
     node_branch = os.environ.get('NODE_BRANCH', 'main')
-    install_url = f'https://github.com/{node_repo}@{node_branch}'
-    log(f'  ext: POST /customnode/install/git_url -> {install_url}')
-    try:
-        req = urllib.request.Request(
-            'http://127.0.0.1:8000/customnode/install/git_url',
-            data=install_url.encode('utf-8'),
-            method='POST',
-            headers={'Content-Type': 'text/plain'},
-        )
-        with urllib.request.urlopen(req, timeout=1200) as resp:
-            log(f'  ext: install_via_git_url -> HTTP {resp.status}')
-    except urllib.error.HTTPError as e:
-        try:
-            body = e.read().decode('utf-8', errors='replace')[:300]
-        except Exception:
-            body = ''
-        log(f'  ext: install_via_git_url HTTP {e.code}: {body}')
-        # 403 here usually means security_level wasn't lowered to weak
-        # before launch (Manager config.ini missing or written to the
-        # wrong path). The run isn't recoverable -- bail loud.
-        raise
-    except Exception as e:
-        log(f'  ext: install_via_git_url failed: {type(e).__name__}: {e}')
-        raise
+    base = f'http://127.0.0.1:{_COMFY_PORT or 8188}'
 
-    # Skeleton match with cdp_driver.py: the downstream kill+relaunch +
-    # workflow execution block lives inside `else:` (clicked_tile==True).
-    # Pretend we clicked a tile and never saw the Apply Changes toast,
-    # which routes through the full kill+relaunch path -- exactly what
-    # the new node needs to load.
-    clicked_tile = True  # noqa: F841
+    # ------------------------------------------------------------------
+    # Manager-UI install flow (visible in CDP video):
+    #
+    #   1. Fetch node's DisplayName / PublisherId / version from its
+    #      pyproject.toml so we can target the RIGHT tile in Manager's
+    #      search results (multiple tiles can mention the same string).
+    #   2. Type the display name into Manager's Search input.
+    #   3. Click the tile matching name AND publisher.
+    #   4. Open the Version dropdown and pick Nightly (guaranteed to
+    #      clone from git; CNR versions may be missing downloadUrl).
+    #   5. Click the Install button.
+    #   6. Wait for the "Apply Changes" toast (Manager finished — this
+    #      is when git clone + pip install are done).
+    #   7. BEFORE clicking Apply Changes: do the branch swap (git
+    #      fetch/checkout/pull) so the pending restart picks up the
+    #      target branch. Announce with a yellow banner.
+    #   8. Click Apply Changes → in-app restart picks up dev branch.
+    #
+    # Fallback if UI flow fails (tile not found etc): direct filesystem
+    # clone + Manager reboot API. Invisible but guaranteed to work.
+    # ------------------------------------------------------------------
+
+    def _do_branch_swap_visibly(node_dir):
+        """Run git fetch/checkout/pull with a yellow banner in the
+        ComfyUI window announcing each command."""
+        commands = [
+            ['git', '-C', str(node_dir), 'fetch', 'origin', node_branch],
+            ['git', '-C', str(node_dir), 'checkout', node_branch],
+            ['git', '-C', str(node_dir), 'pull', 'origin', node_branch],
+        ]
+        banner_lines = [
+            f'TEST HARNESS · swapping to `{node_branch}` branch:',
+            *[f'  $ {" ".join(c)}' for c in commands],
+        ]
+        log(f'  ext: showing disclaimer for branch swap ({node_branch})')
+        _show_test_disclaimer(page, banner_lines, duration=None)
+        ok = True
+        try:
+            for cmd in commands:
+                log(f'  ext: {" ".join(cmd[0:2])} {" ".join(cmd[3:])}')
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if r.returncode != 0:
+                    log(f'  ext: FAIL (exit {r.returncode}): {r.stderr[:300]}')
+                    ok = False
+                    break
+            time.sleep(2)   # let the viewer see the completed commands
+        finally:
+            _hide_test_disclaimer(page)
+        return ok
+
+    def _post_empty(path):
+        req = urllib.request.Request(f'{base}{path}', data=b'', method='POST')
+        return urllib.request.urlopen(req, timeout=30)
+
+    def _reboot_via_manager_and_wait():
+        """Fallback path (no Apply Changes toast). POST Manager's reboot
+        endpoint, then poll /system_stats."""
+        log('  ext: rebooting ComfyUI via Manager API (fallback path)')
+        for reboot_path in ('/api/v2/manager/reboot', '/v2/manager/reboot'):
+            try:
+                with _post_empty(reboot_path) as resp:
+                    log(f'  ext: {reboot_path} -> HTTP {resp.status}')
+                    break
+            except urllib.error.HTTPError as e:
+                log(f'  ext: {reboot_path} HTTP {e.code} (server may be restarting)')
+                if e.code in (404, 405):
+                    continue
+                break
+            except Exception as e:
+                log(f'  ext: {reboot_path} failed: {e}; trying next')
+        log('  ext: waiting for /system_stats after reboot')
+        time.sleep(3)
+        for i in range(180):
+            try:
+                urllib.request.urlopen(
+                    f'http://127.0.0.1:{_COMFY_PORT or 8188}/system_stats', timeout=2)
+                log(f'  ext: /system_stats back up after {(i+1)*2}s')
+                return True
+            except Exception:
+                time.sleep(2)
+        return False
+
+    # ------------------------------------------------------------------
+    # Fetch the node's DisplayName / PublisherId / version from its
+    # pyproject.toml — same helper as production cdp_driver.py.
+    # ------------------------------------------------------------------
+    def _fetch_node_meta():
+        if not node_repo:
+            return None, None, None
+        url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/pyproject.toml'
+        try:
+            body = urllib.request.urlopen(url, timeout=10).read().decode('utf-8')
+            try:
+                import tomllib
+            except ImportError:
+                import tomli as tomllib   # type: ignore
+            data = tomllib.loads(body)
+            comfy = data.get('tool', {}).get('comfy', {})
+            return (comfy.get('DisplayName'),
+                    comfy.get('PublisherId'),
+                    data.get('project', {}).get('version'))
+        except Exception as e:
+            log(f'  ext: pyproject.toml fetch/parse failed: {e}')
+            return None, None, None
+
+    NODE_DISPLAY_NAME, PUBLISHER, NODE_VERSION = _fetch_node_meta()
+    log(f'  ext: node meta = display={NODE_DISPLAY_NAME!r} publisher={PUBLISHER!r} version={NODE_VERSION!r}')
+
+    ui_install_done = False
+    if NODE_DISPLAY_NAME and PUBLISHER:
+        try:
+            sleep_capturing(page, 3, fps=5)
+            log(f'  ext: searching "{NODE_DISPLAY_NAME}"')
+            fill_with_cursor(page, 'input[placeholder="Search"]:visible', NODE_DISPLAY_NAME)
+            sleep_capturing(page, 2, fps=5)
+
+            log(f'  ext: clicking {NODE_DISPLAY_NAME} by {PUBLISHER} tile')
+            tile_sel = (f'div.bg-modal-card-background.cursor-pointer'
+                        f':has-text("{NODE_DISPLAY_NAME}")'
+                        f':has-text("{PUBLISHER}"):visible')
+            deadline = time.time() + 8
+            clicked_tile = False
+            while time.time() < deadline:
+                try:
+                    tile = page.locator(tile_sel).first
+                    if tile.count() and tile.is_visible():
+                        click_with_cursor(page, tile)
+                        clicked_tile = True
+                        break
+                except Exception:
+                    pass
+                sleep_capturing(page, 0.5, fps=5)
+            if not clicked_tile:
+                log('  ext: tile not found in Manager search results')
+                raise RuntimeError('tile not found')
+            sleep_capturing(page, 3, fps=5)
+
+            # Version selector → pick Nightly (guaranteed to git-clone
+            # from CNR repository field; other versions may 404 on
+            # missing downloadUrl).
+            log('  ext: opening version selector')
+            try:
+                vt = page.locator('div[role="button"][aria-haspopup="true"].bg-dialog-surface:visible').first
+                if vt.count():
+                    vt.scroll_into_view_if_needed()
+                    sleep_capturing(page, 1, fps=5)
+                    click_with_cursor(page, vt)
+                    sleep_capturing(page, 1, fps=5)
+                    picked = False
+                    for label in ('Nightly', 'Latest'):
+                        try:
+                            opt = page.locator(
+                                f'[role="option"]:has-text("{label}"):visible, '
+                                f'[role="menuitem"]:has-text("{label}"):visible, '
+                                f'li:has-text("{label}"):visible').first
+                            if opt.count():
+                                click_with_cursor(page, opt)
+                                log(f'  ext: selected {label}')
+                                sleep_capturing(page, 1, fps=5)
+                                picked = True
+                                break
+                        except Exception:
+                            pass
+                    if not picked:
+                        log('  ext: no Nightly/Latest option matched, dismissing')
+                        try: page.keyboard.press('Escape')
+                        except Exception: pass
+            except Exception as e:
+                log(f'  ext: version selector failed: {e}')
+
+            # Right-panel Install button (LAST "Install" in DOM order —
+            # each middle-column tile also has an inline Install).
+            log('  ext: clicking right-panel Install')
+            btns = page.locator('button:has-text("Install"):visible')
+            n = btns.count()
+            if not n:
+                log('  ext: no visible Install button')
+                raise RuntimeError('no Install button')
+            btn = btns.nth(n - 1)
+            btn.scroll_into_view_if_needed()
+            sleep_capturing(page, 1, fps=5)
+            click_with_cursor(page, btn)
+            log(f'  ext: clicked Install (last of {n} visible)')
+            sleep_capturing(page, 8, fps=5)
+
+            # Wait for "Apply Changes" toast — this is when Manager
+            # finished git-clone + pip install. Timeout generous because
+            # CADabra pulls pixi + several isolation envs.
+            log('  ext: waiting for "Apply Changes" toast')
+            applied_deadline = time.time() + 900
+            apply_btn = None
+            while time.time() < applied_deadline:
+                try:
+                    ac = page.locator('button:has-text("Apply Changes"):visible').first
+                    if ac.count() and ac.is_visible() and not ac.is_disabled():
+                        apply_btn = ac
+                        break
+                except Exception:
+                    pass
+                sleep_capturing(page, 1, fps=5)
+
+            if apply_btn is None:
+                log('  ext: Apply Changes never appeared; skipping branch swap')
+                raise RuntimeError('no Apply Changes toast')
+
+            # Manager finished. BEFORE clicking Apply Changes, swap the
+            # branch on disk so the imminent restart picks up dev.
+            log('  ext: Manager install done — running branch swap before Apply Changes')
+            try:
+                _, _, custom_nodes, _ = _find_active_comfy_install()
+                node_dir = None
+                for candidate in (custom_nodes / node_repo.split('/')[-1].lower(),
+                                  custom_nodes / node_repo.split('/')[-1]):
+                    if (candidate / '.git').exists():
+                        node_dir = candidate
+                        break
+                if node_dir is None:
+                    log(f'  ext: WARNING: no .git in {custom_nodes}/* — Manager may have installed via CNR zip, skipping branch swap')
+                else:
+                    log(f'  ext: node installed at {node_dir}')
+                    _do_branch_swap_visibly(node_dir)
+            except Exception as e:
+                log(f'  ext: branch swap failed (non-fatal): {e}')
+
+            # NOW click Apply Changes — Manager restarts ComfyUI backend
+            # in-place; our `page` handle stays valid.
+            log('  ext: clicking Apply Changes')
+            click_with_cursor(page, apply_btn)
+            time.sleep(3)
+            log('  ext: waiting for /system_stats after Apply Changes')
+            for i in range(180):
+                try:
+                    urllib.request.urlopen(
+                        f'http://127.0.0.1:{_COMFY_PORT or 8188}/system_stats', timeout=2)
+                    log(f'  ext: /system_stats back up after {(i+1)*2}s')
+                    ui_install_done = True
+                    break
+                except Exception:
+                    time.sleep(2)
+            if not ui_install_done:
+                log('  ext: /system_stats never came back after Apply Changes')
+
+            # Verify Manager actually installed the node. Common failure
+            # mode: Manager's cnr_install silently fails when CADabra's
+            # latest_version.downloadUrl is empty, but Apply Changes
+            # still shows. Detect the empty custom_nodes/<name> dir and
+            # fall through to filesystem clone.
+            if ui_install_done:
+                _, _, custom_nodes, _ = _find_active_comfy_install()
+                installed = any(
+                    (custom_nodes / n).is_dir()
+                    for n in (node_repo.split('/')[-1].lower(),
+                              node_repo.split('/')[-1])
+                )
+                if not installed:
+                    log(f'  ext: WARNING: no {node_repo.split("/")[-1]} dir in '
+                        f'{custom_nodes} after Apply Changes — Manager UI '
+                        f'reported success but nothing installed. Falling '
+                        f'back to filesystem clone.')
+                    ui_install_done = False
+        except Exception as e:
+            log(f'  ext: UI install flow failed: {e.__class__.__name__}: {e}')
+            ui_install_done = False
+
+    if not ui_install_done:
+        # --------------------------------------------------------------
+        # Fallback: direct filesystem clone (branch-pinned from start).
+        # --------------------------------------------------------------
+        log('  ext: falling back to filesystem clone + Manager reboot')
+        node_name = node_repo.split('/')[-1]
+        install_path, comfy_root, custom_nodes, venv_python = _find_active_comfy_install()
+        if not custom_nodes.exists():
+            raise RuntimeError(f'custom_nodes dir missing: {custom_nodes}')
+        log(f'  ext:   install_path = {install_path}')
+        log(f'  ext:   custom_nodes = {custom_nodes}')
+        log(f'  ext:   venv python  = {venv_python}')
+
+        node_dir = custom_nodes / node_name
+        if node_dir.exists():
+            log(f'  ext:   {node_dir} exists — removing before fresh clone')
+            subprocess.run(['rm', '-rf', str(node_dir)], check=True)
+        clone_cmd = ['git', 'clone', '--depth', '1', '-b', node_branch,
+                     f'https://github.com/{node_repo}.git', str(node_dir)]
+        log(f'  ext:   $ {" ".join(clone_cmd)}')
+        r = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            raise RuntimeError(f'git clone failed: {r.stderr[:400]}')
+
+        reqs = node_dir / 'requirements.txt'
+        if reqs.exists() and venv_python.exists():
+            pip_cmd = [str(venv_python), '-m', 'pip', 'install', '--no-input',
+                       '-r', str(reqs)]
+            log(f'  ext:   $ {" ".join(pip_cmd)}')
+            r = subprocess.run(pip_cmd, capture_output=True, text=True, timeout=900)
+            for line in (r.stdout + r.stderr).splitlines()[-15:]:
+                log(f'  ext:     {line}')
+            if r.returncode != 0:
+                log(f'  ext:   WARNING: pip install exit={r.returncode} (continuing)')
+        else:
+            log('  ext:   no requirements.txt or no venv python — skipping pip')
+
+        _reboot_via_manager_and_wait()
+
+    # Manager already rebooted ComfyUI via /api/v2/manager/reboot in
+    # _reboot_and_wait() above. Skip the driver's kill+relaunch of the
+    # whole Electron app entirely — that path was fragile (hung on
+    # connect_over_cdp) and unnecessary now that Manager restarts just
+    # the Python server. Our existing `page`/`browser` handles stay
+    # valid; the renderer just needs a page.reload() (done below) to
+    # reconnect to the fresh backend.
+    log('  app: skipping kill+relaunch — Manager reboot did it')
+    clicked_tile = True  # noqa: F841 — kept for downstream if/else scaffold
     if not clicked_tile:
         log('  ext: unreachable')
     else:
-        applied = False
-        # Capture the in-app backend restart for a few seconds, then
-        # do a hard close-and-reopen of the whole Electron app -- the
-        # Templates panel caches its node-pack list at app startup
-        # and won't pick up newly-installed packs without a full
-        # relaunch. Only force-kill when we never saw Apply Changes:
-        # if it was clicked, the in-app restart already happened, and
-        # killing now would race the freshly-relaunched python server.
-        sleep_capturing(page, 5, fps=5)
-
-        IS_WIN = sys.platform == 'win32'
-        if not applied:
-            log('  app: killing ComfyUI to force full relaunch')
-            try: browser.close()
-            except Exception: pass
-            try:
-                if IS_WIN:
-                    subprocess.run(['taskkill', '/F', '/IM', 'ComfyUI.exe'],
-                                   capture_output=True, timeout=10)
-                else:
-                    subprocess.run(['pkill', '-f', 'ComfyUI'],
-                                   capture_output=True, timeout=10)
-            except Exception as e:
-                log(f'  app: kill error: {e}')
-            time.sleep(5)
-        else:
-            log('  app: Apply Changes already triggered in-app restart, skipping pkill')
-            try: browser.close()
-            except Exception: pass
-            time.sleep(5)
-
-        log('  app: relaunching with CDP')
-        # Send app stdout/stderr to /dev/null on relaunch; same reason as
-        # the bash launch -- uv's progress dumps tons of noise.
-        if IS_WIN:
-            # COMFY_DESKTOP_APP_EXE lets _desktop_runner.py point us at its
-            # cached ComfyUI.exe; CI uses the NSIS-installed path.
-            app_exe = os.environ.get('COMFY_DESKTOP_APP_EXE') or os.path.join(
-                os.environ['LOCALAPPDATA'], 'Programs', 'ComfyUI', 'ComfyUI.exe')
-            subprocess.Popen([app_exe, f'--remote-debugging-port={_CDP_PORT}'],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL,
-                             creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0))
-        else:
-            app_path = os.environ.get('COMFY_DESKTOP_APP_PATH') or os.path.join(
-                os.environ.get('GITHUB_WORKSPACE', ''), 'ComfyUI.app')
-            subprocess.Popen(['open', app_path, '--args', f'--remote-debugging-port={_CDP_PORT}'],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-
-        log('  app: waiting for CDP')
-        for i in range(120):
-            try:
-                urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
-                log(f'  app: CDP up after {i+1}s')
+        sleep_capturing(page, 3, fps=5)
+        # Server was confirmed up in _reboot_and_wait, but assert here
+        # so downstream stages get a fresh check + a log line.
+        for i in range(60):
+            if server_up():
+                log(f'  app: server ready after {i+1}s')
                 break
-            except Exception:
-                time.sleep(1)
-
-        log('  app: reconnecting Playwright')
-        browser = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
-        _browser_ref[0] = browser
-        _capture_warned[0] = False  # let frame() warn again post-relaunch
-        page = main_page(browser)
-        if page is None:
-            log('  app: no page after relaunch, bailing')
-        else:
-            install_cursor(page)
-            log(f'  app: attached to {page.url}')
-            for i in range(180):
-                if server_up():
-                    log(f'  app: server ready after {i+1}s')
-                    break
-                frame(page)
-                time.sleep(1)
-                time.sleep(1)
+            frame(page)
+            time.sleep(1)
             # Server is up but the renderer might still be on a splash
             # (#/desktop-start, #/server-start) or -- on Windows when
             # there's no GPU -- #/not-supported. Worse, custom-node

@@ -17,6 +17,7 @@ helpers (kill, wipe, launch, etc.) to stay in lockstep without copying.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import signal
@@ -79,16 +80,67 @@ def _write_manager_security_config() -> None:
         user_dir / "__manager" / "config.ini",
         user_dir / "default" / "ComfyUI-Manager" / "config.ini",
     ]
-    body = "[default]\nsecurity_level = weak\n"
+    # allow_git_url_install is a SEPARATE flag from security_level (see
+    # SECURITY_MESSAGE_FLAG_GIT_URL in manager_server.py). Recent Manager
+    # versions require BOTH for /customnode/install/git_url to succeed;
+    # without allow_git_url_install=true the endpoint responds 403/404 and
+    # our git-URL install fails before Manager even tries to clone.
+    body = ("[default]\n"
+            "security_level = weak\n"
+            "allow_git_url_install = true\n")
     for p in paths:
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(body, encoding="utf-8")
-            print(f"[desktop-dev] manager config: wrote security_level=weak -> {p}",
+            print(f"[desktop-dev] manager config: wrote security_level=weak + "
+                  f"allow_git_url_install=true -> {p}",
                   flush=True)
         except Exception as e:
             print(f"[desktop-dev] manager config: failed to write {p}: {e}",
                   file=sys.stderr, flush=True)
+
+
+def _enable_manager_legacy_ui() -> None:
+    """Add --enable-manager-legacy-ui to each standalone ComfyUI install's
+    launchArgs in Comfy Desktop's installations.json.
+
+    Why: as of Comfy Desktop 1.0.34, the bundled Manager's `glob/`
+    variant (loaded by default) no longer exposes /customnode/install/git_url.
+    The `legacy/` variant DOES expose it (line 1550 of legacy/manager_server.py)
+    but only gets loaded when ComfyUI is launched with
+    --enable-manager-legacy-ui. Without this flag, driver's git-URL install
+    hits 405 and we lose branch-pinned install of the node under test.
+    """
+    settings_dir = _resolve_user_profile() / "Library" / "Application Support" / "Comfy Desktop"
+    installations = settings_dir / "installations.json"
+    if not installations.is_file():
+        # First-run: file doesn't exist yet. Comfy Desktop writes it during
+        # the setup wizard; we'll catch it on the next run. Not fatal —
+        # this run just falls through to the filesystem install fallback.
+        print(f"[desktop-dev] {installations} not present yet (first-run); "
+              f"legacy-UI enable deferred to next launch",
+              flush=True)
+        return
+    try:
+        data = json.loads(installations.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[desktop-dev] could not parse {installations}: {e}",
+              file=sys.stderr, flush=True)
+        return
+    changed = False
+    for inst in data if isinstance(data, list) else []:
+        if inst.get("sourceId") != "standalone":
+            continue
+        args = inst.get("launchArgs", "")
+        if "--enable-manager-legacy-ui" in args:
+            continue
+        inst["launchArgs"] = (args + " --enable-manager-legacy-ui").strip()
+        changed = True
+        print(f"[desktop-dev] launchArgs: added --enable-manager-legacy-ui "
+              f"for install {inst.get('id')}",
+              flush=True)
+    if changed:
+        installations.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 # Map our dev-mode labels to the base-mode strings the shared helpers
@@ -134,6 +186,7 @@ def run_desktop_dev(args, desktop_mode_dev: str) -> int:
     _kill_existing(base_mode)
     _wipe_comfy_state()
     _write_manager_security_config()
+    _enable_manager_legacy_ui()
 
     # Auto-cleanup on exit so Ctrl+C / exception / normal exit all kill
     # the ComfyUI tree (mirrors run_desktop).

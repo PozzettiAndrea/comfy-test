@@ -50,9 +50,19 @@ _MERGE_LOGS = _DESKTOP_PKG / "merge_logs.py"
 # ComfyUI Desktop's own runtime data dir at ~/Documents/ComfyUI which is
 # managed by the app itself, not by us).
 _CACHE_DIR = Path.home() / ".comfy-test-cache" / "desktop"
-_APP_DIR = _CACHE_DIR / "ComfyUI.app"          # mac
+# The app used to ship as ComfyUI.app; recent Desktop builds rename it to
+# "Comfy Desktop.app" (mounted at /Volumes/Comfy Desktop/). We cache under
+# the new name; _ensure_desktop_app auto-detects the actual bundle name
+# from the mount so future renames don't break the download step.
+_APP_DIR = _CACHE_DIR / "Comfy Desktop.app"    # mac
 _APP_EXE = _CACHE_DIR / "ComfyUI" / "ComfyUI.exe"  # windows portable-ish layout
 _VENV_DIR = _CACHE_DIR / "venv"
+
+# CFBundleName / productName candidates used for Electron userData +
+# electron-log dir names. Order matters -- newest first, then legacy. Any
+# resolver that hunts for DevToolsActivePort or ComfyUI logs iterates this
+# list so a rename doesn't require touching every call site.
+_APP_NAMES = ("Comfy Desktop", "ComfyUI")
 
 _DESKTOP_DOWNLOAD_URLS = {
     "mac":         "https://download.comfy.org/mac/dmg/arm64",
@@ -99,14 +109,25 @@ def _ensure_desktop_app(desktop_mode: str) -> Path:
             return _APP_DIR
         dmg = _CACHE_DIR / "comfyui-desktop.dmg"
         _download(_DESKTOP_DOWNLOAD_URLS["mac"], dmg)
-        # Mount, copy app, detach. The DMG mount path includes a versioned
-        # suffix (e.g. "ComfyUI 0.8.36-arm64") that varies per release; glob to find it.
+        # Mount, copy app, detach. The DMG's volume name has drifted across
+        # releases: older builds mount at /Volumes/ComfyUI*, newer builds at
+        # /Volumes/Comfy Desktop. Glob broadly and pick whichever appears.
+        # The .app bundle inside has also been renamed (ComfyUI.app ->
+        # "Comfy Desktop.app"), so we don't hardcode the name -- take the
+        # first *.app in the mount.
         subprocess.run(["hdiutil", "attach", "-nobrowse", str(dmg)], check=True)
         try:
-            mounts = list(Path("/Volumes").glob("ComfyUI*"))
+            mounts = (list(Path("/Volumes").glob("Comfy Desktop*")) +
+                      list(Path("/Volumes").glob("ComfyUI*")))
             if not mounts:
-                raise RuntimeError("ComfyUI mount not found under /Volumes after hdiutil attach")
-            src = mounts[0] / "ComfyUI.app"
+                raise RuntimeError(
+                    "No Comfy Desktop/ComfyUI volume under /Volumes after "
+                    "hdiutil attach")
+            mount = mounts[0]
+            apps = list(mount.glob("*.app"))
+            if not apps:
+                raise RuntimeError(f"No .app bundle found in {mount}")
+            src = apps[0]
             print(f"[desktop] copying {src} -> {_APP_DIR}")
             # cp -R preserves the framework symlinks
             # (Versions/Current -> A, top-level binary -> Versions/Current/Foo).
@@ -116,7 +137,8 @@ def _ensure_desktop_app(desktop_mode: str) -> Path:
             # "bundle format is ambiguous (could be app or framework)".
             subprocess.run(["cp", "-R", str(src), str(_APP_DIR)], check=True)
         finally:
-            for m in Path("/Volumes").glob("ComfyUI*"):
+            for m in (list(Path("/Volumes").glob("Comfy Desktop*")) +
+                      list(Path("/Volumes").glob("ComfyUI*"))):
                 subprocess.run(["hdiutil", "detach", str(m)], capture_output=True)
         dmg.unlink(missing_ok=True)
         # Strip the quarantine xattr that Gatekeeper sets on downloaded
@@ -158,18 +180,27 @@ def _ensure_venv() -> Path:
         # Verify deps are still importable; fast path.
         ok = subprocess.run(
             [str(venv_python), "-c",
-             "import playwright, imageio_ffmpeg, tomli; print('ok')"],
+             "import playwright, imageio_ffmpeg, tomli, websocket; print('ok')"],
             capture_output=True, text=True,
         )
         if ok.returncode == 0:
             print(f"[desktop] reusing venv at {_VENV_DIR}")
             return venv_python
+        # Missing dep (usually just websocket-client on a stale cache) —
+        # install without recreating the venv so we don't have to
+        # re-download chromium.
+        print(f"[desktop] venv at {_VENV_DIR} missing deps, top-up install")
+        subprocess.run([str(venv_python), "-m", "pip", "install", "--quiet",
+                        "playwright", "imageio-ffmpeg", "tomli", "websocket-client"],
+                       check=True)
+        return venv_python
 
     print(f"[desktop] creating venv at {_VENV_DIR}")
     import venv as _venv  # stdlib
     _venv.EnvBuilder(with_pip=True, clear=True).create(str(_VENV_DIR))
     subprocess.run([str(venv_python), "-m", "pip", "install", "--quiet",
-                    "playwright", "imageio-ffmpeg", "tomli"], check=True)
+                    "playwright", "imageio-ffmpeg", "tomli", "websocket-client"],
+                   check=True)
     print("[desktop] installing chromium for playwright (~150 MB)...")
     subprocess.run([str(venv_python), "-m", "playwright", "install", "chromium"],
                    check=True)
@@ -204,11 +235,20 @@ def _kill_existing(desktop_mode: str) -> None:
     """Kill any running ComfyUI process so our --remote-debugging-port flag takes effect.
     Also kills whoever's bound to port 8000 (the orphan ComfyUI Python
     backend from a half-killed prior run); without this, the new wizard
-    click-through silently skips because /system_stats appears up at t=0."""
+    click-through silently skips because /system_stats appears up at t=0.
+
+    Matches BOTH the legacy "ComfyUI" process name and the new
+    "Comfy Desktop" one -- the executable/bundle rename means pkill -f
+    "ComfyUI" no longer catches the Electron main process."""
     if desktop_mode == "mac":
-        subprocess.run(["pkill", "-f", "ComfyUI"], capture_output=True)
+        # pkill -f matches against the full argv. Alternation via extended
+        # regex (default on BSD pkill) catches both names in one call.
+        subprocess.run(["pkill", "-f", "Comfy Desktop|ComfyUI"],
+                       capture_output=True)
     else:
         subprocess.run(["taskkill", "/F", "/IM", "ComfyUI.exe"], capture_output=True)
+        subprocess.run(["taskkill", "/F", "/IM", "Comfy Desktop.exe"],
+                       capture_output=True)
     _kill_port_owner(8000)
     time.sleep(2)
 
@@ -256,47 +296,99 @@ def _force_rmtree(p: Path) -> None:
 
 
 def _wipe_comfy_state() -> None:
-    """Restore a 'bare Windows' baseline before each desktop run. Mirrors
-    the docker fresh-container model: no ComfyUI install or user state
+    """Restore a bare-OS baseline before each desktop run. Mirrors the
+    docker fresh-container model: no ComfyUI install or user state
     survives between runs. Cached installer + harness venv are preserved
-    (analogous to a docker base image being cached)."""
-    profile = _resolve_user_profile()
-    targets = [
-        _CACHE_DIR / "ComfyUI",
-        profile / "AppData" / "Roaming" / "ComfyUI",
-        profile / "AppData" / "Local" / "Programs" / "ComfyUI",
-        profile / "Documents" / "ComfyUI",
-    ]
+    (analogous to a docker base image being cached).
+
+    Covers BOTH the legacy 'ComfyUI' and new 'Comfy Desktop' app-name
+    conventions so a re-run after the rename doesn't leave the old
+    wizard-already-done state behind."""
+    targets: list[Path] = []
+    if sys.platform == "darwin":
+        home = Path.home()
+        for name in _APP_NAMES:
+            targets += [
+                home / "Library" / "Application Support" / name,
+                home / "Library" / "Logs" / name,
+                home / "Library" / "Preferences" / f"com.electron.{name}.plist",
+                home / "Documents" / name,
+            ]
+        # Wipe stale ComfyUI-Installs — Comfy Desktop increments its
+        # `ComfyUI (N)` counter every fresh setup, orphaning ~2.5 GB per
+        # run. Since we also wipe Application Support/Comfy Desktop above
+        # (which holds installations.json), there's no active install to
+        # preserve — next launch just creates ComfyUI (N+1) fresh.
+        targets += [home / "ComfyUI-Installs"]
+    else:
+        profile = _resolve_user_profile()
+        targets += [_CACHE_DIR / "ComfyUI", _CACHE_DIR / "Comfy Desktop"]
+        for name in _APP_NAMES:
+            targets += [
+                profile / "AppData" / "Roaming" / name,
+                profile / "AppData" / "Local" / "Programs" / name,
+                profile / "Documents" / name,
+            ]
     for t in targets:
         if t.exists():
             print(f"[desktop] wipe: {t}", flush=True)
-            _force_rmtree(t)
+            if t.is_dir():
+                _force_rmtree(t)
+            else:
+                try:
+                    t.unlink()
+                except Exception:
+                    pass
+
+
+def _devtools_active_port_candidates(desktop_mode: str) -> list[Path]:
+    """All plausible DevToolsActivePort locations across app-name variants
+    and env-var context. Callers try each in order and take the first that
+    exists (or use candidates[0] as the write-target for cleanup)."""
+    out: list[Path] = []
+    if desktop_mode == "mac":
+        for name in _APP_NAMES:
+            out.append(Path.home() / "Library" / "Application Support" /
+                       name / "DevToolsActivePort")
+        return out
+    roots: list[Path] = []
+    appdata = os.environ.get("APPDATA", "")
+    if appdata and "systemprofile" not in appdata.lower():
+        roots.append(Path(appdata))
+    up = os.environ.get("USERPROFILE", "")
+    if up and "systemprofile" not in up.lower():
+        roots.append(Path(up) / "AppData" / "Roaming")
+    username = os.environ.get("USERNAME", "")
+    if username and username.upper() != "SYSTEM":
+        roots.append(Path("C:/Users") / username / "AppData" / "Roaming")
+    from glob import glob as _glob
+    for name in _APP_NAMES:
+        for pattern in (rf"C:\Users\*\AppData\Roaming\{name}",):
+            for p in _glob(pattern):
+                if "systemprofile" not in p.lower():
+                    roots.append(Path(p).parent)
+                    break
+    if not roots:
+        roots.append(Path.home() / "AppData" / "Roaming")
+    for root in roots:
+        for name in _APP_NAMES:
+            out.append(root / name / "DevToolsActivePort")
+    # Dedupe while preserving order.
+    seen: set = set()
+    deduped: list[Path] = []
+    for p in out:
+        k = str(p).lower()
+        if k not in seen:
+            seen.add(k)
+            deduped.append(p)
+    return deduped
 
 
 def _devtools_active_port_path(desktop_mode: str) -> Path:
-    """Electron writes the chosen --remote-debugging-port to this file in
-    its userData dir. Mirrors `_devtools_active_port_path` in cdp_driver.py;
-    we resolve robustly against SYSTEM-context APPDATA so agent-harness
-    shells don't trip us."""
-    if desktop_mode == "mac":
-        return (Path.home() / "Library" / "Application Support" /
-                "ComfyUI" / "DevToolsActivePort")
-    appdata = os.environ.get("APPDATA", "")
-    if appdata and "systemprofile" not in appdata.lower():
-        return Path(appdata) / "ComfyUI" / "DevToolsActivePort"
-    up = os.environ.get("USERPROFILE", "")
-    if up and "systemprofile" not in up.lower():
-        return Path(up) / "AppData" / "Roaming" / "ComfyUI" / "DevToolsActivePort"
-    username = os.environ.get("USERNAME", "")
-    if username and username.upper() != "SYSTEM":
-        return (Path("C:/Users") / username /
-                "AppData" / "Roaming" / "ComfyUI" / "DevToolsActivePort")
-    from glob import glob as _glob
-    for p in _glob(r"C:\Users\*\AppData\Roaming\ComfyUI"):
-        if "systemprofile" in p.lower():
-            continue
-        return Path(p) / "DevToolsActivePort"
-    return Path.home() / "AppData" / "Roaming" / "ComfyUI" / "DevToolsActivePort"
+    """Preferred (newest) DevToolsActivePort location. Used as the write
+    target for pre-launch cleanup; readers should iterate the full
+    candidate list from _devtools_active_port_candidates()."""
+    return _devtools_active_port_candidates(desktop_mode)[0]
 
 
 def _launch(app_path: Path, desktop_mode: str, stdout_log: Path) -> None:
@@ -305,35 +397,43 @@ def _launch(app_path: Path, desktop_mode: str, stdout_log: Path) -> None:
     the Windows orphan-LISTEN-socket problem completely. The chosen port
     is then read from <userData>/DevToolsActivePort by _wait_for_cdp."""
     # Clear any stale DevToolsActivePort from a prior instance so we don't
-    # mistake its old port for the new one.
-    devtools_file = _devtools_active_port_path(desktop_mode)
-    try:
-        devtools_file.unlink()
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"[desktop] DevToolsActivePort cleanup err (ignored): {e}",
-              file=sys.stderr)
+    # mistake its old port for the new one. Wipe under every candidate
+    # app-name userData dir; the app itself decides which it uses.
+    for devtools_file in _devtools_active_port_candidates(desktop_mode):
+        try:
+            devtools_file.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"[desktop] DevToolsActivePort cleanup err (ignored): {e}",
+                  file=sys.stderr)
 
     out_fh = open(stdout_log, "wb")
-    flag = "--remote-debugging-port=0"
+    # --remote-allow-origins=* is required since chromium 111: without it, any
+    # WS client whose Origin header isn't in the allowlist gets HTTP 403 on
+    # the CDP upgrade. Playwright's connect_over_cdp happens to send an
+    # allowlisted Origin so it works without the flag, but our live-viewer
+    # (websocket-client) sends the CDP HTTP endpoint's own origin, which
+    # chromium rejects. Passing `*` here matches what playwright's own
+    # `chromium.launch()` does under the hood.
+    flags = ["--remote-debugging-port=0", "--remote-allow-origins=*"]
     if desktop_mode == "mac":
-        _open_mac_app(app_path, flag, out_fh)
+        _open_mac_app(app_path, flags, out_fh)
     else:
         subprocess.Popen(
-            [str(app_path), flag],
+            [str(app_path), *flags],
             stdout=out_fh, stderr=out_fh,
             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
         )
 
 
-def _open_mac_app(app_path: Path, flag: str, out_fh) -> None:
+def _open_mac_app(app_path: Path, flags: list, out_fh) -> None:
     """`open <app> --args <flag>`, bridged into the user's aqua session via
     `sudo launchctl asuser <uid>` if we're in any SSH-spawned shell (incl.
     the loopback session limactl/colima keeps to the host's own sshd).
     Without the bridge, `open` succeeds but the app zombies in the Background
     launchd session: no Window Server, no CDP, no stdout."""
-    cmd = ["open", str(app_path), "--args", flag]
+    cmd = ["open", str(app_path), "--args", *flags]
     if not os.environ.get("SSH_CONNECTION"):
         # `open --args` forwards flags to the Electron main process argv.
         subprocess.Popen(cmd, stdout=out_fh, stderr=out_fh)
@@ -396,7 +496,7 @@ def _start_host_screencap(logs_dir: Path, desktop_mode: str):
     # Probe worked -- start the loop, indices from 1. Any future failure goes
     # to debug_log so the user can read it.
     inner = (
-        f'i=1; while sleep 1.5; do '
+        f'i=1; while sleep 1; do '
         f'/usr/sbin/screencapture -x -t jpg -T 0 '
         f'"{frames_dir}/host_$(printf %06d $i).jpg"; '
         f'i=$((i+1)); done'
@@ -415,43 +515,53 @@ def _start_host_screencap(logs_dir: Path, desktop_mode: str):
 
 
 def _wait_for_cdp(desktop_mode: str, timeout_s: int = 240) -> Optional[int]:
-    """Poll <userData>/DevToolsActivePort until chromium writes the chosen
-    port. Returns the port (int) on success, None on timeout."""
-    devtools_file = _devtools_active_port_path(desktop_mode)
+    """Poll every candidate <userData>/DevToolsActivePort until chromium
+    writes the chosen port. Returns the port (int) on success, None on
+    timeout. Tries multiple app-name variants so a rename (ComfyUI ->
+    Comfy Desktop) doesn't leave us waiting on the wrong file."""
+    candidates = _devtools_active_port_candidates(desktop_mode)
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if devtools_file.exists():
+        for devtools_file in candidates:
+            if not devtools_file.exists():
+                continue
             try:
                 content = devtools_file.read_text(encoding="utf-8").strip()
-                if content:
-                    port = int(content.splitlines()[0])
-                    # Sanity-check: confirm chromium is actually listening.
-                    try:
-                        urllib.request.urlopen(
-                            f"http://127.0.0.1:{port}/json/version", timeout=2)
-                        return port
-                    except Exception:
-                        pass
+                if not content:
+                    continue
+                port = int(content.splitlines()[0])
+                # Sanity-check: confirm chromium is actually listening.
+                try:
+                    urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/json/version", timeout=2)
+                    print(f"[desktop] DevToolsActivePort resolved to "
+                          f"{devtools_file} (port {port})")
+                    return port
+                except Exception:
+                    pass
             except Exception:
                 pass
         time.sleep(1)
     return None
-    return False
 
 
 def _collect_logs(desktop_mode: str, dest: Path) -> None:
-    """Copy ComfyUI Desktop's runtime logs into dest. Same source paths as the YMLs."""
+    """Copy ComfyUI Desktop's runtime logs into dest. Iterates both the
+    legacy ('ComfyUI') and current ('Comfy Desktop') app-name variants."""
     dest.mkdir(parents=True, exist_ok=True)
     sources: list[Path] = []
     if desktop_mode == "mac":
-        sources = [
-            Path.home() / "Documents" / "ComfyUI" / "user",
-            Path.home() / "Library" / "Logs" / "ComfyUI",
-            Path.home() / "Library" / "Application Support" / "ComfyUI" / "logs",
-        ]
+        home = Path.home()
+        for name in _APP_NAMES:
+            sources += [
+                home / "Documents" / name / "user",
+                home / "Library" / "Logs" / name,
+                home / "Library" / "Application Support" / name / "logs",
+            ]
     else:
         appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
-        sources = [appdata / "ComfyUI" / "logs"]
+        for name in _APP_NAMES:
+            sources.append(appdata / name / "logs")
     for src in sources:
         if not src.is_dir():
             continue
@@ -484,46 +594,46 @@ _LIVE_HTML = """<!doctype html>
     font:13px/1.4 ui-monospace,Consolas,monospace}
   #wrap{display:flex;flex-direction:column;height:100vh}
   #img{flex:1 1 auto;min-height:0;width:100%;object-fit:contain;background:#000}
-  #meta{padding:4px 10px;background:#222;border-top:1px solid #333;
-    border-bottom:1px solid #333}
-  #bottom{flex:0 0 32vh;display:flex;min-height:0}
-  .pane{flex:1 1 50%;display:flex;flex-direction:column;min-width:0}
-  #pwpane{border-right:1px solid #333}
-  .label{padding:2px 8px;background:#1a1a1a;color:#888;
-    border-bottom:1px solid #333;font-size:11px;letter-spacing:.05em;
-    display:flex;align-items:center;justify-content:space-between}
+  #meta{padding:4px 10px;background:#222;border-top:1px solid #333}
+  #bottom{flex:0 0 40vh;display:flex;flex-direction:column;min-height:0}
+  #tabs{display:flex;background:#1a1a1a;border-top:1px solid #333;
+    border-bottom:1px solid #333;align-items:stretch}
+  .tab{background:transparent;color:#888;border:0;border-right:1px solid #333;
+    padding:6px 14px;font:12px ui-monospace,Consolas,monospace;cursor:pointer;
+    letter-spacing:.05em}
+  .tab:hover{background:#222;color:#ccc}
+  .tab.active{background:#000;color:#7cf}
+  .spacer{flex:1 1 auto}
   .copybtn{background:#222;color:#aaa;border:1px solid #333;border-radius:3px;
-    padding:0 8px;font:11px ui-monospace,Consolas,monospace;cursor:pointer;
-    letter-spacing:0}
+    padding:0 8px;margin:3px 6px;font:11px ui-monospace,Consolas,monospace;
+    cursor:pointer;letter-spacing:0}
   .copybtn:hover{background:#2a2a2a;color:#ddd}
   .copybtn.ok{color:#7c7;border-color:#3a4}
-  .pre{flex:1 1 auto;overflow:auto;margin:0;padding:6px 10px;
-    background:#000;white-space:pre-wrap;min-height:0}
+  #log{flex:1 1 auto;overflow:auto;margin:0;padding:6px 10px;background:#000;
+    white-space:pre-wrap;min-height:0}
 </style></head><body>
 <div id="wrap">
   <img id="img" alt="">
   <div id="meta">starting...</div>
   <div id="bottom">
-    <div id="pwpane" class="pane">
-      <div class="label"><span>> playwright (session.log)</span>
-        <button class="copybtn" data-src="/session.log">copy</button></div>
-      <pre id="pwlog" class="pre">(waiting for session.log)</pre>
+    <div id="tabs">
+      <button class="tab active" data-src="/session.log" data-label="session.log">actions</button>
+      <button class="tab" data-src="/electron.log" data-label="electron">electron</button>
+      <button class="tab" data-src="/comfy.log" data-label="comfyui.log">comfy</button>
+      <div class="spacer"></div>
+      <button class="copybtn">copy</button>
     </div>
-    <div id="comfypane" class="pane">
-      <div class="label"><span>> comfy (comfyui.log)</span>
-        <button class="copybtn" data-src="/comfy.log">copy</button></div>
-      <pre id="comfylog" class="pre">(waiting for comfyui.log)</pre>
-    </div>
+    <pre id="log">(waiting...)</pre>
   </div>
 </div>
 <script>
-const FRAMES="/debug/electron_inspect/frames/",
-      PW="/session.log", CL="/comfy.log";
+const FRAMES="/debug/electron_inspect/frames/";
 const img=document.getElementById("img"),
       meta=document.getElementById("meta"),
-      pwlog=document.getElementById("pwlog"),
-      comfylog=document.getElementById("comfylog");
+      logEl=document.getElementById("log");
 let last=-1;
+let activeSrc="/session.log";
+let activeLabel="session.log";
 
 function setTail(el, text, n){
   const tail=text.split(/\\r?\\n/).slice(-n).join("\\n");
@@ -532,11 +642,11 @@ function setTail(el, text, n){
   if(stick) el.scrollTop=el.scrollHeight;
 }
 
-async function pollLog(url, el, n, label){
+async function pollLog(){
   try{
-    const r=await fetch(url+"?t="+Date.now(),{cache:"no-store"});
-    if(r.ok){ setTail(el, await r.text(), n); }
-    else if(r.status===404){ el.textContent="("+label+" not yet available)"; }
+    const r=await fetch(activeSrc+"?t="+Date.now(),{cache:"no-store"});
+    if(r.ok){ setTail(logEl, await r.text(), 200); }
+    else if(r.status===404){ logEl.textContent="("+activeLabel+" not yet available)"; }
   }catch(_){}
 }
 
@@ -559,26 +669,34 @@ async function tick(){
       meta.textContent="frames dir not yet available (HTTP "+r.status+")";
     }
   }catch(e){ meta.textContent="poll error: "+e; }
-  pollLog(PW, pwlog, 30, "session.log");
-  pollLog(CL, comfylog, 80, "comfyui.log");
+  pollLog();
 }
 tick(); setInterval(tick,500);
 
-document.querySelectorAll(".copybtn").forEach(b=>{
-  b.addEventListener("click", async ()=>{
-    const url=b.dataset.src, prev=b.textContent;
-    b.textContent="...";
-    try{
-      const r=await fetch(url+"?t="+Date.now(),{cache:"no-store"});
-      if(!r.ok) throw new Error("HTTP "+r.status);
-      const txt=await r.text();
-      await navigator.clipboard.writeText(txt);
-      b.textContent="OK copied"; b.classList.add("ok");
-    }catch(e){
-      b.textContent="FAIL "+(e.name||e.message||"error");
-    }
-    setTimeout(()=>{ b.textContent=prev; b.classList.remove("ok"); }, 1200);
+document.querySelectorAll(".tab").forEach(t=>{
+  t.addEventListener("click", ()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    t.classList.add("active");
+    activeSrc=t.dataset.src;
+    activeLabel=t.dataset.label;
+    logEl.textContent="(loading "+activeLabel+"...)";
+    pollLog();
   });
+});
+
+document.querySelector(".copybtn").addEventListener("click", async (ev)=>{
+  const btn=ev.currentTarget, prev=btn.textContent;
+  btn.textContent="...";
+  try{
+    const r=await fetch(activeSrc+"?t="+Date.now(),{cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const txt=await r.text();
+    await navigator.clipboard.writeText(txt);
+    btn.textContent="OK copied"; btn.classList.add("ok");
+  }catch(e){
+    btn.textContent="FAIL "+(e.name||e.message||"error");
+  }
+  setTimeout(()=>{ btn.textContent=prev; btn.classList.remove("ok"); }, 1200);
 });
 </script></body></html>
 """
@@ -589,6 +707,8 @@ def _resolve_comfy_log() -> Optional[Path]:
     # sometimes inherit a SYSTEM-profile env where APPDATA points at the
     # systemprofile subtree ComfyUI never writes to. Fall through to
     # USERPROFILE-, USERNAME-, then a glob across C:\Users\* before giving up.
+    # macOS: the backend log lives under the app's Documents dir chosen by
+    # the user (defaults to ~/Documents/<AppName>/user/comfyui.log).
     seen: set = set()
     candidates: list = []
     def add(p):
@@ -596,38 +716,91 @@ def _resolve_comfy_log() -> Optional[Path]:
         if key not in seen:
             seen.add(key)
             candidates.append(p)
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        add(Path(appdata) / "ComfyUI" / "logs" / "comfyui.log")
-    userprofile = os.environ.get("USERPROFILE")
-    if userprofile:
-        add(Path(userprofile) / "AppData" / "Roaming" / "ComfyUI" / "logs" / "comfyui.log")
-    username = os.environ.get("USERNAME")
-    if username and username.upper() != "SYSTEM":
-        add(Path("C:/Users") / username / "AppData" / "Roaming" / "ComfyUI" / "logs" / "comfyui.log")
+    if sys.platform == "darwin":
+        home = Path.home()
+        for name in _APP_NAMES:
+            add(home / "Documents" / name / "user" / "comfyui.log")
+            add(home / "Library" / "Logs" / name / "comfyui.log")
+            add(home / "Library" / "Application Support" / name / "logs" / "comfyui.log")
+    else:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            for name in _APP_NAMES:
+                add(Path(appdata) / name / "logs" / "comfyui.log")
+        userprofile = os.environ.get("USERPROFILE")
+        if userprofile:
+            for name in _APP_NAMES:
+                add(Path(userprofile) / "AppData" / "Roaming" / name / "logs" / "comfyui.log")
+        username = os.environ.get("USERNAME")
+        if username and username.upper() != "SYSTEM":
+            for name in _APP_NAMES:
+                add(Path("C:/Users") / username / "AppData" / "Roaming" / name / "logs" / "comfyui.log")
     for c in candidates:
         if c.exists():
             return c
-    try:
-        from glob import glob as _glob
-        skip = ("systemprofile", "default", "default user", "public", "all users")
-        hits = []
-        for p in _glob(r"C:\Users\*\AppData\Roaming\ComfyUI\logs\comfyui.log"):
-            user_seg = Path(p).parts[2].lower() if len(Path(p).parts) > 2 else ""
-            if user_seg in skip:
-                continue
-            pp = Path(p)
-            if pp.exists():
-                hits.append(pp)
-        if hits:
-            hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            return hits[0]
-    except Exception:
-        pass
+    if sys.platform != "darwin":
+        try:
+            from glob import glob as _glob
+            skip = ("systemprofile", "default", "default user", "public", "all users")
+            hits = []
+            for name in _APP_NAMES:
+                pattern = rf"C:\Users\*\AppData\Roaming\{name}\logs\comfyui.log"
+                for p in _glob(pattern):
+                    user_seg = Path(p).parts[2].lower() if len(Path(p).parts) > 2 else ""
+                    if user_seg in skip:
+                        continue
+                    pp = Path(p)
+                    if pp.exists():
+                        hits.append(pp)
+            if hits:
+                hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                return hits[0]
+        except Exception:
+            pass
     return None
 
 
 _comfy_log_logged = [False]
+_electron_log_logged = [False]
+
+
+def _resolve_electron_log(logs_dir: Path) -> Optional[Path]:
+    """Locate the live Electron log for the running ComfyUI Desktop.
+
+    electron-log's default paths are keyed on app.getName() (== productName
+    == 'Comfy Desktop' in current builds, 'ComfyUI' in legacy):
+      - macOS:   ~/Library/Logs/<name>/main.log
+      - Windows: %APPDATA%\\<name>\\logs\\main.log
+
+    The main-process log is what we want -- it captures the app's own
+    lifecycle (window creation, IPC, --remote-debugging-port arg, crash
+    stacks) that the CDP driver can't see. Falls back to
+    debug/electron_stdout.log which is populated by our Popen redirect on
+    Windows but is typically empty on macOS (`open` doesn't preserve the
+    child's stdout)."""
+    candidates: list[Path] = []
+    if sys.platform == "darwin":
+        home = Path.home()
+        for name in _APP_NAMES:
+            candidates.append(home / "Library" / "Logs" / name / "main.log")
+            candidates.append(home / "Library" / "Logs" / name / "renderer.log")
+    elif sys.platform == "win32":
+        roots: list[Path] = []
+        appdata = os.environ.get("APPDATA")
+        if appdata and "systemprofile" not in appdata.lower():
+            roots.append(Path(appdata))
+        up = os.environ.get("USERPROFILE", "")
+        if up and "systemprofile" not in up.lower():
+            roots.append(Path(up) / "AppData" / "Roaming")
+        for root in roots:
+            for name in _APP_NAMES:
+                candidates.append(root / name / "logs" / "main.log")
+    # Always fall back to our Popen-captured stdout as a last resort.
+    candidates.append(logs_dir / "debug" / "electron_stdout.log")
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
 
 
 def _start_monitor_server(port: int, logs_dir: Path) -> None:
@@ -650,6 +823,43 @@ def _start_monitor_server(port: int, logs_dir: Path) -> None:
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
+                return
+            if self.path.split("?", 1)[0] == "/electron.log":
+                path = _resolve_electron_log(logs_dir)
+                if path is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                try:
+                    with path.open("rb") as f:
+                        f.seek(0, 2)
+                        size = f.tell()
+                        f.seek(max(0, size - 65536))
+                        data = f.read()
+                except FileNotFoundError:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                except Exception as e:
+                    msg = f"electron.log read error: {e}".encode("utf-8")
+                    self.send_response(500)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(msg)))
+                    self.end_headers()
+                    self.wfile.write(msg)
+                    return
+                if not _electron_log_logged[0]:
+                    print(f"[desktop] monitor: electron.log resolved to {path}",
+                          flush=True)
+                    _electron_log_logged[0] = True
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
                 return
             if self.path.split("?", 1)[0] == "/comfy.log":
                 path = _resolve_comfy_log()
