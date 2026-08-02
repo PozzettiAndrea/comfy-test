@@ -15,6 +15,7 @@ Mirrors the YML's responsibilities:
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import signal
@@ -44,6 +45,91 @@ def _download(url: str, dest: Path) -> None:
 _DESKTOP_PKG = Path(__file__).resolve().parent.parent / "platforms" / "desktop"
 _CDP_DRIVER = _DESKTOP_PKG / "cdp_driver.py"
 _MERGE_LOGS = _DESKTOP_PKG / "merge_logs.py"
+
+def _write_manager_security_config() -> None:
+    """Pre-write ComfyUI-Manager's config.ini with `security_level = weak`
+    + `allow_git_url_install = true`.
+
+    Required by cdp_driver's install phase: when the Manager-UI clickthrough
+    silently no-ops (empty CNR downloadUrl, network hiccup, etc.), driver
+    falls back to /customnode/install/git_url. That endpoint checks BOTH
+    security_level >= weak AND allow_git_url_install=true. Default config
+    has security_level=normal + no allow_git_url_install, so we pre-seed.
+
+    Manager's config path differs by ComfyUI version
+    (manager_migration.py:45):
+        - new (has_system_user_api): <user_dir>/__manager/config.ini
+        - legacy:                    <user_dir>/default/ComfyUI-Manager/config.ini
+    We write both -- whichever Manager picks up, the value is the same.
+
+    Desktop's user_dir is <Documents>/ComfyUI/user/ on Mac and Windows.
+    Called AFTER _wipe_comfy_state so the wipe doesn't take our config with it.
+    """
+    profile = _resolve_user_profile()
+    user_dir = profile / "Documents" / "ComfyUI" / "user"
+    paths = [
+        user_dir / "__manager" / "config.ini",
+        user_dir / "default" / "ComfyUI-Manager" / "config.ini",
+    ]
+    body = ("[default]\n"
+            "security_level = weak\n"
+            "allow_git_url_install = true\n")
+    for p in paths:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+            print(f"[desktop] manager config: wrote security_level=weak + "
+                  f"allow_git_url_install=true -> {p}",
+                  flush=True)
+        except Exception as e:
+            print(f"[desktop] manager config: failed to write {p}: {e}",
+                  file=sys.stderr, flush=True)
+
+
+def _enable_manager_legacy_ui() -> None:
+    """Add --enable-manager-legacy-ui to each standalone ComfyUI install's
+    launchArgs in Comfy Desktop's installations.json.
+
+    Why: as of Comfy Desktop 1.0.34, the bundled Manager's `glob/`
+    variant (loaded by default) no longer exposes /customnode/install/git_url.
+    The `legacy/` variant DOES expose it (line 1550 of legacy/manager_server.py)
+    but only gets loaded when ComfyUI is launched with
+    --enable-manager-legacy-ui. Without this flag, driver's git-URL install
+    fallback hits 405 and we lose branch-pinned install of the node under test.
+
+    First-run case: installations.json doesn't exist yet -- the file is
+    written during the setup wizard. We catch it on the next run; not fatal
+    since the primary install path is the Manager-UI clickthrough, which
+    doesn't need the legacy UI.
+    """
+    settings_dir = _resolve_user_profile() / "Library" / "Application Support" / "Comfy Desktop"
+    installations = settings_dir / "installations.json"
+    if not installations.is_file():
+        print(f"[desktop] {installations} not present yet (first-run); "
+              f"legacy-UI enable deferred to next launch",
+              flush=True)
+        return
+    try:
+        data = json.loads(installations.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[desktop] could not parse {installations}: {e}",
+              file=sys.stderr, flush=True)
+        return
+    changed = False
+    for inst in data if isinstance(data, list) else []:
+        if inst.get("sourceId") != "standalone":
+            continue
+        args = inst.get("launchArgs", "")
+        if "--enable-manager-legacy-ui" in args:
+            continue
+        inst["launchArgs"] = (args + " --enable-manager-legacy-ui").strip()
+        changed = True
+        print(f"[desktop] launchArgs: added --enable-manager-legacy-ui "
+              f"for install {inst.get('id')}",
+              flush=True)
+    if changed:
+        installations.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
 
 # All host-side state lives under here so a `dockertest --desktop_*` run
 # leaves nothing behind on the host outside this dir (other than the
@@ -562,6 +648,13 @@ def _collect_logs(desktop_mode: str, dest: Path) -> None:
         appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
         for name in _APP_NAMES:
             sources.append(appdata / name / "logs")
+    # Modern Comfy Desktop writes its backend log to a per-install path
+    # under ~/ComfyUI-Installs/<slot>/logs/comfyui.log (Desktop numbers
+    # slots as "ComfyUI", "ComfyUI (1)", ...). ComfyUI's own user-dir
+    # log also lives at ~/ComfyUI-Installs/<slot>/ComfyUI/user/*.log.
+    # Older source paths above don't cover either; glob both.
+    sources += list(Path.home().glob("ComfyUI-Installs/*/logs"))
+    sources += list(Path.home().glob("ComfyUI-Installs/*/ComfyUI/user"))
     for src in sources:
         if not src.is_dir():
             continue
@@ -572,13 +665,15 @@ def _collect_logs(desktop_mode: str, dest: Path) -> None:
                 pass
 
 
-def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str) -> None:
+def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str,
+                    dev: bool = False) -> None:
     """Render per-platform index.html into logs_dir using the framework's
     own report generator. Skips with a warning on import error so a missing
     optional dep doesn't fail the whole run."""
-    platform_id = {"mac": "macos-desktop",
-                   "windows": "windows-desktop",
-                   "windows_cuda": "windows-desktop-cuda"}[desktop_mode]
+    base_id = {"mac": "macos-desktop",
+               "windows": "windows-desktop",
+               "windows_cuda": "windows-desktop-cuda"}[desktop_mode]
+    platform_id = f"{base_id}-dev" if dev else base_id
     try:
         from comfy_test.reporting.html_report import generate_html_report
         generate_html_report(logs_dir, repo_name=node_repo, current_platform=platform_id)
@@ -931,6 +1026,11 @@ def run_desktop(args, desktop_mode: str) -> int:
     # per-container freshness model.
     _kill_existing(desktop_mode)
     _wipe_comfy_state()
+    # Seed Manager config + legacy-UI flag right after wipe. Harmless when
+    # the install path uses the Manager-UI tile (default); required when it
+    # falls back to /customnode/install/git_url (branch-pinned install).
+    _write_manager_security_config()
+    _enable_manager_legacy_ui()
 
     # Auto-cleanup on exit so Ctrl+C / exception / normal exit ALL kill the
     # ComfyUI tree. Without this the Electron app + its Python backend
@@ -952,11 +1052,18 @@ def run_desktop(args, desktop_mode: str) -> int:
         try: signal.signal(signal.SIGTERM, _sig_cleanup)
         except Exception: pass
 
-    # Manager installs from main of the URL via the in-app GUI flow. We
-    # still shallow-clone the node locally so we can enumerate workflows/*.json
-    # from disk (avoids hitting api.github.com/repos/.../contents which the
-    # macOS hosted-runner pool's NAT'd egress IPs frequently 403 with anon
-    # rate-limit). cdp_driver picks up the list via COMFY_TEST_WORKFLOWS env.
+    # Branch resolution: --branch wins, else "dev" when --dev is passed, else "main".
+    # Threaded through as NODE_BRANCH so cdp_driver's post-install branch-swap
+    # step targets the right ref (git fetch/checkout/pull to <node_branch> HEAD).
+    dev = bool(getattr(args, "dev", False))
+    node_branch = getattr(args, "branch", None) or ("dev" if dev else "main")
+
+    # Manager installs the node via the in-app GUI flow, then cdp_driver
+    # swaps to node_branch. We shallow-clone locally so we can enumerate
+    # workflows/*.json from disk (avoids hitting api.github.com/repos/.../
+    # contents which the macOS hosted-runner pool's NAT'd egress IPs
+    # frequently 403 with anon rate-limit). cdp_driver picks up the list
+    # via COMFY_TEST_WORKFLOWS env.
     from comfy_test.cli._nodelink import clone_node, expand_nodelink
 
     url = expand_nodelink(args.nodelink).rstrip(".git")
@@ -967,7 +1074,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     workflow_names: list[str] = []
     node_sha: Optional[str] = None
     try:
-        clone_node(url, "main", clone_root, log_prefix="[desktop]")
+        clone_node(url, node_branch, clone_root, log_prefix="[desktop]")
         workflows_dir = clone_root / node_name / "workflows"
         if workflows_dir.is_dir():
             workflow_names = sorted(p.stem for p in workflows_dir.glob("*.json"))
@@ -987,23 +1094,26 @@ def run_desktop(args, desktop_mode: str) -> int:
     except Exception as e:
         print(f"[desktop] clone failed (workflow enumeration will fall back "
               f"to api.github.com): {e}", file=sys.stderr)
-    print(f"[desktop] node: {node_name}  (URL: {url}, branch: main, "
+    print(f"[desktop] node: {node_name}  (URL: {url}, branch: {node_branch}, "
           f"sha: {node_sha[:12] if node_sha else 'unknown'}, "
           f"workflows: {workflow_names})")
 
     # Logs dir matches the cli/run.py shape: <run_id>/<branch>/<platform>/
     # so dispatch-test.yml's publish step finds results.json with the same
     # `find -path "*/<short>-*/<branch>/<platform>/results.json"` glob it
-    # uses for cpu / gpu jobs.
+    # uses for cpu / gpu jobs. With --dev, platform suffix flips to
+    # -desktop-dev so dev-branch results don't collide with main-branch
+    # ones in the same artifact tree.
     short = node_name.removeprefix("ComfyUI-")
     timestamp = datetime.now().strftime("%H%M")
     run_id = f"{short}-{timestamp}"
-    branch_dir = getattr(args, "branch", None) or "main"
-    platform_dir = {
+    branch_dir = node_branch
+    _base_platform_id = {
         "mac":         "macos-desktop",
         "windows":     "windows-desktop",
         "windows_cuda": "windows-desktop-cuda",
     }.get(desktop_mode, desktop_mode)
+    platform_dir = f"{_base_platform_id}-dev" if dev else _base_platform_id
     # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
     # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
     # finds the run dir). Fall back to ~/comfy-test-logs for local use.
@@ -1058,7 +1168,10 @@ def run_desktop(args, desktop_mode: str) -> int:
         "COMFY_TEST_LOGS_DIR": str(logs_dir),
         "COMFY_TEST_DEBUG_DIR": str(debug_dir),
         "NODE_REPO": url.rsplit("github.com/", 1)[-1],
-        "NODE_BRANCH": "main",  # Desktop only ever installs from main.
+        # Manager installs the CNR nightly (a main-branch snapshot); cdp_driver
+        # then runs `git fetch/checkout/pull <NODE_BRANCH>` in the installed
+        # node dir so the test targets the exact branch HEAD.
+        "NODE_BRANCH": node_branch,
         "NODE_NAME": node_name,
         # Pre-enumerated from the local clone above. cdp_driver's
         # _fetch_workflow_list_from_repo short-circuits on this and skips
@@ -1068,11 +1181,13 @@ def run_desktop(args, desktop_mode: str) -> int:
         # cdp_driver writes these into results.json so the dashboard can
         # render the cell colored by pass/fail and match the cpu schema.
         "COMFY_TEST_NODE_SHA": node_sha or "",
-        "COMFY_TEST_DESKTOP_PLATFORM": {
-            "mac":         "macos_desktop",
-            "windows":     "windows_desktop",
-            "windows_cuda": "windows_desktop_cuda",
-        }.get(desktop_mode, "unknown_desktop"),
+        "COMFY_TEST_DESKTOP_PLATFORM": (
+            {
+                "mac":         "macos_desktop_dev" if dev else "macos_desktop",
+                "windows":     "windows_desktop_dev" if dev else "windows_desktop",
+                "windows_cuda": "windows_desktop_cuda_dev" if dev else "windows_desktop_cuda",
+            }.get(desktop_mode, "unknown_desktop")
+        ),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.
         "COMFY_DESKTOP_APP_EXE": str(_APP_EXE),
@@ -1141,9 +1256,50 @@ def run_desktop(args, desktop_mode: str) -> int:
                            check=False, capture_output=True)
         except Exception:
             pass
-    _generate_index(logs_dir, env["NODE_REPO"], desktop_mode)
+    _generate_index(logs_dir, env["NODE_REPO"], desktop_mode, dev=dev)
+
+    _print_workflow_summary(logs_dir / "results.json", tag="desktop")
 
     # Best-effort: leave the Desktop app open so the user can poke around.
     print(f"[desktop] DONE (rc={rc})")
     print(f"[desktop] open {logs_dir / 'index.html'} to view the report")
     return rc
+
+
+def _print_workflow_summary(results_json: Path, tag: str = "desktop") -> None:
+    """Print a compact pass/fail table from results.json — one line per
+    workflow with a status icon, duration, and (for failures) the first
+    line of the error message. Followed by an aggregate `N/M passed`
+    line. Called at end-of-run so users see outcomes without opening
+    the HTML report."""
+    if not results_json.is_file():
+        return
+    try:
+        data = json.loads(results_json.read_text())
+    except Exception:
+        return
+    s = data.get("summary") or {}
+    total = int(s.get("total", 0))
+    passed = int(s.get("passed", 0))
+    failed = int(s.get("failed", 0))
+    other = max(0, total - passed - failed)
+    icons = {"pass": "✓", "fail": "✗", "error": "✗", "skip": "·"}
+    print(f"\n[{tag}] === Workflow summary ({data.get('platform', '?')}) ===",
+          flush=True)
+    for w in data.get("workflows") or []:
+        name = w.get("name", "?")
+        status = w.get("status", "?")
+        icon = icons.get(status, "?")
+        dur = f"{w.get('duration_seconds', 0):>4}s"
+        err = ""
+        if status != "pass":
+            first = ((w.get("error") or "").splitlines() or [""])[0].strip()
+            if first:
+                err = f"  — {first[:80]}"
+        print(f"[{tag}]   {icon} {name:40s} {dur}{err}", flush=True)
+    tail = f"{passed}/{total} passed"
+    if failed:
+        tail += f", {failed} failed"
+    if other:
+        tail += f", {other} other"
+    print(f"[{tag}]   → {tail}", flush=True)
