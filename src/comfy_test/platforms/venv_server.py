@@ -1,7 +1,7 @@
 """Shared venv-based server platform for Linux / Windows / macOS.
 
-These three OS targets are the same execution model — create a virtualenv, pin
-torch, clone + install ComfyUI, install the node, boot `main.py` — and differ
+These three OS targets are the same execution model -- create a virtualenv, pin
+torch, clone + install ComfyUI, install the node, boot `main.py` -- and differ
 only in a handful of knobs. This base holds the whole flow (verbatim from the
 old LinuxPlatform); each OS is a thin subclass that overrides only what really
 differs:

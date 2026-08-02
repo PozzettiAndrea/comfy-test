@@ -345,8 +345,8 @@ class AttachedServer:
 
     The per-platform CI workflows build the env, boot `main.py`, then invoke
     `comfy-test run --server-url http://127.0.0.1:8188 ...`. This duck-types
-    the slice of ComfyUIServer the levels use — `base_url`, `pid`, `get_api`,
-    log listeners, `get_import_errors`, `stop` — against that external server.
+    the slice of ComfyUIServer the levels use -- `base_url`, `pid`, `get_api`,
+    log listeners, `get_import_errors`, `stop` -- against that external server.
     Startup output is read from `log_file` (the workflow's server.log), and a
     tail thread feeds new lines to listeners during workflow execution.
     `stop()` only stops the tail thread; the external server is CI's to kill.

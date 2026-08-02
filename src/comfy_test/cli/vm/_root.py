@@ -96,7 +96,7 @@ def _wait_for_vm_state(
 ) -> bool:
     """Block until `Get-VM | State` equals `target` or timeout. Returns True on
     success, False on timeout. `on_tick` (optional) is called each poll with
-    the current state — handy for surfacing progress."""
+    the current state -- handy for surfacing progress."""
     import time
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:

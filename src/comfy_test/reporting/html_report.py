@@ -18,7 +18,7 @@ from typing import Dict, List, Any, Optional
 import subprocess
 
 
-# Platform definitions for the multi-platform index — derived from the single
+# Platform definitions for the multi-platform index -- derived from the single
 # source of truth in comfy_test.platforms (id + label per platform).
 from ..platforms.registry import gallery_platforms
 

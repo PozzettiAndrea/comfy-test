@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 
 # Supported Python versions for random selection
 PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
@@ -149,12 +149,12 @@ class TestLevel(str, Enum):
         return [l for l in cls if l in all_levels]
 
 
-# Canonical level sets — the single source of truth. Nothing else may hand-copy
+# Canonical level sets -- the single source of truth. Nothing else may hand-copy
 # a level list; derive from these (or from TestLevel directly).
 ALL_LEVELS = list(TestLevel)  # every level, in execution order (== enum order)
 
 # Default when a node's comfy-test.toml omits `levels`. Deliberately excludes:
-#   - coverage: opt-in — it RAISES if a registered node isn't used by any
+#   - coverage: opt-in -- it RAISES if a registered node isn't used by any
 #     workflow, so it can't be a silent default (would fail existing nodes).
 #   - execution_light: redundant with execution (same run, minus per-frame video).
 DEFAULT_LEVELS = [
@@ -229,6 +229,53 @@ class WorkflowConfig:
 
 
 @dataclass
+class CoverageConfig:
+    """Configuration for the COVERAGE level beyond the node-level check.
+
+    Args:
+        inputs: Required input-value coverage, ``{node_type: {input_name:
+            [values]}}``. Every listed value must appear as that input's saved
+            value on at least one workflow node of that type, across all
+            workflow JSONs (litegraph or API format). Parsed from
+            ``[test.coverage.inputs]``::
+
+                [test.coverage.inputs]
+                MyLoaderNode.model = ["small.safetensors", "large.safetensors"]
+
+            Values must be explicit string lists: combo options are often
+            built at runtime (e.g. by scanning a models directory), so the
+            universe of required values cannot be derived statically. A
+            future "all" form could auto-derive values when the schema's
+            options list is a static literal.
+    """
+
+    inputs: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Validate declaration shape."""
+        if not isinstance(self.inputs, dict):
+            raise ValueError(
+                f"[test.coverage.inputs] must be a table, got {type(self.inputs).__name__}"
+            )
+        for node_type, node_inputs in self.inputs.items():
+            if not isinstance(node_inputs, dict):
+                raise ValueError(
+                    f"[test.coverage.inputs] {node_type} must be a table of "
+                    f"input_name = [values], got {type(node_inputs).__name__}"
+                )
+            for input_name, values in node_inputs.items():
+                if (
+                    not isinstance(values, list)
+                    or not values
+                    or not all(isinstance(v, str) for v in values)
+                ):
+                    raise ValueError(
+                        f"[test.coverage.inputs] {node_type}.{input_name} must be "
+                        f"a non-empty list of strings"
+                    )
+
+
+@dataclass
 class PlatformTestConfig:
     """Platform-specific test configuration.
 
@@ -284,6 +331,7 @@ class TestConfig:
     res: int = 1080  # Viewport height (width = height * 16/9)
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
+    coverage: CoverageConfig = field(default_factory=CoverageConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     linux_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     macos: PlatformTestConfig = field(default_factory=PlatformTestConfig)
@@ -318,6 +366,10 @@ class TestConfig:
         # Ensure workflow is WorkflowConfig
         if isinstance(self.workflow, dict):
             self.workflow = WorkflowConfig(**self.workflow)
+
+        # Ensure coverage is CoverageConfig
+        if isinstance(self.coverage, dict):
+            self.coverage = CoverageConfig(**self.coverage)
 
         # Ensure platform configs are PlatformTestConfig
         if isinstance(self.linux, dict):

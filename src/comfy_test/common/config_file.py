@@ -36,7 +36,7 @@ else:
         tomllib = None  # type: ignore
 
 from .config import (
-    TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig,
+    TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig, CoverageConfig,
     ALL_LEVELS, DEFAULT_LEVELS,
 )
 from .errors import ConfigError
@@ -255,7 +255,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     else:
         workflow = _parse_workflow_config({}, base_dir)
 
-    # Every platform config — enabled iff its token is in the allowlist.
+    # Every platform config -- enabled iff its token is in the allowlist.
     linux_config = _parse_platform_config(test_section.get("linux", {}), _os_enabled("linux"))
     macos_config = _parse_platform_config(test_section.get("macos", {}), _os_enabled("macos"))
     windows_config = _parse_platform_config(test_section.get("windows", {}), _os_enabled("windows"))
@@ -282,6 +282,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             "timeout": timeout,
             "levels": levels,
             "workflow": workflow,
+            "coverage": CoverageConfig(**test_section.get("coverage", {})),
             "linux": linux_config,
             "linux_cuda": linux_cuda_config,
             "macos": macos_config,
@@ -312,6 +313,9 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
 
         return TestConfig(**kwargs)
     except ValueError as e:
+        raise ConfigError("Invalid configuration", str(e))
+    except TypeError as e:
+        # e.g. an unknown key under [test.coverage] (dataclass rejects it)
         raise ConfigError("Invalid configuration", str(e))
 
 

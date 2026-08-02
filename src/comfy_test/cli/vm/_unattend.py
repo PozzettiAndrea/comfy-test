@@ -80,7 +80,7 @@ def _render_post_install(p: Params) -> str:
     })
 
 
-# Standard "New-IsoFile" — compiles a tiny C# class with /unsafe to drain
+# Standard "New-IsoFile" -- compiles a tiny C# class with /unsafe to drain
 # the IMAPI2FS IStream into a file. Reads $Source + $Path from the script
 # scope (we set those before this block). Pure Windows PowerShell 5.1.
 _ISO_BUILD_SCRIPT = r"""

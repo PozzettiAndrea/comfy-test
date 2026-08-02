@@ -186,7 +186,7 @@ def _ensure_venv() -> Path:
         if ok.returncode == 0:
             print(f"[desktop] reusing venv at {_VENV_DIR}")
             return venv_python
-        # Missing dep (usually just websocket-client on a stale cache) —
+        # Missing dep (usually just websocket-client on a stale cache) --
         # install without recreating the venv so we don't have to
         # re-download chromium.
         print(f"[desktop] venv at {_VENV_DIR} missing deps, top-up install")
@@ -314,11 +314,11 @@ def _wipe_comfy_state() -> None:
                 home / "Library" / "Preferences" / f"com.electron.{name}.plist",
                 home / "Documents" / name,
             ]
-        # Wipe stale ComfyUI-Installs — Comfy Desktop increments its
+        # Wipe stale ComfyUI-Installs -- Comfy Desktop increments its
         # `ComfyUI (N)` counter every fresh setup, orphaning ~2.5 GB per
         # run. Since we also wipe Application Support/Comfy Desktop above
         # (which holds installations.json), there's no active install to
-        # preserve — next launch just creates ComfyUI (N+1) fresh.
+        # preserve -- next launch just creates ComfyUI (N+1) fresh.
         targets += [home / "ComfyUI-Installs"]
     else:
         profile = _resolve_user_profile()

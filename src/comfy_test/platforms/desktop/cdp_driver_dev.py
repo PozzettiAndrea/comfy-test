@@ -136,7 +136,7 @@ def _prune_blank_targets(cdp_port):
     """Playwright's connect_over_cdp attaches to every page target and hangs
     forever on any that never fires Target.attachedToTarget (blank URLs,
     Electron helper limbo, etc). Close those via the browser CDP endpoint
-    before every connect_over_cdp. Idempotent — safe to call multiple times.
+    before every connect_over_cdp. Idempotent -- safe to call multiple times.
 
     Only pages with an empty URL are pruned; ComfyUI + normal Electron
     chrome helpers (Title Bar / Title Popup / System Modal) stay alive.
@@ -182,7 +182,7 @@ def _prune_blank_targets(cdp_port):
 # the app to normal ComfyUI mode there's a single main page, at which point
 # connect_over_cdp works fine.
 #
-# So: drive the wizard past chooser → configure → workflow → install via
+# So: drive the wizard past chooser -> configure -> workflow -> install via
 # raw CDP, then hand off to playwright for the rest of the flow (Manager
 # install, node install, workflow runs).
 #
@@ -224,7 +224,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
 
     def _discover_comfy_port():
         """Comfy Desktop 1.0.34 serves ComfyUI on :8188; earlier versions
-        used :8000. Pull the port out of the CDP page list — whichever
+        used :8000. Pull the port out of the CDP page list -- whichever
         127.0.0.1:<port> URL is currently loaded is the right one. Falls
         back to trying both known ports if no page URL matches yet."""
         try:
@@ -395,7 +395,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
 
 
 # Drive the wizard now. If it never gets ComfyUI's server up, don't even
-# try to attach playwright — it'll just hang on the still-alive wizard
+# try to attach playwright -- it'll just hang on the still-alive wizard
 # targets.
 if not _walk_first_run_wizard(_CDP_PORT):
     log('[wizard-raw] giving up; ComfyUI server never came up')
@@ -568,7 +568,7 @@ def _devtools_active_port_path():
             p = base / name / 'DevToolsActivePort'
             if p.exists():
                 return p
-        # None exists yet — return the new-name path so watchers can
+        # None exists yet -- return the new-name path so watchers can
         # wait for it to appear.
         return base / _APP_DIRS[0] / 'DevToolsActivePort'
     if sys.platform == 'win32':
@@ -1335,7 +1335,7 @@ with sync_playwright() as p:
     # all, longer deadline (modal can render >8s after server-up on a
     # CI runner), and Escape fallback so a stuck modal doesn't block
     # downstream Extensions/Templates steps.
-    # Cloud upsell was removed from Comfy Desktop 1.0.34+ — don't waste
+    # Cloud upsell was removed from Comfy Desktop 1.0.34+ -- don't waste
     # 30s polling for a button that isn't rendered anymore. If it comes
     # back in a future build, re-add here.
     POST_ACTIONS = [
@@ -1397,12 +1397,12 @@ with sync_playwright() as p:
     #   4. Open the Version dropdown and pick Nightly (guaranteed to
     #      clone from git; CNR versions may be missing downloadUrl).
     #   5. Click the Install button.
-    #   6. Wait for the "Apply Changes" toast (Manager finished — this
+    #   6. Wait for the "Apply Changes" toast (Manager finished -- this
     #      is when git clone + pip install are done).
     #   7. BEFORE clicking Apply Changes: do the branch swap (git
     #      fetch/checkout/pull) so the pending restart picks up the
     #      target branch. Announce with a yellow banner.
-    #   8. Click Apply Changes → in-app restart picks up dev branch.
+    #   8. Click Apply Changes -> in-app restart picks up dev branch.
     #
     # Fallback if UI flow fails (tile not found etc): direct filesystem
     # clone + Manager reboot API. Invisible but guaranteed to work.
@@ -1417,7 +1417,7 @@ with sync_playwright() as p:
             ['git', '-C', str(node_dir), 'pull', 'origin', node_branch],
         ]
         banner_lines = [
-            f'TEST HARNESS · swapping to `{node_branch}` branch:',
+            f'TEST HARNESS - swapping to `{node_branch}` branch:',
             *[f'  $ {" ".join(c)}' for c in commands],
         ]
         log(f'  ext: showing disclaimer for branch swap ({node_branch})')
@@ -1470,7 +1470,7 @@ with sync_playwright() as p:
 
     # ------------------------------------------------------------------
     # Fetch the node's DisplayName / PublisherId / version from its
-    # pyproject.toml — same helper as production cdp_driver.py.
+    # pyproject.toml -- same helper as production cdp_driver.py.
     # ------------------------------------------------------------------
     def _fetch_node_meta():
         if not node_repo:
@@ -1523,7 +1523,7 @@ with sync_playwright() as p:
                 raise RuntimeError('tile not found')
             sleep_capturing(page, 3, fps=5)
 
-            # Version selector → pick Nightly (guaranteed to git-clone
+            # Version selector -> pick Nightly (guaranteed to git-clone
             # from CNR repository field; other versions may 404 on
             # missing downloadUrl).
             log('  ext: opening version selector')
@@ -1556,7 +1556,7 @@ with sync_playwright() as p:
             except Exception as e:
                 log(f'  ext: version selector failed: {e}')
 
-            # Right-panel Install button (LAST "Install" in DOM order —
+            # Right-panel Install button (LAST "Install" in DOM order --
             # each middle-column tile also has an inline Install).
             log('  ext: clicking right-panel Install')
             btns = page.locator('button:has-text("Install"):visible')
@@ -1571,7 +1571,7 @@ with sync_playwright() as p:
             log(f'  ext: clicked Install (last of {n} visible)')
             sleep_capturing(page, 8, fps=5)
 
-            # Wait for "Apply Changes" toast — this is when Manager
+            # Wait for "Apply Changes" toast -- this is when Manager
             # finished git-clone + pip install. Timeout generous because
             # CADabra pulls pixi + several isolation envs.
             log('  ext: waiting for "Apply Changes" toast')
@@ -1593,7 +1593,7 @@ with sync_playwright() as p:
 
             # Manager finished. BEFORE clicking Apply Changes, swap the
             # branch on disk so the imminent restart picks up dev.
-            log('  ext: Manager install done — running branch swap before Apply Changes')
+            log('  ext: Manager install done -- running branch swap before Apply Changes')
             try:
                 _, _, custom_nodes, _ = _find_active_comfy_install()
                 node_dir = None
@@ -1603,14 +1603,14 @@ with sync_playwright() as p:
                         node_dir = candidate
                         break
                 if node_dir is None:
-                    log(f'  ext: WARNING: no .git in {custom_nodes}/* — Manager may have installed via CNR zip, skipping branch swap')
+                    log(f'  ext: WARNING: no .git in {custom_nodes}/* -- Manager may have installed via CNR zip, skipping branch swap')
                 else:
                     log(f'  ext: node installed at {node_dir}')
                     _do_branch_swap_visibly(node_dir)
             except Exception as e:
                 log(f'  ext: branch swap failed (non-fatal): {e}')
 
-            # NOW click Apply Changes — Manager restarts ComfyUI backend
+            # NOW click Apply Changes -- Manager restarts ComfyUI backend
             # in-place; our `page` handle stays valid.
             log('  ext: clicking Apply Changes')
             click_with_cursor(page, apply_btn)
@@ -1642,7 +1642,7 @@ with sync_playwright() as p:
                 )
                 if not installed:
                     log(f'  ext: WARNING: no {node_repo.split("/")[-1]} dir in '
-                        f'{custom_nodes} after Apply Changes — Manager UI '
+                        f'{custom_nodes} after Apply Changes -- Manager UI '
                         f'reported success but nothing installed. Falling '
                         f'back to filesystem clone.')
                     ui_install_done = False
@@ -1665,7 +1665,7 @@ with sync_playwright() as p:
 
         node_dir = custom_nodes / node_name
         if node_dir.exists():
-            log(f'  ext:   {node_dir} exists — removing before fresh clone')
+            log(f'  ext:   {node_dir} exists -- removing before fresh clone')
             subprocess.run(['rm', '-rf', str(node_dir)], check=True)
         clone_cmd = ['git', 'clone', '--depth', '1', '-b', node_branch,
                      f'https://github.com/{node_repo}.git', str(node_dir)]
@@ -1685,19 +1685,19 @@ with sync_playwright() as p:
             if r.returncode != 0:
                 log(f'  ext:   WARNING: pip install exit={r.returncode} (continuing)')
         else:
-            log('  ext:   no requirements.txt or no venv python — skipping pip')
+            log('  ext:   no requirements.txt or no venv python -- skipping pip')
 
         _reboot_via_manager_and_wait()
 
     # Manager already rebooted ComfyUI via /api/v2/manager/reboot in
     # _reboot_and_wait() above. Skip the driver's kill+relaunch of the
-    # whole Electron app entirely — that path was fragile (hung on
+    # whole Electron app entirely -- that path was fragile (hung on
     # connect_over_cdp) and unnecessary now that Manager restarts just
     # the Python server. Our existing `page`/`browser` handles stay
     # valid; the renderer just needs a page.reload() (done below) to
     # reconnect to the fresh backend.
-    log('  app: skipping kill+relaunch — Manager reboot did it')
-    clicked_tile = True  # noqa: F841 — kept for downstream if/else scaffold
+    log('  app: skipping kill+relaunch -- Manager reboot did it')
+    clicked_tile = True  # noqa: F841 -- kept for downstream if/else scaffold
     if not clicked_tile:
         log('  ext: unreachable')
     else:

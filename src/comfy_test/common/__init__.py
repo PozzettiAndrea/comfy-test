@@ -5,6 +5,7 @@ from .config import (
     TestLevel,
     WorkflowConfig,
     PlatformTestConfig,
+    CoverageConfig,
     PYTHON_VERSIONS,
 )
 from .config_file import (
@@ -34,6 +35,7 @@ __all__ = [
     "TestLevel",
     "WorkflowConfig",
     "PlatformTestConfig",
+    "CoverageConfig",
     "PYTHON_VERSIONS",
     "load_config",
     "discover_config",

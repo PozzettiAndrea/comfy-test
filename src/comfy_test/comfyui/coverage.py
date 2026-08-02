@@ -30,6 +30,22 @@ class exposes a class-level ``BACKEND_MAP = {"combo_value": "HiddenNodeId"}``
 dict literal; this module statically finds those maps and, for each workflow
 node of that dispatcher type, resolves its saved "backend" widget value
 through the map to credit the real underlying node as tested.
+
+**Declared input-value coverage.** Node-level coverage says nothing about a
+combo widget that multiplexes several code paths inside one node (e.g. a
+loader whose "model" dropdown selects between variants with different build
+branches). A pack can declare in its ``comfy-test.toml`` that specific input
+values must all be exercised::
+
+    [test.coverage.inputs]
+    MyLoaderNode.model = ["small.safetensors", "large.safetensors"]
+
+For each workflow node of a declared type, the saved value of each declared
+input is extracted (same litegraph/API resolution as dispatcher tracing) and
+checked off against the required list. Values must be explicit literals in
+the toml -- combo options are often computed at runtime (directory scans), so
+the required universe cannot be derived statically. A future ``"all"`` form
+could auto-derive values when a schema's options list is a static literal.
 """
 
 import ast
@@ -63,6 +79,26 @@ class CoverageResult:
     # human-readable notes about things that couldn't be resolved statically
     warnings: List[str] = field(default_factory=list)
     workflow_count: int = 0
+    # declared input-value coverage: {node_type: {input: [required values]}}
+    input_declared: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    # observed hits: {node_type: {input: {value: sorted list of workflow files}}}
+    input_hits: Dict[str, Dict[str, Dict[str, List[str]]]] = field(default_factory=dict)
+
+    @property
+    def untested_input_values(self) -> List[Tuple[str, str, List[str]]]:
+        """Declared ``(node_type, input, [missing values])`` with no workflow hit.
+
+        Only declarations with at least one missing value are listed; the
+        missing values preserve their declaration order.
+        """
+        missing: List[Tuple[str, str, List[str]]] = []
+        for node_type, node_inputs in self.input_declared.items():
+            for input_name, values in node_inputs.items():
+                hits = self.input_hits.get(node_type, {}).get(input_name, {})
+                absent = [v for v in values if v not in hits]
+                if absent:
+                    missing.append((node_type, input_name, absent))
+        return missing
 
     @property
     def tested(self) -> List[str]:
@@ -364,20 +400,28 @@ def _resolve_dispatch_selection(n: dict, widget_name: str = _DISPATCH_WIDGET_NAM
 
 
 def _collect_workflow_types(
-    data: object, backend_maps: Optional[Dict[str, Dict[str, str]]] = None
-) -> Tuple[Set[str], List[Tuple[str, str, str]]]:
+    data: object,
+    backend_maps: Optional[Dict[str, Dict[str, str]]] = None,
+    input_coverage: Optional[Dict[str, Dict[str, List[str]]]] = None,
+) -> Tuple[Set[str], List[Tuple[str, str, str]], List[Tuple[str, str, str]]]:
     """Extract node ``type`` values from a parsed workflow (litegraph or API),
-    plus any GraphBuilder-dispatched backend nodes resolvable via backend_maps.
+    plus any GraphBuilder-dispatched backend nodes resolvable via backend_maps,
+    plus hits against declared input-value coverage.
 
     Handles top-level ``nodes`` plus nodes nested in ``definitions.subgraphs``
     (litegraph subgraphs), and the API/prompt format ``{id: {class_type}}``.
 
-    Returns ``(types, dispatched)`` where ``dispatched`` is a list of
-    ``(backend_node_id, dispatcher_type, combo_value)`` tuples.
+    Returns ``(types, dispatched, input_hits)`` where ``dispatched`` is a list
+    of ``(backend_node_id, dispatcher_type, combo_value)`` tuples and
+    ``input_hits`` is a list of ``(node_type, input_name, value)`` tuples --
+    every resolved string value of a declared input, whether or not it is in
+    the required list (undeclared values matter for "input exists" warnings).
     """
     backend_maps = backend_maps or {}
+    input_coverage = input_coverage or {}
     types: Set[str] = set()
     dispatched: List[Tuple[str, str, str]] = []
+    input_hits: List[Tuple[str, str, str]] = []
 
     def record(n: dict, t: str) -> None:
         types.add(t)
@@ -386,6 +430,10 @@ def _collect_workflow_types(
             selection = _resolve_dispatch_selection(n)
             if selection is not None and selection in bmap:
                 dispatched.append((bmap[selection], t, selection))
+        for input_name in input_coverage.get(t, {}):
+            value = _resolve_dispatch_selection(n, widget_name=input_name)
+            if value is not None:
+                input_hits.append((t, input_name, value))
 
     def visit_nodes(nodes: object) -> None:
         if not isinstance(nodes, list):
@@ -408,26 +456,37 @@ def _collect_workflow_types(
                 if isinstance(v, dict) and isinstance(v.get("class_type"), str):
                     record(v, v["class_type"])
 
-    return types, dispatched
+    return types, dispatched, input_hits
 
 
 def discover_workflow_nodes(
-    workflows_dir: Path, backend_maps: Optional[Dict[str, Dict[str, str]]] = None
-) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], int, List[str]]:
+    workflows_dir: Path,
+    backend_maps: Optional[Dict[str, Dict[str, str]]] = None,
+    input_coverage: Optional[Dict[str, Dict[str, List[str]]]] = None,
+) -> Tuple[
+    Dict[str, List[str]],
+    Dict[str, List[str]],
+    Dict[str, Dict[str, Dict[str, List[str]]]],
+    int,
+    List[str],
+]:
     """Map each node type to the workflow files that reference it, plus any
-    dispatcher-resolved backend nodes.
+    dispatcher-resolved backend nodes and declared-input value hits.
 
-    Returns ``(used, dispatched, workflow_count, warnings)`` where ``used`` is
-    ``{node_type: [workflow_filename, ...]}`` and ``dispatched`` is
-    ``{backend_node_id: [provenance_note, ...]}``.
+    Returns ``(used, dispatched, input_hits, workflow_count, warnings)`` where
+    ``used`` is ``{node_type: [workflow_filename, ...]}``, ``dispatched`` is
+    ``{backend_node_id: [provenance_note, ...]}`` and ``input_hits`` is
+    ``{node_type: {input: {value: [workflow_filename, ...]}}}`` (every string
+    value observed for a declared input, declared-required or not).
     """
     used: Dict[str, Set[str]] = {}
     dispatched: Dict[str, Set[str]] = {}
+    input_hits: Dict[str, Dict[str, Dict[str, Set[str]]]] = {}
     warnings: List[str] = []
     count = 0
 
     if not workflows_dir.is_dir():
-        return {}, {}, 0, [f"no workflows/ directory at {workflows_dir}"]
+        return {}, {}, {}, 0, [f"no workflows/ directory at {workflows_dir}"]
 
     for wf in sorted(workflows_dir.glob("*.json")):
         count += 1
@@ -436,16 +495,29 @@ def discover_workflow_nodes(
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             warnings.append(f"{wf.name}: could not parse ({e.__class__.__name__})")
             continue
-        types, dispatch_records = _collect_workflow_types(data, backend_maps)
+        types, dispatch_records, input_records = _collect_workflow_types(
+            data, backend_maps, input_coverage
+        )
         for t in types:
             used.setdefault(t, set()).add(wf.name)
         for backend_id, dispatcher_type, selection in dispatch_records:
             note = f"{wf.name} (via {dispatcher_type} backend={selection!r})"
             dispatched.setdefault(backend_id, set()).add(note)
+        for t, input_name, value in input_records:
+            input_hits.setdefault(t, {}).setdefault(input_name, {}).setdefault(
+                value, set()
+            ).add(wf.name)
 
     return (
         {t: sorted(files) for t, files in used.items()},
         {t: sorted(notes) for t, notes in dispatched.items()},
+        {
+            t: {
+                i: {v: sorted(files) for v, files in values.items()}
+                for i, values in inputs.items()
+            }
+            for t, inputs in input_hits.items()
+        },
         count,
         warnings,
     )
@@ -455,14 +527,43 @@ def discover_workflow_nodes(
 # Top-level analysis
 # --------------------------------------------------------------------------
 
-def analyze_coverage(pack_dir: Path, workflows_dir: Path | None = None) -> CoverageResult:
-    """Run a full deterministic coverage analysis for a node pack."""
+def analyze_coverage(
+    pack_dir: Path,
+    workflows_dir: Path | None = None,
+    input_coverage: Optional[Dict[str, Dict[str, List[str]]]] = None,
+) -> CoverageResult:
+    """Run a full deterministic coverage analysis for a node pack.
+
+    ``input_coverage`` carries declared input-value requirements
+    (``{node_type: {input: [values]}}``, normally from the pack's
+    ``[test.coverage.inputs]`` in comfy-test.toml).
+    """
     pack_dir = Path(pack_dir).resolve()
     workflows_dir = Path(workflows_dir).resolve() if workflows_dir else pack_dir / "workflows"
+    input_coverage = input_coverage or {}
 
     registered, reg_warnings = discover_registered_nodes(pack_dir)
     backend_maps, bmap_warnings = discover_backend_maps(pack_dir)
-    used, dispatched, wf_count, wf_warnings = discover_workflow_nodes(workflows_dir, backend_maps)
+    used, dispatched, input_hits, wf_count, wf_warnings = discover_workflow_nodes(
+        workflows_dir, backend_maps, input_coverage
+    )
+
+    # Sanity-check the declarations themselves (warnings, not failures: a bad
+    # declaration shouldn't mask the real coverage report).
+    decl_warnings: List[str] = []
+    for node_type, node_inputs in input_coverage.items():
+        if node_type not in registered:
+            decl_warnings.append(
+                f"[test.coverage.inputs] declares unknown node type "
+                f"{node_type!r} (not in this pack's NODE_CLASS_MAPPINGS)"
+            )
+        for input_name in node_inputs:
+            if node_type in used and not input_hits.get(node_type, {}).get(input_name):
+                decl_warnings.append(
+                    f"[test.coverage.inputs] {node_type}.{input_name}: input never "
+                    f"resolved to a string value on any workflow node of that type "
+                    f"(renamed input, or a non-string widget?)"
+                )
 
     return CoverageResult(
         pack_dir=pack_dir,
@@ -471,6 +572,8 @@ def analyze_coverage(pack_dir: Path, workflows_dir: Path | None = None) -> Cover
         dispatched=dispatched,
         registered=registered,
         external=set(used) - registered,
-        warnings=reg_warnings + bmap_warnings + wf_warnings,
+        warnings=reg_warnings + bmap_warnings + wf_warnings + decl_warnings,
         workflow_count=wf_count,
+        input_declared={t: dict(i) for t, i in input_coverage.items()},
+        input_hits=input_hits,
     )

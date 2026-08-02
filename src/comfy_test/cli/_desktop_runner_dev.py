@@ -115,7 +115,7 @@ def _enable_manager_legacy_ui() -> None:
     installations = settings_dir / "installations.json"
     if not installations.is_file():
         # First-run: file doesn't exist yet. Comfy Desktop writes it during
-        # the setup wizard; we'll catch it on the next run. Not fatal —
+        # the setup wizard; we'll catch it on the next run. Not fatal --
         # this run just falls through to the filesystem install fallback.
         print(f"[desktop-dev] {installations} not present yet (first-run); "
               f"legacy-UI enable deferred to next launch",

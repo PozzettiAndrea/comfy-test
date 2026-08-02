@@ -49,7 +49,7 @@ def _docker_build_context(variant: str) -> Iterator[Path]:
     The Dockerfile + entrypoint scripts ship as package data under
     `comfy_test/_docker/<variant>/`. We resolve them via importlib.resources
     so the same code path works for editable installs, PyPI wheels, and
-    zipapp/embedded installs — `as_file` extracts to a temp dir if the
+    zipapp/embedded installs -- `as_file` extracts to a temp dir if the
     package is loaded from a zip, and yields the real on-disk path otherwise.
     """
     resource = files("comfy_test").joinpath("_docker", variant)
@@ -97,7 +97,7 @@ def _build_labels() -> List[str]:
 
     Read by hub-api's _attach_comfy_test_labels (in the home-cluster repo
     at mac-mini/hub-api/tabs/runners.py) to render a version chip next to
-    each image in the dashboard's runners tab — replaces the "unstamped"
+    each image in the dashboard's runners tab -- replaces the "unstamped"
     badge. Keys use underscore form to match the existing hub-api parser.
     """
     out: List[str] = []

@@ -242,7 +242,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, cuda: bool,
             env_cache_mount_src = env_cache_dir
 
     # Grant the host's `Users` group Modify on every bind-mount source dir.
-    # The Windows GPU container now runs as `ContainerUser` (non-admin) — see
+    # The Windows GPU container now runs as `ContainerUser` (non-admin) -- see
     # docker/windows-cuda/Dockerfile. Windows containers project the host's
     # NTFS ACLs through bind mounts; ContainerUser inside maps to the host's
     # `Users` / `Authenticated Users` SID. Without an explicit grant, dirs
@@ -384,7 +384,7 @@ def _run_linux(args, docker_exe: str, cuda: bool,
         # Run as the host caller's uid so the container can write to the
         # bind-mounted /logs (owned by the caller on the host). The image
         # has no baked user, so this is the only uid the container ever
-        # sees — bugs that root-in-container would mask still surface.
+        # sees -- bugs that root-in-container would mask still surface.
         "--user", f"{os.getuid()}:{os.getgid()}",
         "--gpus", "all",
         # /dev/shm backs comfy_env's worker IPC (node outputs are serialized to
