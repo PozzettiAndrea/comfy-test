@@ -609,9 +609,18 @@ def _hide_install_console(page):
 def _find_active_comfy_install():
     """Read Comfy Desktop's installations.json and return
     (install_path, comfy_root, custom_nodes, venv_python) for the active
-    standalone install. Raises RuntimeError if not found."""
-    installations_json = (Path.home() / 'Library' / 'Application Support' /
-                          'Comfy Desktop' / 'installations.json')
+    standalone install. Raises RuntimeError if not found.
+
+    installations.json path:
+      - macOS:   ~/Library/Application Support/Comfy Desktop/installations.json
+      - Windows: %APPDATA%\\Comfy Desktop\\installations.json
+    """
+    if sys.platform == 'win32':
+        appdata = Path(os.environ.get('APPDATA') or (Path.home() / 'AppData' / 'Roaming'))
+        installations_json = appdata / 'Comfy Desktop' / 'installations.json'
+    else:
+        installations_json = (Path.home() / 'Library' / 'Application Support' /
+                              'Comfy Desktop' / 'installations.json')
     try:
         for inst in json.loads(installations_json.read_text()):
             if inst.get('sourceId') == 'standalone' and inst.get('installPath'):
@@ -623,9 +632,11 @@ def _find_active_comfy_install():
         raise RuntimeError(f'{installations_json} not found (Comfy Desktop not launched?)')
     comfy_root = install_path / 'ComfyUI'
     custom_nodes = comfy_root / 'custom_nodes'
-    venv_python = comfy_root / '.venv' / 'bin' / 'python'
+    _venv_bin = 'Scripts' if sys.platform == 'win32' else 'bin'
+    _venv_exe = 'python.exe' if sys.platform == 'win32' else 'python'
+    venv_python = comfy_root / '.venv' / _venv_bin / _venv_exe
     if not venv_python.exists():
-        venv_python = install_path / 'standalone-env' / 'bin' / 'python'
+        venv_python = install_path / 'standalone-env' / _venv_bin / _venv_exe
     return install_path, comfy_root, custom_nodes, venv_python
 
 
@@ -673,16 +684,38 @@ def _start_comfyui_log_tail():
             log('[comfyui-log-tail] gave up: no logs/comfyui.log within 60s')
             return
         log(f'[comfyui-log-tail] tailing {log_file}')
+        # Python-native tail -F equivalent: reads new lines as they're
+        # appended, and re-seeks to 0 on truncation/rotation. Works on
+        # macOS and Windows (Windows doesn't ship `tail` on PATH).
         try:
-            proc = subprocess.Popen(
-                ['tail', '-F', '-n', '+1', str(log_file)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                text=True, bufsize=1,
-            )
-            for line in proc.stdout:
-                line = line.rstrip('\n')
-                if line:
-                    log(f'[comfyui] {line}')
+            fh = open(str(log_file), 'r', encoding='utf-8', errors='replace')
+            fh.seek(0)   # replay whole log-so-far (matches old `-n +1` behavior)
+            while True:
+                line = fh.readline()
+                if not line:
+                    # No new data: brief sleep, then check for truncation.
+                    time.sleep(0.5)
+                    try:
+                        if os.stat(str(log_file)).st_size < fh.tell():
+                            fh.seek(0)
+                    except FileNotFoundError:
+                        # File was rotated away; try to reopen a few times.
+                        for _ in range(10):
+                            time.sleep(0.5)
+                            try:
+                                fh.close()
+                                fh = open(str(log_file), 'r', encoding='utf-8', errors='replace')
+                                break
+                            except FileNotFoundError:
+                                continue
+                        else:
+                            log(f'[comfyui-log-tail] log gone: {log_file}')
+                            return
+                    continue
+                # Emit through the same [comfyui] prefix as before.
+                stripped = line.rstrip('\n')
+                if stripped:
+                    log(f'[comfyui] {stripped}')
         except Exception as e:
             log(f'[comfyui-log-tail] tail failed: {e}')
 

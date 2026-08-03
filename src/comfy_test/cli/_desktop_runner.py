@@ -102,7 +102,14 @@ def _enable_manager_legacy_ui() -> None:
     since the primary install path is the Manager-UI clickthrough, which
     doesn't need the legacy UI.
     """
-    settings_dir = _resolve_user_profile() / "Library" / "Application Support" / "Comfy Desktop"
+    # installations.json path:
+    #   macOS:   ~/Library/Application Support/Comfy Desktop/installations.json
+    #   Windows: %APPDATA%\Comfy Desktop\installations.json
+    if sys.platform == "win32":
+        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        settings_dir = appdata / "Comfy Desktop"
+    else:
+        settings_dir = _resolve_user_profile() / "Library" / "Application Support" / "Comfy Desktop"
     installations = settings_dir / "installations.json"
     if not installations.is_file():
         print(f"[desktop] {installations} not present yet (first-run); "
@@ -649,12 +656,21 @@ def _collect_logs(desktop_mode: str, dest: Path) -> None:
         for name in _APP_NAMES:
             sources.append(appdata / name / "logs")
     # Modern Comfy Desktop writes its backend log to a per-install path
-    # under ~/ComfyUI-Installs/<slot>/logs/comfyui.log (Desktop numbers
-    # slots as "ComfyUI", "ComfyUI (1)", ...). ComfyUI's own user-dir
-    # log also lives at ~/ComfyUI-Installs/<slot>/ComfyUI/user/*.log.
-    # Older source paths above don't cover either; glob both.
-    sources += list(Path.home().glob("ComfyUI-Installs/*/logs"))
-    sources += list(Path.home().glob("ComfyUI-Installs/*/ComfyUI/user"))
+    # (macOS default: ~/ComfyUI-Installs/<slot>/logs/comfyui.log; Windows
+    # default: %LOCALAPPDATA%\Programs\Comfy Desktop\..., user-chosen).
+    # Ask installations.json for the authoritative slot rather than
+    # guessing — that's how cdp_driver's live-tailer resolves it too.
+    try:
+        from comfy_test.platforms.desktop.cdp_driver import _find_active_comfy_install
+        _install_path, _comfy_root, _, _ = _find_active_comfy_install()
+        sources.append(_install_path / "logs")
+        sources.append(_comfy_root / "user")
+    except Exception:
+        # Fall back to the macOS default glob when installations.json
+        # isn't readable (e.g. Desktop never launched — nothing to collect
+        # anyway, but the fallback keeps prior behavior).
+        sources += list(Path.home().glob("ComfyUI-Installs/*/logs"))
+        sources += list(Path.home().glob("ComfyUI-Installs/*/ComfyUI/user"))
     for src in sources:
         if not src.is_dir():
             continue
