@@ -669,11 +669,15 @@ def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str,
                     dev: bool = False) -> None:
     """Render per-platform index.html into logs_dir using the framework's
     own report generator. Skips with a warning on import error so a missing
-    optional dep doesn't fail the whole run."""
-    base_id = {"mac": "macos-desktop",
-               "windows": "windows-desktop",
-               "windows_cuda": "windows-desktop-cuda"}[desktop_mode]
-    platform_id = f"{base_id}-dev" if dev else base_id
+    optional dep doesn't fail the whole run.
+
+    `dev` is accepted for backward compat with existing call sites but
+    ignored — --desktop and --desktop --dev share the same platform id;
+    branch separation happens at the run-dir level (branch subdir).
+    """
+    platform_id = {"mac": "macos-desktop",
+                   "windows": "windows-desktop",
+                   "windows_cuda": "windows-desktop-cuda"}[desktop_mode]
     try:
         from comfy_test.reporting.html_report import generate_html_report
         generate_html_report(logs_dir, repo_name=node_repo, current_platform=platform_id)
@@ -1101,19 +1105,18 @@ def run_desktop(args, desktop_mode: str) -> int:
     # Logs dir matches the cli/run.py shape: <run_id>/<branch>/<platform>/
     # so dispatch-test.yml's publish step finds results.json with the same
     # `find -path "*/<short>-*/<branch>/<platform>/results.json"` glob it
-    # uses for cpu / gpu jobs. With --dev, platform suffix flips to
-    # -desktop-dev so dev-branch results don't collide with main-branch
-    # ones in the same artifact tree.
+    # uses for cpu / gpu jobs. --desktop and --desktop --dev share the same
+    # platform dir; separation comes naturally from the branch subdir
+    # (main/ vs dev/) same as cpu vs gpu.
     short = node_name.removeprefix("ComfyUI-")
     timestamp = datetime.now().strftime("%H%M")
     run_id = f"{short}-{timestamp}"
     branch_dir = node_branch
-    _base_platform_id = {
+    platform_dir = {
         "mac":         "macos-desktop",
         "windows":     "windows-desktop",
         "windows_cuda": "windows-desktop-cuda",
     }.get(desktop_mode, desktop_mode)
-    platform_dir = f"{_base_platform_id}-dev" if dev else _base_platform_id
     # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
     # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
     # finds the run dir). Fall back to ~/comfy-test-logs for local use.
@@ -1181,13 +1184,11 @@ def run_desktop(args, desktop_mode: str) -> int:
         # cdp_driver writes these into results.json so the dashboard can
         # render the cell colored by pass/fail and match the cpu schema.
         "COMFY_TEST_NODE_SHA": node_sha or "",
-        "COMFY_TEST_DESKTOP_PLATFORM": (
-            {
-                "mac":         "macos_desktop_dev" if dev else "macos_desktop",
-                "windows":     "windows_desktop_dev" if dev else "windows_desktop",
-                "windows_cuda": "windows_desktop_cuda_dev" if dev else "windows_desktop_cuda",
-            }.get(desktop_mode, "unknown_desktop")
-        ),
+        "COMFY_TEST_DESKTOP_PLATFORM": {
+            "mac":         "macos_desktop",
+            "windows":     "windows_desktop",
+            "windows_cuda": "windows_desktop_cuda",
+        }.get(desktop_mode, "unknown_desktop"),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.
         "COMFY_DESKTOP_APP_EXE": str(_APP_EXE),

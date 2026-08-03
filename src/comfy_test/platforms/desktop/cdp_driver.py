@@ -123,7 +123,7 @@ def main_page(browser):
     return cands[0][0] if cands else None
 
 try:
-    tg = json.loads(urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json').read())
+    tg = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{_CDP_PORT}/json').read())
     (OUT / 'targets.json').write_text(json.dumps(tg, indent=2))
     log(f'CDP targets: {len(tg)}')
     for t in tg:
@@ -144,16 +144,16 @@ def _prune_blank_targets(cdp_port):
     import websocket as _ws
     try:
         pages = json.loads(urllib.request.urlopen(
-            f'http://localhost:{cdp_port}/json/list', timeout=2).read())
+            f'http://127.0.0.1:{cdp_port}/json/list', timeout=2).read())
         blanks = [p for p in pages
                   if p.get('type') == 'page' and not p.get('url')]
         if not blanks:
             return
         ver = json.loads(urllib.request.urlopen(
-            f'http://localhost:{cdp_port}/json/version', timeout=2).read())
+            f'http://127.0.0.1:{cdp_port}/json/version', timeout=2).read())
         bws = _ws.create_connection(ver['webSocketDebuggerUrl'],
                                     timeout=5,
-                                    origin=f'http://localhost:{cdp_port}')
+                                    origin=f'http://127.0.0.1:{cdp_port}')
         try:
             for i, p in enumerate(blanks, 1):
                 bws.send(json.dumps({
@@ -200,7 +200,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
     def _attach_panel():
         """Find the panel.html page + open a WS to it. Returns (ws, url)."""
         pages = json.loads(urllib.request.urlopen(
-            f'http://localhost:{cdp_port}/json/list', timeout=3).read())
+            f'http://127.0.0.1:{cdp_port}/json/list', timeout=3).read())
         cand = None
         for p in pages:
             if p.get('type') == 'page' and 'panel.html' in p.get('url', ''):
@@ -210,7 +210,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
             return None, None
         return (websocket.create_connection(cand['webSocketDebuggerUrl'],
                                             timeout=10,
-                                            origin=f'http://localhost:{cdp_port}'),
+                                            origin=f'http://127.0.0.1:{cdp_port}'),
                 cand['url'])
 
     def _eval(ws, expr):
@@ -229,7 +229,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
         back to trying both known ports if no page URL matches yet."""
         try:
             pages = json.loads(urllib.request.urlopen(
-                f'http://localhost:{cdp_port}/json/list', timeout=2).read())
+                f'http://127.0.0.1:{cdp_port}/json/list', timeout=2).read())
             for p in pages:
                 u = p.get('url', '')
                 m = _re.search(r'127\.0\.0\.1:(\d+)', u)
@@ -301,14 +301,14 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
         doing it here means the driver starts on a clean canvas."""
         try:
             pages = json.loads(urllib.request.urlopen(
-                f'http://localhost:{cdp_port}/json/list', timeout=2).read())
+                f'http://127.0.0.1:{cdp_port}/json/list', timeout=2).read())
             comfy = next((p for p in pages
                           if p.get('type') == 'page'
                           and '127.0.0.1' in p.get('url', '')), None)
             if not comfy: return
             pws = websocket.create_connection(comfy['webSocketDebuggerUrl'],
                                               timeout=5,
-                                              origin=f'http://localhost:{cdp_port}')
+                                              origin=f'http://127.0.0.1:{cdp_port}')
             try:
                 for evt_type in ('keyDown', 'keyUp'):
                     i = _ws_id()
@@ -521,6 +521,91 @@ def _hide_test_disclaimer(page):
         pass
 
 
+# Install-console overlay: fixed-position dark monospace panel that
+# renders inside the ComfyUI WebContents (so it shows up on the
+# per-workflow video). Used by the --dev install path to demonstrate
+# the exact git/pip/install.py commands a dev-branch user would type,
+# streaming subprocess output into it live.
+_INSTALL_CONSOLE_JS = r'''
+(() => {
+  const id = '__cm_install_console';
+  if (document.getElementById(id)) return;
+  const el = document.createElement('div');
+  el.id = id;
+  el.style.cssText = [
+    'position:fixed', 'top:0', 'right:0', 'bottom:0',
+    'width:50vw', 'height:100vh',
+    'background:#0a0a0a', 'color:#e0e0e0',
+    'border:0', 'border-left:2px solid #3a3a3a',
+    'padding:16px 20px', 'box-sizing:border-box',
+    'font:13px/1.45 ui-monospace,Consolas,Menlo,monospace',
+    'overflow-y:auto', 'z-index:2147483647',
+    'box-shadow:-12px 0 40px rgba(0,0,0,.6)',
+    'white-space:pre-wrap', 'word-break:break-word',
+  ].join(';');
+  const hdr = document.createElement('div');
+  hdr.textContent = 'installing (dev branch) — actual commands running in ComfyUI Desktop:';
+  hdr.style.cssText = 'color:#7cf;margin-bottom:10px;letter-spacing:.03em;font-size:12px';
+  const body = document.createElement('div');
+  body.id = id + '_body';
+  el.appendChild(hdr);
+  el.appendChild(body);
+  document.body.appendChild(el);
+})();
+'''
+
+# Line-based appender: split on newlines, color each line by prefix so
+# our commands ($ ...) and meta-notes (# ...) pop against subprocess
+# output. subprocess.Popen with bufsize=1 gives complete lines, so
+# splitting is safe (no mid-line boundary issues).
+_INSTALL_CONSOLE_APPEND_JS = r'''
+(text) => {
+  const b = document.getElementById('__cm_install_console_body');
+  if (!b) return;
+  const parts = text.split('\n');
+  for (let i = 0; i < parts.length; i++) {
+    const line = parts[i];
+    // Drop the trailing empty string from a text ending in '\n' —
+    // otherwise we'd emit a blank <span> per append call.
+    if (line === '' && i === parts.length - 1) break;
+    let color = '#e0e0e0';
+    if (line.startsWith('$ ')) color = '#8be07c';           // our commands: green
+    else if (line.startsWith('#')) color = '#c2a3ff';       // our meta-notes: purple
+    else if (line.trim().startsWith('→ exit')) color = '#ffb87a';  // exit line: salmon
+    const span = document.createElement('span');
+    span.style.color = color;
+    span.textContent = line + '\n';
+    b.appendChild(span);
+  }
+  const p = b.parentElement;
+  p.scrollTop = p.scrollHeight;
+}
+'''
+
+_INSTALL_CONSOLE_HIDE_JS = "() => { const el = document.getElementById('__cm_install_console'); if (el) el.remove(); }"
+
+
+def _show_install_console(page):
+    try:
+        page.evaluate(_INSTALL_CONSOLE_JS)
+    except Exception as e:
+        log(f'  console show failed: {e}')
+
+
+def _console_append(page, text):
+    try:
+        page.evaluate(_INSTALL_CONSOLE_APPEND_JS, text)
+    except Exception:
+        pass  # single append failing is OK; the subprocess keeps running
+
+
+def _hide_install_console(page):
+    try:
+        page.evaluate(_INSTALL_CONSOLE_HIDE_JS)
+    except Exception:
+        pass
+
+
 def _find_active_comfy_install():
     """Read Comfy Desktop's installations.json and return
     (install_path, comfy_root, custom_nodes, venv_python) for the active
@@ -725,6 +810,97 @@ def _reboot_via_manager_and_wait():
     return False
 
 
+def _install_via_visible_shell(page, node_repo, node_branch,
+                                custom_nodes, venv_python):
+    """Skip the Manager UI entirely and run git clone / pip / install.py
+    directly, streaming each command's output into the install-console
+    overlay so the recorded video demonstrates the exact commands a
+    dev-branch user would run.
+
+    Uses ComfyUI Desktop's bundled `.venv/bin/python` for pip + install.py
+    so the demo matches what the viewer's own Desktop app would use.
+    Batches subprocess stdout every ~150ms — one page.evaluate() per
+    line would be too chatty over CDP.
+    """
+    node_name = node_repo.split('/')[-1]
+    node_dir = custom_nodes / node_name
+    _show_install_console(page)
+    log(f'  install-shell: rendering console overlay in ComfyUI window')
+
+    def _stream(cmd_argv, cwd=None):
+        pretty = ' '.join(cmd_argv)
+        log(f'  install-shell: $ {pretty}')
+        _console_append(page, f'$ {pretty}\n')
+        try:
+            proc = subprocess.Popen(
+                cmd_argv,
+                cwd=str(cwd) if cwd else None,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except FileNotFoundError as e:
+            _console_append(page, f'  → command not found: {e}\n\n')
+            return 127
+        buf = []
+        last_flush = time.time()
+        for line in proc.stdout:
+            buf.append(line)
+            if time.time() - last_flush > 0.15:
+                _console_append(page, ''.join(buf))
+                buf.clear()
+                last_flush = time.time()
+        if buf:
+            _console_append(page, ''.join(buf))
+        rc = proc.wait()
+        _console_append(page, f'  → exit {rc}\n\n')
+        return rc
+
+    # If the dir already exists (Manager left a stub, prior run, etc),
+    # git clone would refuse. Wipe first so the clone is clean.
+    if node_dir.exists():
+        _console_append(page, f'# clearing prior {node_dir.name}/ before clone\n')
+        try:
+            import shutil as _shutil
+            _shutil.rmtree(node_dir)
+        except Exception as e:
+            _console_append(page, f'  → wipe failed: {e}\n\n')
+
+    _stream(['git', 'clone', '--depth', '1', '-b', node_branch,
+             f'https://github.com/{node_repo}.git', str(node_dir)])
+
+    reqs = node_dir / 'requirements.txt'
+    if reqs.is_file() and venv_python.exists():
+        _stream([str(venv_python), '-m', 'pip', 'install', '--no-input',
+                 '-r', str(reqs)])
+    elif not reqs.is_file():
+        _console_append(page, '# no requirements.txt — skipping pip\n\n')
+
+    install_py = node_dir / 'install.py'
+    if install_py.is_file() and venv_python.exists():
+        _stream([str(venv_python), 'install.py'], cwd=node_dir)
+    elif not install_py.is_file():
+        _console_append(page, '# no install.py — skipping\n\n')
+
+    _console_append(page, '# rebooting ComfyUI backend via Manager...\n')
+    log('  install-shell: rebooting ComfyUI via Manager API')
+    _reboot_via_manager_and_wait()
+    # Manager reboot restarts Python but the frontend renderer's
+    # extension-list cache is still stale (Templates panel is populated
+    # from that cache — without a reload the new node's template
+    # section never appears). Same pattern as the old Manager-UI-install
+    # post-Apply-Changes reload at ~L2075.
+    _console_append(page, '# reloading renderer to refresh extension list\n')
+    log('  install-shell: reloading renderer')
+    try:
+        page.reload(wait_until='load', timeout=30_000)
+        install_cursor(page)   # cursor injection is DOM-based; wiped by reload
+    except Exception as e:
+        log(f'  install-shell: post-reboot reload failed (non-fatal): {e}')
+    _console_append(page, '# done. running tests now.\n')
+    time.sleep(4)   # let the viewer read the "done" line before we hide
+    _hide_install_console(page)
+
+
 def _kill_comfy_proc():
     try:
         if sys.platform == 'win32':
@@ -827,7 +1003,7 @@ def _launch_comfy_random_port():
 def _wait_cdp_up(timeout_s=240):
     for i in range(timeout_s):
         try:
-            urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
+            urllib.request.urlopen(f'http://127.0.0.1:{_CDP_PORT}/json/version', timeout=1)
             log(f'  loop: CDP up after {i+1}s')
             return True
         except Exception:
@@ -1324,7 +1500,7 @@ def _parse_cpu_spec():
 
 with sync_playwright() as p:
     _prune_blank_targets(_CDP_PORT)
-    browser = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
+    browser = p.chromium.connect_over_cdp(f'http://127.0.0.1:{_CDP_PORT}')
     _browser_ref[0] = browser
     page = main_page(browser)
     if not page:
@@ -1480,7 +1656,7 @@ with sync_playwright() as p:
         # Wait for CDP to be reachable again (in case Electron is mid-restart).
         for _i in range(120):
             try:
-                urllib.request.urlopen(f'http://localhost:{_CDP_PORT}/json/version', timeout=1)
+                urllib.request.urlopen(f'http://127.0.0.1:{_CDP_PORT}/json/version', timeout=1)
                 break
             except Exception:
                 time.sleep(1)
@@ -1491,7 +1667,7 @@ with sync_playwright() as p:
         except Exception: pass
         try:
             _prune_blank_targets(_CDP_PORT)
-            nb = p.chromium.connect_over_cdp(f'http://localhost:{_CDP_PORT}')
+            nb = p.chromium.connect_over_cdp(f'http://127.0.0.1:{_CDP_PORT}')
             _browser_ref[0] = nb
             _capture_warned[0] = False
             np = main_page(nb)
@@ -1564,12 +1740,19 @@ with sync_playwright() as p:
     # Cloud upsell was removed from Comfy Desktop 1.0.34+ — don't waste
     # 30s polling for a button that isn't rendered anymore. If it comes
     # back in a future build, re-add here.
+    # Read branch early so we can decide whether to open the Extensions
+    # sidebar. On --dev we do a visible shell install and never touch
+    # Manager UI — opening Extensions is pointless noise on the video.
+    _early_node_branch = os.environ.get('NODE_BRANCH', 'main')
     POST_ACTIONS = [
         ('Close Templates', 'templates',
          ['button[aria-label="Close"]:visible'], 8),
-        ('Extensions', 'extensions',
-         ['button[aria-label="Extensions"]:visible'], 8),
     ]
+    if _early_node_branch == 'main':
+        POST_ACTIONS.append(
+            ('Extensions', 'extensions',
+             ['button[aria-label="Extensions"]:visible'], 8),
+        )
     for name, kind, selectors, secs in POST_ACTIONS:
         log(f'  post: waiting for {name}')
         deadline = time.time() + secs
@@ -1611,6 +1794,22 @@ with sync_playwright() as p:
     node_repo = os.environ.get('NODE_REPO', '')
     node_branch = os.environ.get('NODE_BRANCH', 'main')
     base = f'http://127.0.0.1:{_COMFY_PORT or 8188}'
+
+    # --- --dev branch gate ---
+    # For any non-main branch, skip the Manager UI clickthrough entirely
+    # and do a visible git-clone + pip + install.py inside a console
+    # overlay. The video becomes a live demo of the exact commands a
+    # dev-branch user would run in their own Desktop terminal. Bare
+    # --desktop (NODE_BRANCH=main) keeps the existing Manager-UI flow
+    # below unchanged — that's the "install the pyproject.toml version"
+    # path CADabra publishes to CNR nightly.
+    _did_visible_install = False
+    if node_branch and node_branch != 'main':
+        _, _install_path, _custom_nodes, _venv_python = _find_active_comfy_install()
+        log(f'  ext: --dev path (branch={node_branch}) — using visible shell install, skipping Manager UI')
+        _install_via_visible_shell(page, node_repo, node_branch,
+                                    _custom_nodes, _venv_python)
+        _did_visible_install = True
 
     # ------------------------------------------------------------------
     # Manager-UI install flow (visible in CDP video):
@@ -1693,7 +1892,7 @@ with sync_playwright() as p:
     log(f'  ext: node meta = display={NODE_DISPLAY_NAME!r} publisher={PUBLISHER!r} version={NODE_VERSION!r}')
 
     ui_install_done = False
-    if NODE_DISPLAY_NAME and PUBLISHER:
+    if NODE_DISPLAY_NAME and PUBLISHER and not _did_visible_install:
         try:
             sleep_capturing(page, 3, fps=5)
             log(f'  ext: searching "{NODE_DISPLAY_NAME}"')
@@ -1848,7 +2047,7 @@ with sync_playwright() as p:
             log(f'  ext: UI install flow failed: {e.__class__.__name__}: {e}')
             ui_install_done = False
 
-    if not ui_install_done:
+    if not ui_install_done and not _did_visible_install:
         # --------------------------------------------------------------
         # Fallback: direct filesystem clone (branch-pinned from start).
         # --------------------------------------------------------------
