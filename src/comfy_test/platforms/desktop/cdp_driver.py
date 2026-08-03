@@ -460,6 +460,22 @@ def install_dialog_handler(page):
         log(f'  dialog handler attach failed: {e}')
 
 
+def install_viewport_size(page, width=1920, height=1080):
+    """Pin browser viewport (CSS pixels) so page.screenshot(), per-workflow
+    videos, and the live viewer all render at a predictable size.
+
+    Overrides via Emulation.setDeviceMetricsOverride (Playwright's
+    set_viewport_size). Independent of the Electron OS window size —
+    Comfy Desktop's own BrowserWindow default is ~1280×863, but that's
+    just the OS frame; what we capture is the WebContents viewport,
+    which this pins to 1080p.
+    """
+    try:
+        page.set_viewport_size({"width": width, "height": height})
+    except Exception as e:
+        log(f'  viewport {width}x{height} set failed: {e}')
+
+
 # Test-harness banner: yellow fixed-position strip across the top of the
 # ComfyUI window. Used to announce shell steps we run BEHIND Manager's
 # install (e.g. `git checkout dev` after Manager clones main) so a viewer
@@ -1317,6 +1333,7 @@ with sync_playwright() as p:
     log(f'Main page: {page.url} | {page.title()}')
     install_cursor(page)
     install_dialog_handler(page)
+    install_viewport_size(page)
     # Start streaming ComfyUI's stdout into our session log so
     # execution_error tracebacks, missing-input warnings, etc. show up
     # live in the driver output (and the live viewer's log panel).
@@ -1483,6 +1500,7 @@ with sync_playwright() as p:
                 return nb, None
             install_cursor(np)
             install_dialog_handler(np)
+            install_viewport_size(np)
             log(f'  recovery: reattached at {np.url}')
             return nb, np
         except Exception as e:
