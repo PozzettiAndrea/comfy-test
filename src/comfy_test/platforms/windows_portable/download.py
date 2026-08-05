@@ -101,7 +101,7 @@ def find_7z_executable() -> Optional[str]:
 
 
 def extract_7z(archive: Path, dest: Path, log: Callable[[str], None]) -> None:
-    """Extract 7z archive using 7z CLI or py7zr.
+    r"""Extract 7z archive using 7z CLI or py7zr.
 
     Windows long-path note: ComfyUI portable contains pytorch headers and
     transformers __pycache__ trees with paths > 260 chars. 7z silently emits

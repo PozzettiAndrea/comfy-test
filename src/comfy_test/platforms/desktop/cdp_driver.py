@@ -1079,6 +1079,117 @@ _QUEUE_PROMPT_JS = r"""
 """
 
 
+def _queued_prompt_ids():
+    """Every prompt_id ComfyUI currently knows about: queued, running or done.
+
+    Used to prove that clicking Run actually submitted something. The button
+    click reporting success is NOT evidence: measured in CADabra-1406, a
+    force-click on Run logged `clicked Run` while /queue and /history both
+    stayed empty, and all 21 workflows then sat until WORKFLOW TIMEOUT.
+    """
+    ids = set()
+    base = _comfy_base_url()
+    try:
+        with urllib.request.urlopen(base + '/queue', timeout=5) as r:
+            d = json.loads(r.read() or b'{}')
+        for key in ('queue_running', 'queue_pending'):
+            for item in (d.get(key) or []):
+                if isinstance(item, (list, tuple)) and len(item) > 1:
+                    ids.add(str(item[1]))
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(base + '/history', timeout=5) as r:
+            d = json.loads(r.read() or b'{}')
+        if isinstance(d, dict):
+            ids.update(str(k) for k in d)
+    except Exception:
+        pass
+    return ids
+
+
+def _click_run_and_confirm(page, wait_s=3):
+    """Press the Run button like a user, and verify a prompt was really queued.
+
+    Preferred over POSTing /prompt because it exercises what a user actually
+    does: the button, the frontend's graph->prompt conversion and its queue
+    call. The caller falls back to _queue_prompt() when this returns False, so
+    a UI regression degrades to a working run rather than 21 dead workflows.
+
+    Returns True only when a NEW prompt_id appeared server-side.
+    """
+    before = _queued_prompt_ids()
+    try:
+        # Order matters. ComfyUI's Run control is a SPLIT button:
+        #
+        #   [data-testid="queue-button"]            79x32  text "Run"   <- runs
+        #   [data-testid="queue-mode-menu-trigger"] 24x32  aria "Run"   <- menu
+        #
+        # The chevron is the one carrying aria-label="Run"; the real button has
+        # no aria-label. Leading with button[aria-label="Run"] therefore
+        # resolved the chevron, and every "clicked Run" just opened the
+        # queue-mode dropdown -- measured in CADabra-1623, run-diag showed
+        # elementFromPoint at its centre was the chevron itself, so the click
+        # landed cleanly on the wrong control. 21/21 workflows queued nothing
+        # and were rescued by the POST fallback.
+        run_btn = None
+        for sel in ('[data-testid="queue-button"]',
+                    'button:has-text("Run"):visible',
+                    'button[aria-label="Run"]:visible'):
+            loc = page.locator(sel).first
+            if loc.count():
+                run_btn = loc
+                log(f'  ext: Run button via [{sel}]')
+                break
+        if run_btn is None:
+            log('  ext: Run button not found; falling back to POST /prompt')
+            return False
+        click_with_cursor(page, run_btn)
+        log('  ext: clicked Run')
+    except Exception as e:
+        log(f'  ext: Run click failed ({e}); falling back to POST /prompt')
+        return False
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        new = _queued_prompt_ids() - before
+        if new:
+            log(f'  ext: Run queued prompt {sorted(new)[0][:12]}')
+            return True
+        time.sleep(0.5)
+    # Coordinate input does not reach this button on this host, so fall through
+    # to a DOM-level click. THIS is what actually queues here.
+    #
+    # Measured in CADabra-1709: a listener attached to the button before the
+    # coordinate click recorded pointerdown=0 mousedown=0 click=0, while
+    # elementFromPoint at its centre returned the button and rafFired=1 proved
+    # the window was live -- i.e. the button was right there and the synthesised
+    # input never arrived. el.click() then queued immediately
+    # (`DOM click queued prompt a1b2ec33-030`), which also proves the frontend
+    # does NOT gate on isTrusted. So the button's own handler runs; only input
+    # delivery to the top strip of this window is broken.
+    #
+    # The coordinate click above is kept deliberately: it is the real
+    # interaction, it costs a few seconds, and if input delivery is ever fixed
+    # we will see `Run queued prompt` instead of this path and know.
+    try:
+        run_btn.evaluate('el => el.click()')
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            new = _queued_prompt_ids() - before
+            if new:
+                log(f'  ext: Run queued prompt {sorted(new)[0][:12]} '
+                    f'(via the button handler; coordinate input did not land)')
+                return True
+            time.sleep(0.5)
+        log('  ext: DOM click also queued nothing')
+    except Exception as e:
+        log(f'  ext: DOM click failed: {e}')
+
+    log('  ext: Run did not queue anything; falling back to POST /prompt '
+        'for the rejection reason')
+    return False
+
+
 def _queue_prompt(page):
     """Queue the loaded graph programmatically. Returns True if submitted.
 
@@ -1867,16 +1978,22 @@ def _open_templates_and_section(page_arg, node_package_name):
                 log(f'  ext:     nav label: {lbl!r}')
         except Exception as e:
             log(f'  ext:   diag failed: {e}')
-        # Leave Comfy Desktop running for 4 minutes so we can inspect
-        # the live DOM via CDP from outside the driver. Live-viewer keeps
-        # streaming during this pause (sleep_capturing).
-        log('  ext: PAUSING 240s so external CDP inspection is possible')
-        log('  ext:   port:  cat "$HOME/Library/Application Support/Comfy Desktop/DevToolsActivePort"')
-        log('  ext:   pages: curl -s http://localhost:<port>/json/list')
-        try:
-            sleep_capturing(page_arg, 240, fps=5)
-        except Exception:
-            pass
+        # No pause here. This used to sleep 240s so a human could poke the DOM
+        # over CDP, which made sense when the section could never be found and
+        # the run was going to fail anyway. Now the section IS findable (the
+        # backend serves cloned nodes at /api/workflow_templates -- verified:
+        # {"ComfyUI-CADabra": ["analyse_CAD", ...]}), so a miss here is a real
+        # regression worth failing fast on, and the caller falls back to
+        # loading the graph from disk. At x21 workflows the pause alone was
+        # over an hour. Set COMFY_TEST_TEMPLATES_PAUSE_S to re-enable it.
+        _pause = int(os.environ.get('COMFY_TEST_TEMPLATES_PAUSE_S', '0') or 0)
+        if _pause:
+            log(f'  ext: PAUSING {_pause}s so external CDP inspection is possible')
+            log('  ext:   pages: curl -s http://127.0.0.1:<cdp port>/json/list')
+            try:
+                sleep_capturing(page_arg, _pause, fps=5)
+            except Exception:
+                pass
         return False
     try:
         node_section.scroll_into_view_if_needed()
@@ -1964,14 +2081,25 @@ def _workflow_json_path(target_name):
 
 
 def _load_graph_from_disk(page_arg, target_name):
-    """Load a workflow straight into the canvas, bypassing Templates.
+    """Load a workflow straight into the canvas. Fallback for the Templates UI.
 
-    The Templates sidebar was the only graph-loading mechanism here, which
-    made the whole suite depend on a UI panel that a git-cloned node is not
-    listed in -- its section is looked up by NODE_NAME.lower(), but the
-    frontend's template manifest only carries registry (CNR) packages. All
-    21 workflows failed on that lookup with duration_seconds=0, having never
-    executed. The JSON is already on disk from the clone, so load it directly.
+    CORRECTION: an earlier version of this docstring claimed a git-cloned node
+    is absent from the frontend's template manifest, and that this was why all
+    21 workflows failed with duration_seconds=0. Both halves were wrong.
+
+    - The manifest DOES carry cloned nodes. Measured against a live backend:
+      GET /api/workflow_templates -> {"ComfyUI-CADabra": ["analyse_CAD",
+      "cad_curvature", ...]} -- ComfyUI scans custom_nodes/*/workflows/.
+    - The real failure was the click. CADabra-1155:
+      `Templates click failed: Locator.click: Timeout 10000ms exceeded`
+      with `locator resolved to <button aria-label="Templates" ...>`. The
+      button was found; playwright's actionability "stable" check could not
+      pass because the window never presented a frame. The section lookup was
+      never reached, so the manifest was never actually tested.
+
+    Templates is the primary path again. This stays as the fallback: it is
+    faster and immune to UI churn, and it is what runs if the sidebar or the
+    card cannot be clicked.
 
     Returns True if the graph was loaded.
     """
@@ -2006,32 +2134,79 @@ def _load_graph_from_disk(page_arg, target_name):
         return False
 
 
+def _close_templates_panel(page_arg):
+    """Dismiss the Templates browser if it is still open.
+
+    It is an overlay across the canvas. Leaving it up hides the Run button:
+    the actionability check fails, a force-click lands on the OVERLAY, and the
+    driver logs `clicked Run` while /queue and /history stay empty. Measured in
+    CADabra-1533 -- every workflow reported `Run clicked but nothing was
+    queued` once the sidebar was re-enabled.
+
+    Escape is deliberately not used: on Windows it hides the whole app window.
+    """
+    for sel in ('button[aria-label="Close"]:visible',
+                'button[aria-label="Close dialog"]:visible',
+                '[role="dialog"] button:has-text("Close"):visible'):
+        try:
+            btn = page_arg.locator(sel).first
+            if btn.count():
+                click_with_cursor(page_arg, btn)
+                log(f'  ext: closed Templates panel via [{sel}]')
+                sleep_capturing(page_arg, 1, fps=5)
+                return True
+        except Exception:
+            continue
+    # Nothing matched -- report whether an overlay is still up, since that is
+    # the thing that will silently eat the Run click.
+    try:
+        still = page_arg.evaluate(
+            """() => document.querySelectorAll(
+                 '.p-dialog-mask, .p-overlay, [role="dialog"], .p-drawer-mask'
+               ).length""")
+        if still:
+            log(f'  ext: WARNING Templates panel may still be open '
+                f'({still} overlay element(s)); Run click may not land')
+    except Exception:
+        pass
+    return False
+
+
 def _run_named_card(page_arg, target_name):
     """Load the target workflow, install WS listener, click Run, wait up to
     600s. Returns {name, status, duration_seconds, error}."""
-    if _load_graph_from_disk(page_arg, target_name):
-        sleep_capturing(page_arg, 2, fps=5)
-    else:
-        log(f'  ext: clicking template {target_name}')
-        try:
-            # No `:visible` filter -- cards lower in the section's grid may be
-            # off-screen until scrolled into view. data-testid is unique per
-            # workflow, so the unfiltered locator is safe.
-            card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]').first
-            if not card.count():
-                log(f'  ext: card {target_name} not found in section DOM')
-                return {'name': target_name, 'status': 'fail',
-                        'duration_seconds': 0,
-                        'error': f'card {target_name} not found in section'}
+    # Click the template card first -- that is the user path, and it both loads
+    # the graph AND dismisses the Templates overlay. Loading from disk while the
+    # panel is open leaves the overlay covering the Run button.
+    loaded = False
+    try:
+        # No `:visible` filter -- cards lower in the section's grid may be
+        # off-screen until scrolled into view. data-testid is unique per
+        # workflow, so the unfiltered locator is safe.
+        card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]').first
+        if card.count():
+            log(f'  ext: clicking template {target_name}')
             card.scroll_into_view_if_needed()
             sleep_capturing(page_arg, 1, fps=5)
             click_with_cursor(page_arg, card)
             log(f'  ext: clicked template {target_name}')
             sleep_capturing(page_arg, 5, fps=5)
-        except Exception as e:
-            log(f'  ext: template click failed: {e}')
+            loaded = True
+        else:
+            log(f'  ext: card {target_name} not in section DOM; loading from disk')
+    except Exception as e:
+        log(f'  ext: template click failed ({e}); loading from disk')
+
+    if not loaded:
+        if not _load_graph_from_disk(page_arg, target_name):
             return {'name': target_name, 'status': 'fail',
-                    'duration_seconds': 0, 'error': str(e)}
+                    'duration_seconds': 0,
+                    'error': f'could not load {target_name} from card or disk'}
+        sleep_capturing(page_arg, 2, fps=5)
+
+    # Whichever route loaded the graph, make sure nothing is left covering the
+    # canvas before we go for Run.
+    _close_templates_panel(page_arg)
 
     log('  ext: installing WS execution listener')
     try:
@@ -2039,26 +2214,19 @@ def _run_named_card(page_arg, target_name):
     except Exception as e:
         log(f'  ext: WS listener install failed: {e}')
 
-    _q = _queue_prompt(page_arg)
-    if _q == 'rejected':
-        # ComfyUI validated the graph and refused it, so it will never emit an
-        # execution event. Report the real reason now rather than burning the
-        # full workflow timeout and calling it a TIMEOUT.
-        return {'name': target_name, 'status': 'fail', 'duration_seconds': 0,
-                'error': 'prompt rejected by ComfyUI (see session.log for '
-                         'node_errors)'}
-    if not _q:
-        log('  ext: clicking Run')
-        try:
-            run_btn = page_arg.locator(
-                'button[aria-label="Run"]:visible, button:has-text("Run"):visible').first
-            if run_btn.count():
-                click_with_cursor(page_arg, run_btn)
-                log('  ext: clicked Run')
-            else:
-                log('  ext: Run button not found')
-        except Exception as e:
-            log(f'  ext: Run click failed: {e}')
+    # Drive the UI first -- click Run, exactly as a user would -- and only fall
+    # back to POSTing /prompt when that demonstrably submitted nothing.
+    log('  ext: clicking Run')
+    if not _click_run_and_confirm(page_arg):
+        _q = _queue_prompt(page_arg)
+        if _q == 'rejected':
+            # ComfyUI validated the graph and refused it, so it will never emit
+            # an execution event. Report the real reason now rather than
+            # burning the full workflow timeout and calling it a TIMEOUT.
+            return {'name': target_name, 'status': 'fail',
+                    'duration_seconds': 0,
+                    'error': 'prompt rejected by ComfyUI (see session.log for '
+                             'node_errors)'}
 
     log('  ext: waiting for execution_success / execution_error')
     run_deadline = time.time() + _WORKFLOW_TIMEOUT_S
@@ -2528,7 +2696,22 @@ with sync_playwright() as p:
             _capture_warned[0] = False
             install_cursor(page)
             install_dialog_handler(page)
-            install_viewport_size(page)
+            # Deliberately NOT install_viewport_size() here.
+            #
+            # It pins the viewport via a device-metrics override, which existed
+            # to make the Electron window's surface capture usable. On a real
+            # browser window it actively breaks input: the emulated viewport
+            # (1280x863) no longer matches the window (1900x1030), so the
+            # coordinates javascript reports and the coordinates input events
+            # are dispatched at diverge. Playwright's hit-test then refuses the
+            # click -- which is why EVERY click needed force=True -- and
+            # force=True dispatches at a point that maps somewhere else.
+            #
+            # Measured in CADabra-1636: with the override in place the Run
+            # button reported pointerdown=0 mousedown=0 click=0 while
+            # elementFromPoint at its centre returned the button itself, and
+            # rafFired=1 proved the window WAS presenting. The window is
+            # already a sensible size, so just use it as-is.
             _wait_canvas_ready(page, 120)
             log('  browser-ui: UI now driven from the browser window; '
                 'the Electron app stays up to host the ComfyUI backend')
@@ -3013,16 +3196,23 @@ with sync_playwright() as p:
         except Exception as e:
             log(f"  ext: Node Pack Issues close failed: {e}")
 
-        # Skip the inline first-workflow run after a git-clone install:
-        # a non-registry clone is absent from the frontend template
-        # manifest, so this can only fail, and it costs a Templates open,
-        # ~42s of scrolling and a 240s pause. The multi-workflow loop
-        # BELOW is deliberately left outside this guard -- it lives in the
-        # same else-branch, and gating both made a run execute 0 workflows.
-        # _workflow_results stays empty, so first_name is None and every
-        # workflow runs through the loop, loading its graph from disk.
+        # Skip the inline first-workflow run after a git-clone install, so all
+        # workflows go through ONE code path (the loop below), which now drives
+        # the Templates sidebar too. This block is a copy-paste duplicate of the
+        # loop body; running #1 here and #2..N below meant fixing every bug
+        # twice.
+        #
+        # NB the old reason given here -- "a non-registry clone is absent from
+        # the frontend template manifest" -- was wrong; see the correction in
+        # _load_graph_from_disk. The skip is kept for the de-duplication reason
+        # above, not that one.
+        #
+        # The multi-workflow loop BELOW is deliberately left outside this guard
+        # -- it lives in the same else-branch, and gating both made a run
+        # execute 0 workflows. _workflow_results stays empty, so first_name is
+        # None and every workflow runs through the loop.
         if _did_visible_install:
-            log('  ext: git-clone install -- skipping inline first-workflow Templates path')
+            log('  ext: git-clone install -- all workflows run via the loop below')
         else:
             log('  ext: opening Templates sidebar')
             try:
@@ -3326,23 +3516,11 @@ with sync_playwright() as p:
                 except Exception as e:
                     log(f'  ext: WS listener install failed: {e}')
 
-                _queued = _queue_prompt(page)
-                if not _queued:
-                    log('  ext: clicking Run')
-                try:
-                    run_btn = page.locator(
-                        'button[aria-label="Run"]:visible, '
-                        'button:has-text("Run"):visible'
-                    ).first
-                    if _queued:
-                        pass
-                    elif run_btn.count():
-                        click_with_cursor(page, run_btn)
-                        log('  ext: clicked Run')
-                    else:
-                        log('  ext: Run button not found')
-                except Exception as e:
-                    log(f'  ext: Run click failed: {e}')
+                # UI first, POST /prompt only as the proven-nothing-queued
+                # fallback -- same ordering as _run_named_card.
+                log('  ext: clicking Run')
+                if not _click_run_and_confirm(page):
+                    _queue_prompt(page)
 
                 # Wait for execution_success / execution_error from the WS.
                 log('  ext: waiting for execution_success / execution_error')
@@ -3447,20 +3625,30 @@ with sync_playwright() as p:
                 log('  loop: restart failed (no page); bailing out of remaining workflows')
                 break
             _dismiss_post_restart_modals(page)
-            # Templates is only needed when the graph has to come from the UI.
-            # After a git-clone install the JSON is on disk and _run_named_card
-            # loads it directly, so skip the sidebar entirely -- a non-registry
-            # clone is not in the frontend's template manifest, and each failed
-            # lookup costs a restart, ~42s of scrolling and a 240s pause.
-            if not _did_visible_install:
-                if not _open_templates_and_section(page, NODE_PACKAGE_NAME_outer):
-                    log(f'  loop: Templates+section open failed for {_wf_name}; recording fail')
-                    _workflow_results.append({
-                        'name': _wf_name, 'status': 'fail',
-                        'duration_seconds': 0,
-                        'error': 'Templates+section not openable after restart',
-                    })
-                    continue
+            # Drive the Templates sidebar on BOTH install paths.
+            #
+            # This used to be skipped after a git-clone install, on the premise
+            # that "a non-registry clone is not in the frontend's template
+            # manifest". That premise was wrong. ComfyUI scans
+            # custom_nodes/*/workflows/ and serves them -- verified against a
+            # live backend, /api/workflow_templates returns
+            # {"ComfyUI-CADabra": ["analyse_CAD", "cad_curvature", ...]}.
+            #
+            # What actually broke the sidebar was the click, not the lookup:
+            # CADabra-1155 logs `Templates click failed: Locator.click: Timeout
+            # 10000ms exceeded` with the locator RESOLVED -- playwright's
+            # actionability "stable" check on a window that never presented a
+            # frame. The run never reached the section lookup at all. That is
+            # fixed now (the UI runs in a real browser window on Windows), so
+            # exercising the sidebar is both possible and closer to what a user
+            # actually does.
+            #
+            # A miss is NOT fatal: fall through to _run_named_card, which loads
+            # the JSON from disk. Previously a miss recorded a fail and skipped
+            # the workflow entirely, so one flaky sidebar cost a real result.
+            if not _open_templates_and_section(page, NODE_PACKAGE_NAME_outer):
+                log(f'  loop: Templates+section not opened for {_wf_name}; '
+                    f'falling back to loading the graph from disk')
             _start = fi[0]
             _result = _run_named_card(page, _wf_name)
             _workflow_results.append(_result)

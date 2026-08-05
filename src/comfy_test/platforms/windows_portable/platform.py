@@ -9,7 +9,7 @@ from typing import Optional, Callable, TYPE_CHECKING
 
 
 def _copy_tree_long_path(src: Path, dst: Path) -> None:
-    """Long-path-safe directory copy.
+    r"""Long-path-safe directory copy.
 
     On Windows, ComfyUI portable's pytorch + transformers trees include paths
     longer than 260 chars (e.g. cuda mem_eff_attention iterators headers).
