@@ -1,0 +1,27 @@
+<Configuration>
+  <!-- Default, not Enable. microsoft/Windows-Sandbox#42 reports that
+       <vGPU>Enable</vGPU> breaks CUDA while Default works; Default is what
+       was verified on this hardware (cuInit -> 0, RTX 4060 Ti visible). -->
+  <vGPU>Default</vGPU>
+  <Networking>Enable</Networking>
+  <MemoryInMB><<MEMORY_MB>></MemoryInMB>
+  <MappedFolders>
+    <!-- Read-write: bootstrap script in, artifacts + rc.txt + done.flag out.
+         Sandbox has no process I/O, so this is the only channel. -->
+    <MappedFolder>
+      <HostFolder><<WORK_DIR>></HostFolder>
+      <SandboxFolder><<GUEST_WORK_DIR>></SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+    <!-- Read-only: comfy-test source, staged without .git (which embeds a
+         PAT on this host). The guest runs untrusted third-party node code. -->
+    <MappedFolder>
+      <HostFolder><<SRC_DIR>></HostFolder>
+      <SandboxFolder><<GUEST_SRC_DIR>></SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File <<GUEST_WORK_DIR>>\bootstrap.ps1</Command>
+  </LogonCommand>
+</Configuration>

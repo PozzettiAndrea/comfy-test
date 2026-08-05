@@ -360,6 +360,13 @@ def add_run_parser(subparsers):
              "artifacts land under <run>/dev/{macos,windows}-desktop-dev/.",
     )
     run_parser.add_argument(
+        "--refresh-app",
+        action="store_true",
+        help="With --desktop: discard the cached ComfyUI Desktop install and "
+             "download/reinstall it. Normal runs reuse the cached app and "
+             "only wipe ComfyUI user state.",
+    )
+    run_parser.add_argument(
         "--workflow", "-W",
         help="Run only this specific workflow",
     )

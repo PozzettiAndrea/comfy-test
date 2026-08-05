@@ -16,6 +16,7 @@ from .generate_index import (
 )
 from .settings import add_settings_parser
 from .docker import add_docker_parser
+from .sandbox import add_sandbox_parser
 from .vm import add_vm_parser
 
 
@@ -35,6 +36,7 @@ def main(args=None) -> int:
     add_generate_index_parser(subparsers)
     add_settings_parser(subparsers)
     add_docker_parser(subparsers)
+    add_sandbox_parser(subparsers)
     add_vm_parser(subparsers)
 
     # Parse and execute

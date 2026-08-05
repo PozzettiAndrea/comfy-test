@@ -1,4 +1,4 @@
-import json, os, re as _re, subprocess, sys, threading, time, urllib.request
+import json, os, re as _re, shutil, subprocess, sys, threading, time, urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -9,10 +9,30 @@ from playwright.sync_api import sync_playwright
 # hardcoding.
 _COMFY_PORT = None
 
+# This driver relays ComfyUI's own log file (and third-party node output) to
+# stdout. That content is arbitrary UTF-8, while a Windows console defaults to
+# cp1252 -- printing e.g. U+2192 there raises UnicodeEncodeError and kills the
+# run mid-test. Re-encode our streams as UTF-8 and never fail on an
+# unrepresentable character. _desktop_runner reads this pipe with a matching
+# encoding=utf-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass   # already-wrapped or non-reconfigurable stream; log() still guards
+
 t0 = time.time()
 import builtins as _b
 def log(*a, **k):
-    _b.print(f'[{int(time.time()-t0):4d}s]', *a, **k, flush=True)
+    try:
+        _b.print(f'[{int(time.time()-t0):4d}s]', *a, **k, flush=True)
+    except UnicodeEncodeError:
+        # Belt and braces: if stdout could not be reconfigured above, degrade
+        # the message rather than aborting the test run over a log line.
+        enc = getattr(sys.stdout, 'encoding', None) or 'ascii'
+        safe = [str(x).encode(enc, errors='replace').decode(enc, errors='replace')
+                for x in a]
+        _b.print(f'[{int(time.time()-t0):4d}s]', *safe, **k, flush=True)
 
 # Three roots, all default to COMFY_TEST_LOGS_DIR for back-compat with
 # the flat layout. The platform YMLs override them to mirror the cpu
@@ -39,10 +59,32 @@ fi = [0]
 # to build the per-platform index.html on gh-pages.
 _workflow_results = []
 
+# Playwright's default screenshot timeout is 30s. When the compositor is not
+# committing frames (occluded/minimized window, no GPU surface) captureScreenshot
+# never returns, so every capture burns the full 30s and a run crawls -- while
+# page.evaluate and clicks keep working fine, because those need no frame.
+# Fail fast instead: a missing frame is cosmetic, a stalled run is not.
+_SHOT_TIMEOUT_MS = int(os.environ.get('COMFY_TEST_SHOT_TIMEOUT_MS', '5000'))
+
+# Per-workflow execution ceiling. 600s x 21 workflows is a 3.5-hour run when
+# nothing completes, which makes each debugging cycle unusable. Override with
+# COMFY_TEST_WORKFLOW_TIMEOUT_S; raise it for real CUDA workloads that
+# legitimately take minutes per graph.
+_WORKFLOW_TIMEOUT_S = int(os.environ.get('COMFY_TEST_WORKFLOW_TIMEOUT_S', '180'))
+
+
 def snap(page, name):
+    # The DOM dump is the useful half and costs nothing, so write it even when
+    # the image cannot be captured.
     try:
-        page.screenshot(path=str(OUT / f'{name}.png'), full_page=True)
         (OUT / f'{name}.html').write_text(page.content(), encoding='utf-8')
+    except Exception:
+        pass
+    if _capture_disabled[0]:
+        return
+    try:
+        page.screenshot(path=str(OUT / f'{name}.png'), full_page=True,
+                        timeout=_SHOT_TIMEOUT_MS)
     except Exception as e:
         log(f'  snap {name}: {e}')
 
@@ -61,11 +103,116 @@ def snap(page, name):
 _browser_ref = [None]  # set whenever connect_over_cdp gives us a browser
 _capture_warned = [False]
 
+def _log_capture_diagnostics(page):
+    """Explain WHY captureScreenshot is hanging, once, on first failure.
+
+    A minimized or hidden Electron window has no compositor surface, so
+    Page.captureScreenshot waits for a frame that never arrives -- while
+    page.evaluate keeps working, since the DOM needs no frame. That
+    asymmetry is the signature, and windowState names the cause.
+    """
+    # JS facts first: page.evaluate keeps working when capture does not, so
+    # this always yields something. document.visibilityState == 'hidden' is
+    # the decisive tell -- chromium reports that for a minimized/occluded
+    # window, and that is exactly when it stops committing frames.
+    try:
+        info = page.evaluate("""() => ({
+            vis: document.visibilityState,
+            hidden: document.hidden,
+            w: window.innerWidth, h: window.innerHeight,
+            ow: window.outerWidth, oh: window.outerHeight,
+            dpr: window.devicePixelRatio,
+            canvases: Array.from(document.querySelectorAll('canvas'))
+                           .map(c => c.width + 'x' + c.height).slice(0, 4),
+        })""")
+        log(f'  capture-diag: visibility={info["vis"]} hidden={info["hidden"]} '
+            f'inner={info["w"]}x{info["h"]} outer={info["ow"]}x{info["oh"]} '
+            f'dpr={info["dpr"]} canvases={info["canvases"]}')
+        if info.get('hidden') or info.get('vis') == 'hidden':
+            log('  capture-diag: page is HIDDEN -- chromium stops committing '
+                'frames, so captureScreenshot/startScreencast cannot return')
+        if not info.get('w') or not info.get('h'):
+            log('  capture-diag: zero-size viewport -- nothing to composite')
+    except Exception as e:
+        log(f'  capture-diag: evaluate failed ({e})')
+
+    # A never-settling animation is the prime suspect: capture only fails
+    # from ~5s after the Templates modal is ESC-dismissed. If its leave
+    # transition never finishes, the page animates forever -- and both
+    # captureScreenshot (waits for a presented frame) and playwright's
+    # "stable" actionability check (compares bounding boxes across two
+    # animation frames) can then never succeed.
+    try:
+        anim = page.evaluate("""() => {
+            const running = (document.getAnimations ? document.getAnimations() : [])
+                .filter(a => a.playState === 'running');
+            const desc = running.slice(0, 6).map(a => {
+                const t = a.effect && a.effect.target;
+                const nm = t ? (t.tagName || '') + (t.className
+                          ? '.' + String(t.className).split(/\\s+/).slice(0, 2).join('.')
+                          : '') : '?';
+                return (a.constructor && a.constructor.name || 'Animation') + '<' + nm + '>';
+            });
+            const overlays = ['.p-dialog-mask', '.p-overlay', '[role="dialog"]',
+                              '.p-component-overlay', '.p-drawer-mask']
+                .map(s => s + '=' + document.querySelectorAll(s).length)
+                .join(' ');
+            return {n: running.length, desc, overlays,
+                    infinite: running.filter(a => {
+                        try { return a.effect.getTiming().iterations === Infinity; }
+                        catch (e) { return false; }
+                    }).length};
+        }""")
+        log(f'  capture-diag: running animations={anim["n"]} '
+            f'(infinite={anim["infinite"]}) {anim["desc"]}')
+        log(f'  capture-diag: overlays {anim["overlays"]}')
+        if anim['n']:
+            log('  capture-diag: an animation is still running -- this alone '
+                'can stop captureScreenshot from ever returning a frame')
+    except Exception as e:
+        log(f'  capture-diag: evaluate failed ({e})')
+
+    # Browser.getWindowForTarget lives on the BROWSER session, not a page
+    # session -- asking a page session returns "wasn't found".
+    try:
+        br = _browser_ref[0]
+        if br is None:
+            return
+        sess = br.new_browser_cdp_session()
+        try:
+            tid = getattr(page, '_target_id', None)
+            info = (sess.send('Browser.getWindowForTarget', {'targetId': tid})
+                    if tid else sess.send('Browser.getWindowForTarget'))
+            b = info.get('bounds', {})
+            log(f'  capture-diag: windowState={b.get("windowState")} '
+                f'size={b.get("width")}x{b.get("height")} '
+                f'pos={b.get("left")},{b.get("top")}')
+        finally:
+            try:
+                sess.detach()
+            except Exception:
+                pass
+    except Exception as e:
+        log(f'  capture-diag: window query unavailable ({e})')
+
+
+# Set when neither the surface nor the renderer path can produce an image.
+# frame() then becomes a no-op so the run proceeds at normal speed.
+_capture_disabled = [False]
+
+
 def frame(page):
+    if _capture_disabled[0]:
+        # Capture is known-broken on this host. Return before touching the
+        # counter: fi[0] is what the run reports as "Captured N frames" and
+        # what ffmpeg's frame_%06d.png pattern is built from, so counting
+        # frames we never wrote produced "Captured 1877 frames" against an
+        # empty dir and then an ffmpeg "Could find no file with path" error.
+        return
     fi[0] += 1
     path = str(FRAMES / f'frame_{fi[0]:06d}.png')
     try:
-        page.screenshot(path=path)
+        page.screenshot(path=path, timeout=_SHOT_TIMEOUT_MS)
         return
     except Exception as e:
         # Page is probably detached after browser.close()+reconnect.
@@ -83,11 +230,30 @@ def frame(page):
                     log(f'  frame: capture skipped (no page): {e}')
                     _capture_warned[0] = True
                 return
-            fresh.screenshot(path=path)
+            fresh.screenshot(path=path, timeout=_SHOT_TIMEOUT_MS)
         except Exception as e2:
             if not _capture_warned[0]:
                 log(f'  frame: capture failed: {e2}')
+                _log_capture_diagnostics(page)
                 _capture_warned[0] = True
+            # Deliberately NO fromSurface=false retry here. That path cannot
+            # help and actively hangs: chromium's page_handler.cc bails out
+            # before any emulation handling ("We don't support clip/emulation
+            # when capturing from window"), so it could never return the
+            # emulated viewport anyway, and on Windows it resolves to
+            # PrintWindow, which blocks indefinitely on a window that is not
+            # presenting. A raw CDPSession.send has no timeout, so that call
+            # wedged the whole driver a few seconds after this diagnostic --
+            # runs before it was added got 300s further.
+            #
+            # Frames are cosmetic (video + report thumbnails). results.json
+            # and every workflow assertion are unaffected, so give up on
+            # capture and let the run proceed.
+            _capture_disabled[0] = True
+            log('  frame: capture unavailable -- disabling frame capture for '
+                'this run so it can proceed. No frames/video will be '
+                'produced; results.json and workflow assertions are '
+                'unaffected.')
 
 def sleep_capturing(page, seconds, fps=5):
     interval = 1.0 / fps
@@ -136,17 +302,49 @@ def _prune_blank_targets(cdp_port):
     """Playwright's connect_over_cdp attaches to every page target and hangs
     forever on any that never fires Target.attachedToTarget (blank URLs,
     Electron helper limbo, etc). Close those via the browser CDP endpoint
-    before every connect_over_cdp. Idempotent — safe to call multiple times.
+    before every connect_over_cdp. Idempotent -- safe to call multiple times.
 
     Only pages with an empty URL are pruned; ComfyUI + normal Electron
     chrome helpers (Title Bar / Title Popup / System Modal) stay alive.
     """
     import websocket as _ws
     try:
-        pages = json.loads(urllib.request.urlopen(
-            f'http://127.0.0.1:{cdp_port}/json/list', timeout=2).read())
-        blanks = [p for p in pages
-                  if p.get('type') == 'page' and not p.get('url')]
+        def _blank_ids():
+            pages = json.loads(urllib.request.urlopen(
+                f'http://127.0.0.1:{cdp_port}/json/list', timeout=2).read())
+            return {p['id']: p for p in pages
+                    if p.get('type') == 'page' and not p.get('url')}
+
+        # Sample TWICE and only close what is blank in both.
+        #
+        # A single sample cannot tell "electron helper stuck in limbo forever"
+        # apart from "the real main window, blank for the moment because it is
+        # mid-navigation". At the wizard->main handoff Comfy Desktop's main
+        # window is briefly blank while it navigates to 127.0.0.1:8188, and
+        # closing it there destroys the BrowserWindow outright.
+        #
+        # Measured in CADabra-1355: the app is on screen at t+131s, this
+        # function closes a blank target at t+132s, and from t+133s onward the
+        # screen is a static desktop with no Comfy taskbar entry -- while the
+        # 8188 page survives, so CDP attaches and the DOM stays queryable. With
+        # no window there is no compositor surface: Page.captureScreenshot
+        # hangs, startScreencast emits nothing, requestAnimationFrame stops,
+        # and playwright's "stable" actionability check can never pass, so
+        # every click times out. That is the whole failure, from one close.
+        #
+        # A genuinely stuck helper stays blank across the gap; a navigating
+        # window does not.
+        first = _blank_ids()
+        if not first:
+            return
+        time.sleep(3)
+        second = _blank_ids()
+        still_blank = set(first) & set(second)
+        transient = set(first) - still_blank
+        for tid in transient:
+            log(f'  prune: keeping {tid[:12]} -- was blank, now navigating '
+                f'(this is the app window at the wizard handoff)')
+        blanks = [second[t] for t in still_blank]
         if not blanks:
             return
         ver = json.loads(urllib.request.urlopen(
@@ -182,7 +380,7 @@ def _prune_blank_targets(cdp_port):
 # the app to normal ComfyUI mode there's a single main page, at which point
 # connect_over_cdp works fine.
 #
-# So: drive the wizard past chooser → configure → workflow → install via
+# So: drive the wizard past chooser -> configure -> workflow -> install via
 # raw CDP, then hand off to playwright for the rest of the flow (Manager
 # install, node install, workflow runs).
 #
@@ -190,6 +388,47 @@ def _prune_blank_targets(cdp_port):
 # does whichever action matches. Safe to re-enter mid-way (e.g. if the
 # chooser was already completed by a previous test run).
 # ---------------------------------------------------------------------------
+def _comfy_base_url():
+    return f'http://127.0.0.1:{_COMFY_PORT or 8188}'
+
+
+def _configure_comfy_settings():
+    """Suppress the first-run Templates panel, server-side.
+
+    ComfyUI auto-opens the Templates browser on a fresh install when no
+    workflow is loaded. That modal sits over the canvas, and while it is up
+    the page stops presenting frames -- which is why every screenshot times
+    out, why Playwright clicks never reach 'stable', and why the UI visibly
+    freezes the moment Templates appears. The driver used to react to it
+    (hunt for a Close button, fall back to Escape); this stops it happening.
+
+    Same settings, same endpoint as reporting/screenshot.py's
+    _configure_server_settings(), which has carried the comment "Prevent
+    Templates panel from showing on first run" all along -- the desktop path
+    simply never applied them.
+
+    Best effort: the server may not be up yet on the first call, and these
+    are re-applied after the Manager reboot resets user state.
+    """
+    settings = {
+        'Comfy.TutorialCompleted': True,
+        # Vue node overlays default off on a fresh install, which suppresses
+        # all preview rendering.
+        'Comfy.VueNodes.Enabled': True,
+    }
+    for key, value in settings.items():
+        try:
+            req = urllib.request.Request(
+                f'{_comfy_base_url()}/settings/{key}',
+                data=json.dumps(value).encode(), method='POST',
+                headers={'Content-Type': 'application/json'},
+            )
+            urllib.request.urlopen(req, timeout=10)
+            log(f'  settings: {key}={value}')
+        except Exception as e:
+            log(f'  settings: {key} failed ({e})')
+
+
 def _walk_first_run_wizard(cdp_port, timeout=1200):
     import websocket  # from websocket-client, added to venv by _desktop_runner
     def _ws_id():
@@ -224,7 +463,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
 
     def _discover_comfy_port():
         """Comfy Desktop 1.0.34 serves ComfyUI on :8188; earlier versions
-        used :8000. Pull the port out of the CDP page list — whichever
+        used :8000. Pull the port out of the CDP page list -- whichever
         127.0.0.1:<port> URL is currently loaded is the right one. Falls
         back to trying both known ports if no page URL matches yet."""
         try:
@@ -332,14 +571,37 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
     while time.time() - start < timeout:
         if _server_up():
             log(f'[wizard-raw] /system_stats up after {int(time.time()-start)}s')
+            # Suppress the Templates modal at the source, before the frontend
+            # can open it. Dismissing it after the fact (the ESC fallback
+            # below) leaves a window where it is up and the page has stopped
+            # presenting frames.
+            _configure_comfy_settings()
             if ws:
                 try: ws.close()
                 except Exception: pass
-            # Give ComfyUI a beat to finish loading + open its Templates
-            # modal, then dismiss it and prune blank-URL targets so
-            # playwright's connect_over_cdp doesn't hang on them.
+            # Give ComfyUI a beat to finish loading, then prune blank-URL
+            # targets so playwright's connect_over_cdp doesn't hang on them.
+            #
+            # Do NOT send Escape here. On Windows it does not merely close the
+            # Templates modal -- it makes the whole ComfyUI window vanish
+            # (measured in CADabra-1348: frame at t+136s shows the UI fully
+            # rendered, ESC lands at t+137s, and from t+138s the screen is
+            # byte-identical desktop with no Comfy taskbar entry). The page
+            # itself survives -- CDP still attaches and the DOM is fully
+            # queryable -- which is the signature of electron's
+            # close-intercepted-as-win.hide() pattern rather than a crash.
+            #
+            # The consequences are the entire bug we spent days on: no window
+            # means no compositor surface, so Page.captureScreenshot hangs and
+            # startScreencast emits nothing; no frames means no
+            # requestAnimationFrame, so playwright's "stable" actionability
+            # check can never pass and EVERY click times out -- which is why
+            # all 21 workflows reported `timeout` with no execution_success.
+            #
+            # It is also redundant: _configure_comfy_settings() above sets
+            # Comfy.TutorialCompleted before the frontend can open the modal.
+            # macOS does not bind Escape this way, hence Windows-only.
             time.sleep(3)
-            _dismiss_templates_modal()
             _prune_stuck_targets()
             return True
         try:
@@ -395,7 +657,7 @@ def _walk_first_run_wizard(cdp_port, timeout=1200):
 
 
 # Drive the wizard now. If it never gets ComfyUI's server up, don't even
-# try to attach playwright — it'll just hang on the still-alive wizard
+# try to attach playwright -- it'll just hang on the still-alive wizard
 # targets.
 if not _walk_first_run_wizard(_CDP_PORT):
     log('[wizard-raw] giving up; ComfyUI server never came up')
@@ -437,7 +699,7 @@ def install_dialog_handler(page):
     Without a user-registered handler, Playwright's Node.js driver
     auto-dismisses dialogs internally. That path awaits
     `Page.handleJavaScriptDialog` which races the dialog closing on
-    its own — landing after the dialog is gone throws
+    its own -- landing after the dialog is gone throws
     `ProtocolError: No dialog is showing`, which as an unhandled
     promise rejection hard-exits the Node driver and kills the whole
     Python `page.reload()` call. Attaching ANY handler routes dialogs
@@ -465,13 +727,35 @@ def install_viewport_size(page, width=1920, height=1080):
     videos, and the live viewer all render at a predictable size.
 
     Overrides via Emulation.setDeviceMetricsOverride (Playwright's
-    set_viewport_size). Independent of the Electron OS window size —
-    Comfy Desktop's own BrowserWindow default is ~1280×863, but that's
+    set_viewport_size). Independent of the Electron OS window size --
+    Comfy Desktop's own BrowserWindow default is ~1280x863, but that's
     just the OS frame; what we capture is the WebContents viewport,
     which this pins to 1080p.
     """
+    # Clamp to what the window can actually composite. Page.captureScreenshot
+    # reads the composited *window surface*, so a viewport larger than the
+    # window is never satisfiable and every capture stalls until timeout --
+    # the docstring above is true for layout but not for capture.
+    #
+    # Read innerWidth/Height BEFORE overriding: afterwards they report the
+    # emulated value, which is why a broken run's diagnostics show
+    # inner=1920x1080 next to outer=1280x863.
+    try:
+        real_w, real_h = page.evaluate(
+            '() => [window.innerWidth, window.innerHeight]')
+        if real_w and real_h and (real_w < width or real_h < height):
+            log(f'  viewport: window client is {real_w}x{real_h}, smaller than '
+                f'requested {width}x{height}; clamping so surface capture can '
+                f'succeed. We deliberately do NOT resize the window to match: '
+                f'doing so meant hunting for its HWND, which repeatedly found '
+                f'the wrong one. Smaller artifacts beat a black screen.')
+            width, height = real_w, real_h
+    except Exception as e:
+        log(f'  viewport: could not read window size ({e}); using '
+            f'{width}x{height} unclamped')
     try:
         page.set_viewport_size({"width": width, "height": height})
+        log(f'  viewport pinned to {width}x{height}')
     except Exception as e:
         log(f'  viewport {width}x{height} set failed: {e}')
 
@@ -544,7 +828,7 @@ _INSTALL_CONSOLE_JS = r'''
     'white-space:pre-wrap', 'word-break:break-word',
   ].join(';');
   const hdr = document.createElement('div');
-  hdr.textContent = 'installing (dev branch) — actual commands running in ComfyUI Desktop:';
+  hdr.textContent = 'installing (dev branch) -- actual commands running in ComfyUI Desktop:';
   hdr.style.cssText = 'color:#7cf;margin-bottom:10px;letter-spacing:.03em;font-size:12px';
   const body = document.createElement('div');
   body.id = id + '_body';
@@ -565,13 +849,13 @@ _INSTALL_CONSOLE_APPEND_JS = r'''
   const parts = text.split('\n');
   for (let i = 0; i < parts.length; i++) {
     const line = parts[i];
-    // Drop the trailing empty string from a text ending in '\n' —
+    // Drop the trailing empty string from a text ending in '\n' --
     // otherwise we'd emit a blank <span> per append call.
     if (line === '' && i === parts.length - 1) break;
     let color = '#e0e0e0';
     if (line.startsWith('$ ')) color = '#8be07c';           // our commands: green
     else if (line.startsWith('#')) color = '#c2a3ff';       // our meta-notes: purple
-    else if (line.trim().startsWith('→ exit')) color = '#ffb87a';  // exit line: salmon
+    else if (line.trim().startsWith('-> exit')) color = '#ffb87a';  // exit line: salmon
     const span = document.createElement('span');
     span.style.color = color;
     span.textContent = line + '\n';
@@ -648,7 +932,7 @@ _comfyui_log_tail_started = [False]
 def _start_comfyui_log_tail():
     """Spawn a background thread that tails ComfyUI's stdout log
     (`<install>/logs/comfyui.log`) and forwards every new line via
-    log() with a `[comfyui]` prefix. Idempotent — safe to call from
+    log() with a `[comfyui]` prefix. Idempotent -- safe to call from
     multiple sites.
 
     Why: workflow-execution errors (invalid prompt, missing input files,
@@ -667,7 +951,7 @@ def _start_comfyui_log_tail():
     _comfyui_log_tail_started[0] = True
 
     def _tail_worker():
-        # Wait up to 60s for installations.json + comfyui.log to appear —
+        # Wait up to 60s for installations.json + comfyui.log to appear --
         # they're written by Comfy Desktop during setup wizard.
         log_file = None
         for _ in range(60):
@@ -688,7 +972,20 @@ def _start_comfyui_log_tail():
         # appended, and re-seeks to 0 on truncation/rotation. Works on
         # macOS and Windows (Windows doesn't ship `tail` on PATH).
         try:
-            fh = open(str(log_file), 'r', encoding='utf-8', errors='replace')
+            # Retry the open: exists() was checked above, but Comfy Desktop
+            # deletes and recreates comfyui.log when the backend restarts, so
+            # a single attempt races that window and used to kill this thread
+            # with a bare "[Errno 2] No such file or directory".
+            fh = None
+            for _attempt in range(20):
+                try:
+                    fh = open(str(log_file), 'r', encoding='utf-8', errors='replace')
+                    break
+                except FileNotFoundError:
+                    time.sleep(0.5)
+            if fh is None:
+                log(f'[comfyui-log-tail] gave up: {log_file} never became readable')
+                return
             fh.seek(0)   # replay whole log-so-far (matches old `-n +1` behavior)
             while True:
                 line = fh.readline()
@@ -722,7 +1019,120 @@ def _start_comfyui_log_tail():
     threading.Thread(target=_tail_worker, daemon=True).start()
 
 
+_QUEUE_PROMPT_JS = r"""
+(async () => {
+  const app = window.app;
+  if (!app) return JSON.stringify({kind: 'noapp'});
+  // POST /prompt ourselves rather than calling app.queuePrompt().
+  //
+  // Both submit the same graph, but queuePrompt swallows a rejection into a UI
+  // toast and resolves normally, so a graph ComfyUI REFUSES looks identical to
+  // one it accepted. ComfyUI emits no execution_success/error for a prompt it
+  // never ran, so the driver then waits the full timeout and reports
+  // WORKFLOW TIMEOUT -- hiding the real reason. Measured in CADabra-1415:
+  // mesh_face_seg was rejected with "Value not in list: file_path:
+  // '3d/cube.stl'" at t+696s and still cost 180s to report as a timeout.
+  //
+  // POSTing directly exposes the 400 and its node_errors, turning a blind
+  // 180s timeout into an instant, accurate failure. client_id is carried so
+  // execution events still route to this page's websocket.
+  if (typeof app.graphToPrompt === 'function') {
+    try {
+      const p = await app.graphToPrompt();
+      const cid = (app.api && app.api.clientId) || window.clientId;
+      const r = await fetch('/prompt', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({prompt: p.output, client_id: cid,
+                              extra_data: {extra_pnginfo: {workflow: p.workflow}}}),
+      });
+      const body = await r.text();
+      if (r.ok) {
+        let pid = null;
+        try { pid = JSON.parse(body).prompt_id; } catch (e) {}
+        return JSON.stringify({kind: 'queued', prompt_id: pid});
+      }
+      let detail = body.slice(0, 800);
+      try {
+        const j = JSON.parse(body);
+        const parts = [];
+        if (j.error) parts.push(j.error.message || j.error.type || String(j.error));
+        for (const [nid, ne] of Object.entries(j.node_errors || {})) {
+          for (const err of (ne.errors || [])) {
+            parts.push(`node ${nid} ${ne.class_type || ''}: ` +
+                       `${err.message}${err.details ? ' (' + err.details + ')' : ''}`);
+          }
+        }
+        if (parts.length) detail = parts.join('; ');
+      } catch (e) {}
+      return JSON.stringify({kind: 'rejected', status: r.status, detail: detail});
+    } catch (e) {
+      return JSON.stringify({kind: 'threw', detail: String(e && e.message || e)});
+    }
+  }
+  if (typeof app.queuePrompt === 'function') {
+    try { await app.queuePrompt(0, 1); return JSON.stringify({kind: 'queued', via: 'queuePrompt'}); }
+    catch (e) { return JSON.stringify({kind: 'threw', detail: String(e && e.message || e)}); }
+  }
+  return JSON.stringify({kind: 'nomethod'});
+})()
+"""
+
+
+def _queue_prompt(page):
+    """Queue the loaded graph programmatically. Returns True if submitted.
+
+    We already LOAD each workflow through window.app.loadGraphData rather than
+    clicking a template card, so queuing it through window.app too is the
+    consistent move -- and it sidesteps the Run button entirely.
+
+    That matters on this Windows host: the app window never presents frames, so
+    playwright's actionability "stable" check cannot pass and clicking Run
+    times out. Measured in CADabra-1406: force=True made the click itself
+    "succeed" and the driver logged `clicked Run`, but /queue and /history
+    stayed EMPTY -- the click reached the element without the frontend ever
+    queuing anything, so every workflow still hit WORKFLOW TIMEOUT. A click
+    that lands but does nothing is worse than one that fails loudly, so do not
+    trust `clicked Run` as evidence a prompt was submitted.
+    """
+    try:
+        res = json.loads(page.evaluate(_QUEUE_PROMPT_JS))
+    except Exception as e:
+        log(f'  ext: queue via window.app failed: {e}')
+        return False
+    kind = res.get('kind')
+    if kind == 'queued':
+        pid = res.get('prompt_id')
+        log(f'  ext: queued prompt{" " + pid[:12] if pid else ""}')
+        return True
+    if kind == 'rejected':
+        # ComfyUI refused the graph outright, so no execution event will ever
+        # arrive. Surface it now instead of waiting out the full timeout.
+        log(f'  ext: PROMPT REJECTED by ComfyUI ({res.get("status")}): '
+            f'{res.get("detail")}')
+        return 'rejected'
+    log(f'  ext: programmatic queue unavailable ({kind}: '
+        f'{res.get("detail", "")}); falling back to Run button')
+    return False
+
+
 def click_with_cursor(page, loc, timeout=3000):
+    """Click, degrading through progressively less fussy strategies.
+
+    Playwright's normal click waits for "actionability", and part of that is
+    the STABLE check: it compares the element's bounding box across two
+    consecutive animation frames. On this Windows host the app's window is
+    not presenting -- captureScreenshot hangs, startScreencast emits nothing --
+    so requestAnimationFrame callbacks do not fire, stability can never be
+    proven, and the click times out after `timeout` no matter how ordinary the
+    element is. That is what made all 21 workflows report `timeout` with no
+    execution_success: the graph loaded fine and Run was simply never clicked.
+
+    The element itself is perfectly fine -- the DOM is fully queryable
+    throughout -- so falling back to force=True (skips actionability) and then
+    to a raw DOM .click() gets the run moving. Each fallback is logged so a
+    run that needed them is never mistaken for a clean one.
+    """
     try:
         box = loc.bounding_box()
         if box:
@@ -733,7 +1143,24 @@ def click_with_cursor(page, loc, timeout=3000):
             page.evaluate('window.__clickFlash && window.__clickFlash()')
     except Exception:
         pass
-    loc.click(timeout=timeout)
+    try:
+        loc.click(timeout=timeout)
+        return
+    except Exception as e:
+        first = str(e).split('\n')[0]
+    # force=True skips the actionability wait (visible/stable/enabled/receives
+    # events) but still dispatches a real trusted mouse event at the element's
+    # position, so listeners that care about isTrusted still see a genuine one.
+    try:
+        loc.click(timeout=timeout, force=True)
+        log(f'  click: normal click failed ({first}); succeeded with force=True')
+        return
+    except Exception as e2:
+        second = str(e2).split('\n')[0]
+    # Last resort: synthetic DOM click. Not a trusted event, so a handler
+    # gating on isTrusted would ignore it -- hence last, not first.
+    loc.evaluate('el => el.click()')
+    log(f'  click: force click also failed ({second}); used DOM el.click()')
 
 def fill_with_cursor(page, sel, text):
     loc = page.locator(sel).first
@@ -763,16 +1190,12 @@ def fill_with_cursor(page, sel, text):
 # isolation (no state-bleed between workflows).
 # ============================================================================
 
-def _comfy_base_url():
-    return f'http://127.0.0.1:{_COMFY_PORT or 8188}'
-
-
 def _post_json_empty(path):
     """POST an empty JSON body (`{}`) with application/json Content-Type
     to a ComfyUI endpoint. Manager's /api/v2/manager/reboot (and other
     state-mutation endpoints) reject 'simple form' Content-Types
     (text/plain, form-urlencoded, multipart, absent) with HTTP 400 via
-    a CSRF-like guard. JSON Content-Type bypasses that guard — matches
+    a CSRF-like guard. JSON Content-Type bypasses that guard -- matches
     what Manager's own `api.fetchApi()` does client-side."""
     req = urllib.request.Request(
         f'{_comfy_base_url()}{path}', data=b'{}', method='POST',
@@ -784,11 +1207,11 @@ def _post_json_empty(path):
 def _reboot_via_manager_and_wait():
     """Restart ComfyUI's Python server (not the Electron app) via
     Manager's /api/v2/manager/reboot. Then wait for /system_stats
-    down (server dying) → up (fresh server ready → custom_nodes
+    down (server dying) -> up (fresh server ready -> custom_nodes
     re-scanned). Returns True on success.
 
     Keeps the Electron main process, CDP endpoint, and any attached
-    playwright `page`/`browser` handles alive across the restart —
+    playwright `page`/`browser` handles alive across the restart --
     only the Python child is bounced. This is what makes it viable
     over SSH (no `open <app>` bridging needed) AND between workflows
     (no need to reconnect_over_cdp)."""
@@ -809,7 +1232,7 @@ def _reboot_via_manager_and_wait():
             posted = True
             break
         except Exception as e:
-            # ConnectionResetError / RemoteDisconnected — server
+            # ConnectionResetError / RemoteDisconnected -- server
             # died before finishing the response. Also counts as
             # successfully triggered a restart.
             log(f'  ext: {reboot_path} conn dropped: {e.__class__.__name__} (server restarting)')
@@ -831,12 +1254,15 @@ def _reboot_via_manager_and_wait():
             went_down = True
             break
     if not went_down:
-        log('  ext: WARNING: /system_stats never dropped — reboot may not have fired')
+        log('  ext: WARNING: /system_stats never dropped -- reboot may not have fired')
     log('  ext: waiting for /system_stats back up')
     for i in range(180):
         try:
             urllib.request.urlopen(f'{_comfy_base_url()}/system_stats', timeout=2)
             log(f'  ext: /system_stats back up after {(i+1)*2}s')
+            # Re-apply: the Manager reboot restarts the server, and the
+            # frontend re-evaluates whether to show Templates on reload.
+            _configure_comfy_settings()
             return True
         except Exception:
             time.sleep(2)
@@ -852,7 +1278,7 @@ def _install_via_visible_shell(page, node_repo, node_branch,
 
     Uses ComfyUI Desktop's bundled `.venv/bin/python` for pip + install.py
     so the demo matches what the viewer's own Desktop app would use.
-    Batches subprocess stdout every ~150ms — one page.evaluate() per
+    Batches subprocess stdout every ~150ms -- one page.evaluate() per
     line would be too chatty over CDP.
     """
     node_name = node_repo.split('/')[-1]
@@ -872,7 +1298,7 @@ def _install_via_visible_shell(page, node_repo, node_branch,
                 text=True, bufsize=1,
             )
         except FileNotFoundError as e:
-            _console_append(page, f'  → command not found: {e}\n\n')
+            _console_append(page, f'  -> command not found: {e}\n\n')
             return 127
         buf = []
         last_flush = time.time()
@@ -885,7 +1311,7 @@ def _install_via_visible_shell(page, node_repo, node_branch,
         if buf:
             _console_append(page, ''.join(buf))
         rc = proc.wait()
-        _console_append(page, f'  → exit {rc}\n\n')
+        _console_append(page, f'  -> exit {rc}\n\n')
         return rc
 
     # If the dir already exists (Manager left a stub, prior run, etc),
@@ -896,7 +1322,7 @@ def _install_via_visible_shell(page, node_repo, node_branch,
             import shutil as _shutil
             _shutil.rmtree(node_dir)
         except Exception as e:
-            _console_append(page, f'  → wipe failed: {e}\n\n')
+            _console_append(page, f'  -> wipe failed: {e}\n\n')
 
     _stream(['git', 'clone', '--depth', '1', '-b', node_branch,
              f'https://github.com/{node_repo}.git', str(node_dir)])
@@ -906,20 +1332,20 @@ def _install_via_visible_shell(page, node_repo, node_branch,
         _stream([str(venv_python), '-m', 'pip', 'install', '--no-input',
                  '-r', str(reqs)])
     elif not reqs.is_file():
-        _console_append(page, '# no requirements.txt — skipping pip\n\n')
+        _console_append(page, '# no requirements.txt -- skipping pip\n\n')
 
     install_py = node_dir / 'install.py'
     if install_py.is_file() and venv_python.exists():
         _stream([str(venv_python), 'install.py'], cwd=node_dir)
     elif not install_py.is_file():
-        _console_append(page, '# no install.py — skipping\n\n')
+        _console_append(page, '# no install.py -- skipping\n\n')
 
     _console_append(page, '# rebooting ComfyUI backend via Manager...\n')
     log('  install-shell: rebooting ComfyUI via Manager API')
     _reboot_via_manager_and_wait()
     # Manager reboot restarts Python but the frontend renderer's
     # extension-list cache is still stale (Templates panel is populated
-    # from that cache — without a reload the new node's template
+    # from that cache -- without a reload the new node's template
     # section never appears). Same pattern as the old Manager-UI-install
     # post-Apply-Changes reload at ~L2075.
     _console_append(page, '# reloading renderer to refresh extension list\n')
@@ -964,7 +1390,7 @@ def _devtools_active_port_path():
             p = base / name / 'DevToolsActivePort'
             if p.exists():
                 return p
-        # None exists yet — return the new-name path so watchers can
+        # None exists yet -- return the new-name path so watchers can
         # wait for it to appear.
         return base / _APP_DIRS[0] / 'DevToolsActivePort'
     if sys.platform == 'win32':
@@ -1085,26 +1511,174 @@ def _wait_canvas_ready(page_arg, timeout_s=120):
     return False
 
 
+def _browser_ui_executable(p_arg):
+    """Path to a chromium-family browser to host the ComfyUI UI.
+
+    Prefer playwright's own chromium (version-matched to the playwright we
+    drive it with); fall back to installed Edge, which is chromium too and is
+    present on every Windows box.
+
+    Takes the already-open playwright instance -- sync_playwright() is not
+    re-entrant and we are called from inside the driver's `with` block.
+    """
+    try:
+        exe = p_arg.chromium.executable_path
+        if exe and Path(exe).exists():
+            return exe
+    except Exception:
+        pass
+    for c in (r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+              r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'):
+        if Path(c).exists():
+            return c
+    return None
+
+
+def _launch_browser_ui(p_arg, url, debug_dir):
+    """Serve the ComfyUI UI from a real browser window in session 1.
+
+    Why: Comfy Desktop's Electron window never presents frames on this host --
+    it destroys the installer window when setup finishes and the window that
+    remains is hidden and paints black when shown. No presented frames means
+    Page.captureScreenshot hangs, startScreencast emits nothing, and
+    requestAnimationFrame never fires, so playwright's "stable" actionability
+    check can never pass and every click times out.
+
+    ComfyUI is just an HTTP app on 127.0.0.1:8188, so a plain browser window
+    renders it fine -- measured at ~14 FPS in Edge on this same host while the
+    Electron window sat black. Driving the UI there gets working screenshots,
+    working video and working clicks, and what the operator watches on screen
+    IS the test rather than a bystander tab.
+
+    The browser must be launched INTO session 1 (schtasks /it) for the same
+    reason the app is: a browser started from session 0 has no desktop and
+    would reproduce the exact problem we are escaping. We then attach over CDP
+    from session 0, which is session-agnostic.
+
+    Returns (browser, page) or (None, None).
+    """
+    exe = _browser_ui_executable(p_arg)
+    if not exe:
+        log('  browser-ui: no chromium/edge found; staying on the Electron page')
+        return None, None
+    profile = Path(debug_dir) / 'browser-ui-profile'
+    port_file = profile / 'DevToolsActivePort'
+    try:
+        if profile.exists():
+            shutil.rmtree(profile, ignore_errors=True)
+        profile.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        log(f'  browser-ui: could not prepare profile dir: {e}')
+        return None, None
+
+    cmd_path = Path(debug_dir) / 'launch-browser-ui.cmd'
+    flags = (
+        f'--remote-debugging-port=0 --remote-allow-origins=* '
+        f'--user-data-dir="{profile}" --no-first-run --no-default-browser-check '
+        f'--disable-features=CalculateNativeWinOcclusion '
+        f'--disable-backgrounding-occluded-windows --disable-renderer-backgrounding '
+        f'--window-position=0,0 --window-size=1900,1030 '
+        f'--new-window "{url}"'
+    )
+    cmd_path.write_text(f'@echo off\r\n"{exe}" {flags}\r\n', encoding='ascii')
+    task = 'comfy-test-browser-ui'
+    try:
+        subprocess.run(['schtasks', '/end', '/tn', task],
+                       capture_output=True, timeout=15)
+        subprocess.run(['schtasks', '/delete', '/tn', task, '/f'],
+                       capture_output=True, timeout=15)
+    except Exception:
+        pass
+    user = os.environ.get('COMFY_TEST_SESSION_USER') or os.environ.get('USERNAME') or ''
+    if not user or user.upper() == 'SYSTEM' or user.endswith('$'):
+        # Same systemprofile trap the rest of the runner guards against: the
+        # harness runs as SYSTEM, and a task registered for SYSTEM would land
+        # back in session 0.
+        for cand in Path('C:/Users').glob('*'):
+            if (cand / 'AppData' / 'Roaming').is_dir() and cand.name.lower() not in (
+                    'default', 'public', 'default user', 'all users'):
+                user = cand.name
+                break
+    log(f'  browser-ui: launching {Path(exe).name} in session 1 as {user!r} -> {url}')
+    r = subprocess.run(['schtasks', '/create', '/tn', task, '/f',
+                        '/sc', 'once', '/st', '23:59', '/ru', user, '/it',
+                        '/tr', str(cmd_path)], capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f'  browser-ui: schtasks create failed: {(r.stderr or r.stdout).strip()}')
+        return None, None
+    r = subprocess.run(['schtasks', '/run', '/tn', task],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f'  browser-ui: schtasks run failed: {(r.stderr or r.stdout).strip()}')
+        return None, None
+
+    port = None
+    for _ in range(120):
+        try:
+            if port_file.exists():
+                port = int(port_file.read_text().splitlines()[0].strip())
+                if port:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    if not port:
+        log('  browser-ui: DevToolsActivePort never appeared; staying on Electron page')
+        return None, None
+    log(f'  browser-ui: CDP port {port}')
+    try:
+        b = p_arg.chromium.connect_over_cdp(f'http://127.0.0.1:{port}')
+    except Exception as e:
+        log(f'  browser-ui: connect_over_cdp failed: {e}')
+        return None, None
+    pg = None
+    for _ in range(60):
+        pg = main_page(b)
+        if pg is not None:
+            break
+        time.sleep(1)
+    if pg is None:
+        log('  browser-ui: no ComfyUI page in the browser; staying on Electron page')
+        try: b.close()
+        except Exception: pass
+        return None, None
+    try:
+        pg.wait_for_load_state('load', timeout=60000)
+    except Exception:
+        pass
+    log(f'  browser-ui: attached at {pg.url}')
+    return b, pg
+
+
+def _stop_browser_ui():
+    for a in (['schtasks', '/end', '/tn', 'comfy-test-browser-ui'],
+              ['schtasks', '/delete', '/tn', 'comfy-test-browser-ui', '/f']):
+        try:
+            subprocess.run(a, capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+
 def _restart_comfy(p_arg, current_browser):
     """Per-workflow restart. Bounces ONLY ComfyUI's Python server via
     Manager's /api/v2/manager/reboot; keeps the Electron main process,
     the CDP endpoint, and our attached playwright browser/page alive.
 
     Why not the old kill+relaunch: `pkill -f ComfyUI` + `open <app>`
-    fails over SSH — `open` can't reach the aqua session without
+    fails over SSH -- `open` can't reach the aqua session without
     `sudo launchctl asuser` bridging, so the relaunched app never
     writes DevToolsActivePort and the driver hangs. Manager reboot
     sidesteps that entirely: it kills+respawns the Python child from
     inside the running Electron process, so no `open` and no
     connect_over_cdp reconnection.
 
-    Returns (page, browser) — SAME browser as passed in (we never
+    Returns (page, browser) -- SAME browser as passed in (we never
     close it), and the current main page (re-fetched after reload).
     Callers check for None page on failure."""
     ok = _reboot_via_manager_and_wait()
     if not ok:
         log('  loop: WARN: Manager reboot did not confirm /system_stats back up')
-    # Browser + CDP session stay valid — Electron didn't die.
+    # Browser + CDP session stay valid -- Electron didn't die.
     page = main_page(current_browser)
     if page is None:
         log('  loop: no main page after Python restart, bailing')
@@ -1259,7 +1833,7 @@ def _open_templates_and_section(page_arg, node_package_name):
         # Debug: is the section text literally present anywhere in the
         # Templates panel? Distinguishes "selector missed it" (text
         # present but our nav-selectors don't hit) from "backend never
-        # registered the install" (text absent — frontend still on the
+        # registered the install" (text absent -- frontend still on the
         # pre-install extension list).
         try:
             diag = page_arg.evaluate(f"""
@@ -1370,29 +1944,94 @@ if (window.app && window.app.api && window.app.api.socket) {
 """
 
 
-def _run_named_card(page_arg, target_name):
-    """Click target card by data-testid, install WS listener, click Run,
-    wait up to 600s. Returns {name, status, duration_seconds, error}."""
-    log(f'  ext: clicking template {target_name}')
+def _workflow_json_path(target_name):
+    """On-disk path of a workflow shipped by the node under test, or None.
+
+    Only meaningful after a git-clone install (`--dev`), where
+    _install_via_visible_shell put the repo at <custom_nodes>/<NODE_NAME>.
+    COMFY_TEST_WORKFLOWS already holds exactly these stems.
+    """
     try:
-        # No `:visible` filter -- cards lower in the section's grid may be
-        # off-screen until scrolled into view. data-testid is unique per
-        # workflow, so the unfiltered locator is safe.
-        card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]').first
-        if not card.count():
-            log(f'  ext: card {target_name} not found in section DOM')
-            return {'name': target_name, 'status': 'fail',
-                    'duration_seconds': 0,
-                    'error': f'card {target_name} not found in section'}
-        card.scroll_into_view_if_needed()
-        sleep_capturing(page_arg, 1, fps=5)
-        click_with_cursor(page_arg, card)
-        log(f'  ext: clicked template {target_name}')
-        sleep_capturing(page_arg, 5, fps=5)
+        _, _, custom_nodes, _ = _find_active_comfy_install()
+    except Exception:
+        return None
+    node_dir = Path(custom_nodes) / os.environ.get('NODE_NAME', '')
+    for sub in ('workflows', 'example_workflows'):
+        p = node_dir / sub / f'{target_name}.json'
+        if p.is_file():
+            return p
+    return None
+
+
+def _load_graph_from_disk(page_arg, target_name):
+    """Load a workflow straight into the canvas, bypassing Templates.
+
+    The Templates sidebar was the only graph-loading mechanism here, which
+    made the whole suite depend on a UI panel that a git-cloned node is not
+    listed in -- its section is looked up by NODE_NAME.lower(), but the
+    frontend's template manifest only carries registry (CNR) packages. All
+    21 workflows failed on that lookup with duration_seconds=0, having never
+    executed. The JSON is already on disk from the clone, so load it directly.
+
+    Returns True if the graph was loaded.
+    """
+    path = _workflow_json_path(target_name)
+    if path is None:
+        return False
+    try:
+        graph = json.loads(path.read_text(encoding='utf-8'))
     except Exception as e:
-        log(f'  ext: template click failed: {e}')
-        return {'name': target_name, 'status': 'fail',
-                'duration_seconds': 0, 'error': str(e)}
+        log(f'  ext: could not read {path}: {e}')
+        return False
+    try:
+        ok = page_arg.evaluate(
+            """(g) => {
+                const app = window.app || (window.comfyAPI && window.comfyAPI.app);
+                if (!app) return 'no window.app';
+                // API-format exports have no `nodes` array; the frontend
+                // exposes a separate loader for those.
+                if (!g.nodes && typeof app.loadApiJson === 'function') {
+                    app.loadApiJson(g); return true;
+                }
+                if (typeof app.loadGraphData !== 'function') return 'no loadGraphData';
+                app.loadGraphData(g); return true;
+            }""", graph)
+        if ok is not True:
+            log(f'  ext: loadGraphData rejected {target_name}: {ok}')
+            return False
+        log(f'  ext: loaded {target_name} from {path}')
+        return True
+    except Exception as e:
+        log(f'  ext: loadGraphData failed for {target_name}: {e}')
+        return False
+
+
+def _run_named_card(page_arg, target_name):
+    """Load the target workflow, install WS listener, click Run, wait up to
+    600s. Returns {name, status, duration_seconds, error}."""
+    if _load_graph_from_disk(page_arg, target_name):
+        sleep_capturing(page_arg, 2, fps=5)
+    else:
+        log(f'  ext: clicking template {target_name}')
+        try:
+            # No `:visible` filter -- cards lower in the section's grid may be
+            # off-screen until scrolled into view. data-testid is unique per
+            # workflow, so the unfiltered locator is safe.
+            card = page_arg.locator(f'[data-testid="template-workflow-{target_name}"]').first
+            if not card.count():
+                log(f'  ext: card {target_name} not found in section DOM')
+                return {'name': target_name, 'status': 'fail',
+                        'duration_seconds': 0,
+                        'error': f'card {target_name} not found in section'}
+            card.scroll_into_view_if_needed()
+            sleep_capturing(page_arg, 1, fps=5)
+            click_with_cursor(page_arg, card)
+            log(f'  ext: clicked template {target_name}')
+            sleep_capturing(page_arg, 5, fps=5)
+        except Exception as e:
+            log(f'  ext: template click failed: {e}')
+            return {'name': target_name, 'status': 'fail',
+                    'duration_seconds': 0, 'error': str(e)}
 
     log('  ext: installing WS execution listener')
     try:
@@ -1400,20 +2039,29 @@ def _run_named_card(page_arg, target_name):
     except Exception as e:
         log(f'  ext: WS listener install failed: {e}')
 
-    log('  ext: clicking Run')
-    try:
-        run_btn = page_arg.locator(
-            'button[aria-label="Run"]:visible, button:has-text("Run"):visible').first
-        if run_btn.count():
-            click_with_cursor(page_arg, run_btn)
-            log('  ext: clicked Run')
-        else:
-            log('  ext: Run button not found')
-    except Exception as e:
-        log(f'  ext: Run click failed: {e}')
+    _q = _queue_prompt(page_arg)
+    if _q == 'rejected':
+        # ComfyUI validated the graph and refused it, so it will never emit an
+        # execution event. Report the real reason now rather than burning the
+        # full workflow timeout and calling it a TIMEOUT.
+        return {'name': target_name, 'status': 'fail', 'duration_seconds': 0,
+                'error': 'prompt rejected by ComfyUI (see session.log for '
+                         'node_errors)'}
+    if not _q:
+        log('  ext: clicking Run')
+        try:
+            run_btn = page_arg.locator(
+                'button[aria-label="Run"]:visible, button:has-text("Run"):visible').first
+            if run_btn.count():
+                click_with_cursor(page_arg, run_btn)
+                log('  ext: clicked Run')
+            else:
+                log('  ext: Run button not found')
+        except Exception as e:
+            log(f'  ext: Run click failed: {e}')
 
     log('  ext: waiting for execution_success / execution_error')
-    run_deadline = time.time() + 600
+    run_deadline = time.time() + _WORKFLOW_TIMEOUT_S
     run_start = time.time()
     while time.time() < run_deadline:
         frame(page_arg)
@@ -1439,17 +2087,18 @@ def _run_named_card(page_arg, target_name):
             log(json.dumps(err, indent=2, default=str))
         except Exception:
             log(f'  ext: execution_error (non-serializable): {err!r}')
-    elif elapsed >= 600:
-        log('  ext: WORKFLOW TIMEOUT (no execution_success/error in 10min)')
+    elif elapsed >= _WORKFLOW_TIMEOUT_S:
+        log(f'  ext: WORKFLOW TIMEOUT (no execution_success/error in '
+            f'{_WORKFLOW_TIMEOUT_S}s)')
     else:
         log(f'  ext: execution_success after {elapsed}s')
 
     if err:
         status = 'fail'
         err_str = json.dumps(err, default=str)
-    elif elapsed >= 600:
+    elif elapsed >= _WORKFLOW_TIMEOUT_S:
         status = 'timeout'
-        err_str = 'no execution_success/error in 10min'
+        err_str = f'no execution_success/error in {_WORKFLOW_TIMEOUT_S}s'
     else:
         status = 'pass'
         err_str = None
@@ -1770,12 +2419,12 @@ with sync_playwright() as p:
     # all, longer deadline (modal can render >8s after server-up on a
     # CI runner), and Escape fallback so a stuck modal doesn't block
     # downstream Extensions/Templates steps.
-    # Cloud upsell was removed from Comfy Desktop 1.0.34+ — don't waste
+    # Cloud upsell was removed from Comfy Desktop 1.0.34+ -- don't waste
     # 30s polling for a button that isn't rendered anymore. If it comes
     # back in a future build, re-add here.
     # Read branch early so we can decide whether to open the Extensions
     # sidebar. On --dev we do a visible shell install and never touch
-    # Manager UI — opening Extensions is pointless noise on the video.
+    # Manager UI -- opening Extensions is pointless noise on the video.
     _early_node_branch = os.environ.get('NODE_BRANCH', 'main')
     POST_ACTIONS = [
         ('Close Templates', 'templates',
@@ -1807,13 +2456,21 @@ with sync_playwright() as p:
             sleep_capturing(page, 0.5, fps=5)
         if not hit:
             log(f'  post: {name} not found, skipping')
-            if kind in ('templates', 'cloud'):
+            # Escape is NOT safe on Windows: it makes the whole ComfyUI window
+            # vanish (see the long note in the wizard walker above), which
+            # silently breaks every screenshot and every subsequent click for
+            # the rest of the run. The dialog not being found is a non-event;
+            # losing the window is fatal. Only take the fallback off-Windows.
+            if kind in ('templates', 'cloud') and sys.platform != 'win32':
                 try:
                     page.keyboard.press('Escape')
                     log(f'  post: pressed Escape ({name} fallback)')
                     sleep_capturing(page, 2, fps=5)
                 except Exception:
                     pass
+            elif kind in ('templates', 'cloud'):
+                log(f'  post: skipping Escape fallback on Windows '
+                    f'(it hides the app window)')
 
     # Install via Manager's /customnode/install/git_url. This is the
     # dev variant of cdp_driver -- the production cdp_driver.py uses the
@@ -1834,15 +2491,47 @@ with sync_playwright() as p:
     # overlay. The video becomes a live demo of the exact commands a
     # dev-branch user would run in their own Desktop terminal. Bare
     # --desktop (NODE_BRANCH=main) keeps the existing Manager-UI flow
-    # below unchanged — that's the "install the pyproject.toml version"
+    # below unchanged -- that's the "install the pyproject.toml version"
     # path CADabra publishes to CNR nightly.
     _did_visible_install = False
     if node_branch and node_branch != 'main':
         _, _install_path, _custom_nodes, _venv_python = _find_active_comfy_install()
-        log(f'  ext: --dev path (branch={node_branch}) — using visible shell install, skipping Manager UI')
+        log(f'  ext: --dev path (branch={node_branch}) -- using visible shell install, skipping Manager UI')
         _install_via_visible_shell(page, node_repo, node_branch,
                                     _custom_nodes, _venv_python)
         _did_visible_install = True
+
+    # Hand the UI over to a real browser window for everything that follows.
+    #
+    # The wizard and the node install are done at this point, and those are the
+    # only parts that genuinely need Comfy Desktop's own window. Workflow
+    # running only needs a ComfyUI frontend, and the Electron window cannot
+    # provide a usable one here: it presents no frames, so screenshots hang and
+    # every click times out on the actionability check.
+    #
+    # Swapping `page`/`browser` wholesale means _restart_comfy, _run_named_card,
+    # snap() and frame() all keep working untouched -- the reboot is done via
+    # Manager's HTTP API and the reload is a normal page.reload(), neither of
+    # which cares which chromium is showing the page.
+    #
+    # The Electron process stays alive throughout: it owns the ComfyUI python
+    # backend we are testing against. We just stop looking at its window.
+    if sys.platform == 'win32' and os.environ.get('COMFY_TEST_BROWSER_UI', '1') != '0':
+        _b_ui, _p_ui = _launch_browser_ui(p, _comfy_base_url(), OUT)
+        if _p_ui is not None:
+            _electron_browser = browser
+            browser, page = _b_ui, _p_ui
+            _browser_ref[0] = browser
+            # Capture was disabled against the Electron page; the browser window
+            # composites normally, so give it another chance.
+            _capture_disabled[0] = False
+            _capture_warned[0] = False
+            install_cursor(page)
+            install_dialog_handler(page)
+            install_viewport_size(page)
+            _wait_canvas_ready(page, 120)
+            log('  browser-ui: UI now driven from the browser window; '
+                'the Electron app stays up to host the ComfyUI backend')
 
     # ------------------------------------------------------------------
     # Manager-UI install flow (visible in CDP video):
@@ -1855,12 +2544,12 @@ with sync_playwright() as p:
     #   4. Open the Version dropdown and pick Nightly (guaranteed to
     #      clone from git; CNR versions may be missing downloadUrl).
     #   5. Click the Install button.
-    #   6. Wait for the "Apply Changes" toast (Manager finished — this
+    #   6. Wait for the "Apply Changes" toast (Manager finished -- this
     #      is when git clone + pip install are done).
     #   7. BEFORE clicking Apply Changes: do the branch swap (git
     #      fetch/checkout/pull) so the pending restart picks up the
     #      target branch. Announce with a yellow banner.
-    #   8. Click Apply Changes → in-app restart picks up dev branch.
+    #   8. Click Apply Changes -> in-app restart picks up dev branch.
     #
     # Fallback if UI flow fails (tile not found etc): direct filesystem
     # clone + Manager reboot API. Invisible but guaranteed to work.
@@ -1875,7 +2564,7 @@ with sync_playwright() as p:
             ['git', '-C', str(node_dir), 'pull', 'origin', node_branch],
         ]
         banner_lines = [
-            f'TEST HARNESS · swapping to `{node_branch}` branch:',
+            f'TEST HARNESS - swapping to `{node_branch}` branch:',
             *[f'  $ {" ".join(c)}' for c in commands],
         ]
         log(f'  ext: showing disclaimer for branch swap ({node_branch})')
@@ -1900,7 +2589,7 @@ with sync_playwright() as p:
 
     # ------------------------------------------------------------------
     # Fetch the node's DisplayName / PublisherId / version from its
-    # pyproject.toml — same helper as production cdp_driver.py.
+    # pyproject.toml -- same helper as production cdp_driver.py.
     # ------------------------------------------------------------------
     def _fetch_node_meta():
         if not node_repo:
@@ -1921,8 +2610,15 @@ with sync_playwright() as p:
             log(f'  ext: pyproject.toml fetch/parse failed: {e}')
             return None, None, None
 
-    NODE_DISPLAY_NAME, PUBLISHER, NODE_VERSION = _fetch_node_meta()
-    log(f'  ext: node meta = display={NODE_DISPLAY_NAME!r} publisher={PUBLISHER!r} version={NODE_VERSION!r}')
+    # Only the Manager-UI search below reads this, and that branch is skipped
+    # after a git-clone install -- so on --dev it was two network round trips
+    # whose results were fetched, logged and then never used.
+    if _did_visible_install:
+        NODE_DISPLAY_NAME = PUBLISHER = NODE_VERSION = None
+    else:
+        NODE_DISPLAY_NAME, PUBLISHER, NODE_VERSION = _fetch_node_meta()
+        log(f'  ext: node meta = display={NODE_DISPLAY_NAME!r} '
+            f'publisher={PUBLISHER!r} version={NODE_VERSION!r}')
 
     ui_install_done = False
     if NODE_DISPLAY_NAME and PUBLISHER and not _did_visible_install:
@@ -1953,7 +2649,7 @@ with sync_playwright() as p:
                 raise RuntimeError('tile not found')
             sleep_capturing(page, 3, fps=5)
 
-            # Version selector → pick Nightly (guaranteed to git-clone
+            # Version selector -> pick Nightly (guaranteed to git-clone
             # from CNR repository field; other versions may 404 on
             # missing downloadUrl).
             log('  ext: opening version selector')
@@ -1980,13 +2676,20 @@ with sync_playwright() as p:
                         except Exception:
                             pass
                     if not picked:
-                        log('  ext: no Nightly/Latest option matched, dismissing')
-                        try: page.keyboard.press('Escape')
-                        except Exception: pass
+                        # See the Escape note in the wizard walker: on Windows
+                        # this hides the app window and breaks the rest of the
+                        # run. Leaving a dropdown open is the lesser problem.
+                        if sys.platform != 'win32':
+                            log('  ext: no Nightly/Latest option matched, dismissing')
+                            try: page.keyboard.press('Escape')
+                            except Exception: pass
+                        else:
+                            log('  ext: no Nightly/Latest option matched; not '
+                                'sending Escape on Windows (hides the window)')
             except Exception as e:
                 log(f'  ext: version selector failed: {e}')
 
-            # Right-panel Install button (LAST "Install" in DOM order —
+            # Right-panel Install button (LAST "Install" in DOM order --
             # each middle-column tile also has an inline Install).
             log('  ext: clicking right-panel Install')
             btns = page.locator('button:has-text("Install"):visible')
@@ -2001,7 +2704,7 @@ with sync_playwright() as p:
             log(f'  ext: clicked Install (last of {n} visible)')
             sleep_capturing(page, 8, fps=5)
 
-            # Wait for "Apply Changes" toast — this is when Manager
+            # Wait for "Apply Changes" toast -- this is when Manager
             # finished git-clone + pip install. Timeout generous because
             # CADabra pulls pixi + several isolation envs.
             log('  ext: waiting for "Apply Changes" toast')
@@ -2023,7 +2726,7 @@ with sync_playwright() as p:
 
             # Manager finished. BEFORE clicking Apply Changes, swap the
             # branch on disk so the imminent restart picks up dev.
-            log('  ext: Manager install done — running branch swap before Apply Changes')
+            log('  ext: Manager install done -- running branch swap before Apply Changes')
             try:
                 _, _, custom_nodes, _ = _find_active_comfy_install()
                 node_dir = None
@@ -2033,14 +2736,14 @@ with sync_playwright() as p:
                         node_dir = candidate
                         break
                 if node_dir is None:
-                    log(f'  ext: WARNING: no .git in {custom_nodes}/* — Manager may have installed via CNR zip, skipping branch swap')
+                    log(f'  ext: WARNING: no .git in {custom_nodes}/* -- Manager may have installed via CNR zip, skipping branch swap')
                 else:
                     log(f'  ext: node installed at {node_dir}')
                     _do_branch_swap_visibly(node_dir)
             except Exception as e:
                 log(f'  ext: branch swap failed (non-fatal): {e}')
 
-            # NOW click Apply Changes — Manager restarts ComfyUI backend
+            # NOW click Apply Changes -- Manager restarts ComfyUI backend
             # in-place; our `page` handle stays valid.
             log('  ext: clicking Apply Changes')
             click_with_cursor(page, apply_btn)
@@ -2072,7 +2775,7 @@ with sync_playwright() as p:
                 )
                 if not installed:
                     log(f'  ext: WARNING: no {node_repo.split("/")[-1]} dir in '
-                        f'{custom_nodes} after Apply Changes — Manager UI '
+                        f'{custom_nodes} after Apply Changes -- Manager UI '
                         f'reported success but nothing installed. Falling '
                         f'back to filesystem clone.')
                     ui_install_done = False
@@ -2095,8 +2798,24 @@ with sync_playwright() as p:
 
         node_dir = custom_nodes / node_name
         if node_dir.exists():
-            log(f'  ext:   {node_dir} exists — removing before fresh clone')
-            subprocess.run(['rm', '-rf', str(node_dir)], check=True)
+            log(f'  ext:   {node_dir} exists -- removing before fresh clone')
+            # shutil, not `rm -rf`: there is no rm on Windows, and this used
+            # to run with check=True and no try, so it hard-killed the driver
+            # on any Windows re-run where the node dir already existed.
+            # onerror clears the read-only bit git leaves on .git objects.
+            import shutil as _shutil
+            import stat as _stat
+
+            def _on_rm_error(func, path, _exc):
+                try:
+                    os.chmod(path, _stat.S_IWRITE)
+                    func(path)
+                except Exception:
+                    pass
+
+            _shutil.rmtree(str(node_dir), onerror=_on_rm_error)
+            if node_dir.exists():
+                raise RuntimeError(f'could not remove {node_dir} before clone')
         clone_cmd = ['git', 'clone', '--depth', '1', '-b', node_branch,
                      f'https://github.com/{node_repo}.git', str(node_dir)]
         log(f'  ext:   $ {" ".join(clone_cmd)}')
@@ -2115,7 +2834,7 @@ with sync_playwright() as p:
             if r.returncode != 0:
                 log(f'  ext:   WARNING: pip install exit={r.returncode} (continuing)')
         else:
-            log('  ext:   no requirements.txt or no venv python — skipping pip')
+            log('  ext:   no requirements.txt or no venv python -- skipping pip')
 
         # Match Manager's install-script step (manager_core.py:878): after pip,
         # run install.py from the repo dir if present. This is how nodes that
@@ -2149,13 +2868,13 @@ with sync_playwright() as p:
 
     # Manager already rebooted ComfyUI via /api/v2/manager/reboot in
     # _reboot_and_wait() above. Skip the driver's kill+relaunch of the
-    # whole Electron app entirely — that path was fragile (hung on
+    # whole Electron app entirely -- that path was fragile (hung on
     # connect_over_cdp) and unnecessary now that Manager restarts just
     # the Python server. Our existing `page`/`browser` handles stay
     # valid; the renderer just needs a page.reload() (done below) to
     # reconnect to the fresh backend.
-    log('  app: skipping kill+relaunch — Manager reboot did it')
-    clicked_tile = True  # noqa: F841 — kept for downstream if/else scaffold
+    log('  app: skipping kill+relaunch -- Manager reboot did it')
+    clicked_tile = True  # noqa: F841 -- kept for downstream if/else scaffold
     if not clicked_tile:
         log('  ext: unreachable')
     else:
@@ -2294,374 +3013,390 @@ with sync_playwright() as p:
         except Exception as e:
             log(f"  ext: Node Pack Issues close failed: {e}")
 
-        log('  ext: opening Templates sidebar')
-        try:
-            tpl = page.locator('button[aria-label="Templates"]:visible').first
-            if tpl.count():
-                # Bump click timeout above the default 3s; in some
-                # post-restart states the button settles into its
-                # final hit area only after a brief layout pass.
-                click_with_cursor(page, tpl, timeout=10000)
-                log('  ext: clicked Templates')
-                sleep_capturing(page, 4, fps=5)
-            else:
-                log('  ext: Templates sidebar button not found')
-        except Exception as e:
-            log(f'  ext: Templates click failed: {e}')
-
-        # Templates panel sections are keyed off the lowercase
-        # package name (e.g. "comfyui-sam3"), matching the
-        # custom_nodes/ directory the install creates.
-        NODE_PACKAGE_NAME = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
-        log(f'  ext: locating "{NODE_PACKAGE_NAME}" section in Templates panel')
-        node_section = None
-        # The Templates panel left sidebar is a <nav> with an inner
-        # `div.scrollbar-hide.overflow-y-auto` that holds the category
-        # list. Each category is a `<div role="button">`. We scroll
-        # THAT inner div, not the aside/dialog wrapper.
-        candidates = [
-            f'nav [role="button"]:has-text("{NODE_PACKAGE_NAME}")',
-            f'nav span:has-text("{NODE_PACKAGE_NAME}")',
-            f'nav button:has-text("{NODE_PACKAGE_NAME}")',
-        ]
-        def find_node_section():
-            for sel in candidates:
-                loc = page.locator(sel).first
-                if loc.count():
-                    return loc, sel
-            return None, None
-        try:
-            node_section, hit_sel = find_node_section()
-            if node_section is None:
-                # Earlier this loop scrolled `nav .scrollbar-hide.overflow-y-auto:visible`
-                # via .first + el.scrollBy(...). Frames from a recent run
-                # (CADabra-1248 macos-desktop) showed the panel state was
-                # IDENTICAL across 33 seconds of scroll iterations -- the
-                # scroll was a no-op. Two reasons it failed:
-                #   1. .first arbitrarily picked one match among several
-                #      overflow-y-auto divs in the dialog (the right-panel
-                #      template grid scrolls too); could be wrong element.
-                #   2. We never verified scrollTop actually changed, so a
-                #      no-op scrollBy looked the same as a successful one.
-                # Fix: pick the actual scrollable left-sidebar by max
-                # (scrollHeight - clientHeight), keep scrolling while
-                # scrollTop is still moving (= we haven't hit the floor),
-                # and continue regardless of whether the section is found.
-                # That way a virtualized list that lazy-renders below the
-                # current viewport still gets fully traversed.
-                find_panel_js = """
-                () => {
-                  const dialogs = Array.from(document.querySelectorAll(
-                    'div[role="dialog"], aside, nav'
-                  ));
-                  const scrollables = [];
-                  dialogs.forEach(d => {
-                    d.querySelectorAll('*').forEach(el => {
-                      const cs = getComputedStyle(el);
-                      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll')
-                          && el.scrollHeight > el.clientHeight + 4) {
-                        scrollables.push(el);
-                      }
-                    });
-                  });
-                  // Prefer the candidate inside a <nav> (left sidebar) over
-                  // ones inside the right-panel grid. Fall back to the one
-                  // with the largest scroll range.
-                  const nav_first = scrollables.find(el => el.closest('nav'));
-                  const chosen = nav_first || scrollables.sort(
-                    (a,b) => (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
-                  )[0];
-                  if (!chosen) return null;
-                  chosen.setAttribute('data-driver-scroll', '1');
-                  return {
-                    scrollHeight: chosen.scrollHeight,
-                    clientHeight: chosen.clientHeight,
-                    scrollTop: chosen.scrollTop,
-                  };
-                }
-                """
-                info = page.evaluate(find_panel_js)
-                if info:
-                    log(f'  ext: scroll target found (scrollHeight={info["scrollHeight"]} '
-                        f'clientHeight={info["clientHeight"]})')
-                else:
-                    log('  ext: no scrollable panel found, falling back to PageDown')
-
-                step_js = """
-                () => {
-                  const el = document.querySelector('[data-driver-scroll="1"]');
-                  if (!el) return null;
-                  const before = el.scrollTop;
-                  el.scrollBy(0, Math.max(40, el.clientHeight * 0.7));
-                  return {
-                    before,
-                    after: el.scrollTop,
-                    max: el.scrollHeight - el.clientHeight,
-                  };
-                }
-                """
-                stuck = 0
-                last_top = -1
-                MAX_ITERS = 60
-                for i in range(MAX_ITERS):
-                    res = page.evaluate(step_js) if info else None
-                    if res is None:
-                        try: page.keyboard.press('PageDown')
-                        except Exception: pass
-                    else:
-                        if res['after'] == res['before']:
-                            stuck += 1
-                        else:
-                            stuck = 0
-                        last_top = res['after']
-                        # Hit the floor: scrollTop didn't move 2 iterations
-                        # in a row AND we're at scrollHeight - clientHeight.
-                        at_floor = (res['after'] >= res['max'] - 2 and stuck >= 2)
-                        if at_floor:
-                            log(f'  ext: reached scroll floor at iter {i+1} '
-                                f'(scrollTop={res["after"]} max={res["max"]})')
-                            sleep_capturing(page, 1, fps=5)
-                            node_section, hit_sel = find_node_section()
-                            break
-                    sleep_capturing(page, 0.7, fps=5)
-                    node_section, hit_sel = find_node_section()
-                    if node_section is not None:
-                        log(f'  ext: scrolled {i+1}x to {NODE_PACKAGE_NAME} ({hit_sel}, scrollTop={last_top})')
-                        break
-                else:
-                    log(f'  ext: ran {MAX_ITERS} scroll iters, last scrollTop={last_top}')
-            if node_section is not None:
-                node_section.scroll_into_view_if_needed()
-                sleep_capturing(page, 1, fps=5)
-                click_with_cursor(page, node_section)
-                log(f'  ext: clicked {NODE_PACKAGE_NAME} section')
-                sleep_capturing(page, 2, fps=5)
-            else:
-                log(f'  ext: {NODE_PACKAGE_NAME} section not found after scrolling')
-                # Same diagnostic as _open_templates_and_section() — see
-                # comment there. Tells us whether the section text is
-                # literally absent (backend never registered install) vs
-                # present but our nav-selectors missed it.
-                try:
-                    diag = page.evaluate(f"""
-                    (name) => {{
-                        const nav = document.querySelector('nav');
-                        if (!nav) return {{nav: false}};
-                        const text = (nav.textContent || '').toLowerCase();
-                        const hit = text.includes(name.toLowerCase());
-                        const labels = [...nav.querySelectorAll(
-                            '[role="button"], button, span, a'
-                        )].map(el => (el.textContent||'').trim())
-                          .filter(t => t && t.length < 80);
-                        const seen = new Set(); const uniq = [];
-                        for (const l of labels) {{
-                            if (!seen.has(l)) {{ seen.add(l); uniq.push(l); }}
-                            if (uniq.length >= 40) break;
-                        }}
-                        return {{
-                            nav: true, text_contains: hit,
-                            label_count: labels.length, labels: uniq,
-                        }};
-                    }}""", NODE_PACKAGE_NAME)
-                    log(f'  ext:   diag: nav-present={diag.get("nav")} '
-                        f'text_contains_{NODE_PACKAGE_NAME}={diag.get("text_contains")} '
-                        f'label_count={diag.get("label_count")}')
-                    for lbl in (diag.get('labels') or []):
-                        log(f'  ext:     nav label: {lbl!r}')
-                except Exception as e:
-                    log(f'  ext:   diag failed: {e}')
-                # Leave Comfy Desktop running for 4 minutes so we can
-                # inspect the live DOM via CDP from outside the driver.
-                log('  ext: PAUSING 240s so external CDP inspection is possible')
-                log('  ext:   port:  cat "$HOME/Library/Application Support/Comfy Desktop/DevToolsActivePort"')
-                log('  ext:   pages: curl -s http://localhost:<port>/json/list')
-                try:
-                    sleep_capturing(page, 240, fps=5)
-                except Exception:
-                    pass
-        except Exception as e:
-            log(f'  ext: {NODE_PACKAGE_NAME} section click failed: {e}')
-
-        # Pick the first CPU-compatible template per the node repo's
-        # comfy-test.toml [test.workflows].cpu spec. Mirrors
-        # comfy-test/src/comfy_test/common/config_file.py:resolve_workflows
-        #   - cpu = "all"            -> any card
-        #   - cpu = ["a","b"]        -> only "a" or "b"
-        #   - cpu = ["!a"] (any !)   -> any card except those listed
-        if node_section is not None:
-            cpu_mode = 'all'   # 'all' | 'include' | 'exclude'
-            cpu_items = []     # list of workflow names (without .json)
+        # Skip the inline first-workflow run after a git-clone install:
+        # a non-registry clone is absent from the frontend template
+        # manifest, so this can only fail, and it costs a Templates open,
+        # ~42s of scrolling and a 240s pause. The multi-workflow loop
+        # BELOW is deliberately left outside this guard -- it lives in the
+        # same else-branch, and gating both made a run execute 0 workflows.
+        # _workflow_results stays empty, so first_name is None and every
+        # workflow runs through the loop, loading its graph from disk.
+        if _did_visible_install:
+            log('  ext: git-clone install -- skipping inline first-workflow Templates path')
+        else:
+            log('  ext: opening Templates sidebar')
             try:
-                node_repo = os.environ.get('NODE_REPO', '')
-                node_branch = os.environ.get('NODE_BRANCH', 'main')
-                if node_repo:
-                    toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
-                    log(f'  ext: fetching comfy-test.toml from {toml_url}')
-                    toml_text = urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8')
-                    try:
-                        import tomllib
-                    except ImportError:
-                        import tomli as tomllib  # type: ignore
-                    data = tomllib.loads(toml_text)
-                    # Read .cuda when COMFY_TEST_CUDA=1, else .cpu. Earlier
-                    # this was hardcoded to 'cpu' which silently picked the
-                    # wrong workflow on --desktop_windows_cuda (the spec's
-                    # cpu-mode exclude list happened to allow alpha_wrap).
-                    spec_key_inline = 'cuda' if os.environ.get('COMFY_TEST_CUDA', '0') == '1' else 'cpu'
-                    spec_inline = data.get('test', {}).get('workflows', {}).get(spec_key_inline)
-                    if spec_inline == 'all' or spec_inline is None:
-                        cpu_mode = 'all'
-                    elif isinstance(spec_inline, list):
-                        excludes = [f.lstrip('!') for f in spec_inline if isinstance(f, str) and f.startswith('!')]
-                        if excludes:
-                            cpu_mode = 'exclude'
-                            cpu_items = [e[:-5] if e.endswith('.json') else e for e in excludes]
-                        else:
-                            cpu_mode = 'include'
-                            cpu_items = [f[:-5] if f.endswith('.json') else f for f in spec_inline]
-                    log(f'  ext: {spec_key_inline} spec = {cpu_mode} {cpu_items}')
+                tpl = page.locator('button[aria-label="Templates"]:visible').first
+                if tpl.count():
+                    # Bump click timeout above the default 3s; in some
+                    # post-restart states the button settles into its
+                    # final hit area only after a brief layout pass.
+                    click_with_cursor(page, tpl, timeout=10000)
+                    log('  ext: clicked Templates')
+                    sleep_capturing(page, 4, fps=5)
+                else:
+                    log('  ext: Templates sidebar button not found')
             except Exception as e:
-                log(f'  ext: comfy-test.toml fetch/parse failed ({e}); defaulting to all')
+                log(f'  ext: Templates click failed: {e}')
 
-            log(f'  ext: picking first matching {NODE_PACKAGE_NAME} template')
-            picked_card = None
-            picked_name = None
+            # Templates panel sections are keyed off the lowercase
+            # package name (e.g. "comfyui-sam3"), matching the
+            # custom_nodes/ directory the install creates.
+            NODE_PACKAGE_NAME = os.environ.get('NODE_NAME', 'comfyui-sam3').lower()
+            log(f'  ext: locating "{NODE_PACKAGE_NAME}" section in Templates panel')
+            node_section = None
+            # The Templates panel left sidebar is a <nav> with an inner
+            # `div.scrollbar-hide.overflow-y-auto` that holds the category
+            # list. Each category is a `<div role="button">`. We scroll
+            # THAT inner div, not the aside/dialog wrapper.
+            candidates = [
+                f'nav [role="button"]:has-text("{NODE_PACKAGE_NAME}")',
+                f'nav span:has-text("{NODE_PACKAGE_NAME}")',
+                f'nav button:has-text("{NODE_PACKAGE_NAME}")',
+            ]
+            def find_node_section():
+                for sel in candidates:
+                    loc = page.locator(sel).first
+                    if loc.count():
+                        return loc, sel
+                return None, None
             try:
-                cards = page.locator('[data-testid^="template-workflow-"]:visible')
-                n = cards.count()
-                log(f'  ext: {n} visible cards')
-                for i in range(n):
-                    c = cards.nth(i)
-                    tid = c.get_attribute('data-testid') or ''
-                    name = tid[len('template-workflow-'):] if tid.startswith('template-workflow-') else tid
-                    if cpu_mode == 'all' or \
-                       (cpu_mode == 'include' and name in cpu_items) or \
-                       (cpu_mode == 'exclude' and name not in cpu_items):
-                        picked_card = c
-                        picked_name = name
-                        break
-                    else:
-                        log(f'  ext: skipping {name} (not in CPU list)')
-                if picked_card is not None:
-                    picked_card.scroll_into_view_if_needed()
-                    sleep_capturing(page, 1, fps=5)
-                    click_with_cursor(page, picked_card)
-                    log(f'  ext: clicked template {picked_name}')
-                    sleep_capturing(page, 5, fps=5)
-                else:
-                    log('  ext: no CPU-eligible template card found')
-            except Exception as e:
-                log(f'  ext: template click failed: {e}')
-
-            # Snapshot fi[0] before the first workflow's Run so we can slice
-            # its frame range out of the global frame counter for per-workflow
-            # video encoding at the end of the run.
-            _first_workflow_frame_start = fi[0]
-            # Hook the page's existing WebSocket BEFORE clicking Run.
-            # Same approach as comfy-test/src/comfy_test/reporting/screenshot.py:
-            # intercept window.app.api.socket.onmessage; flag completion on
-            # execution_success / execution_error / execution_interrupted.
-            log('  ext: installing WS execution listener')
-            try:
-                page.evaluate(r"""
-                    window._executionComplete = false;
-                    window._executionError = null;
-                    window._executionEvents = [];
-                    if (window.app && window.app.api && window.app.api.socket) {
-                        const origOnMessage = window.app.api.socket.onmessage;
-                        window.app.api.socket.onmessage = function(event) {
-                            if (origOnMessage) {
-                                try { origOnMessage.call(this, event); } catch(e) {}
-                            }
-                            if (event && typeof event.data === 'string') {
-                                try {
-                                    const msg = JSON.parse(event.data);
-                                    window._executionEvents.push({type: msg.type, ts: Date.now()});
-                                    if (msg && msg.type === 'execution_success') {
-                                        window._executionComplete = true;
-                                    } else if (msg && msg.type === 'execution_error') {
-                                        window._executionError = msg.data;
-                                        window._executionComplete = true;
-                                    } else if (msg && msg.type === 'execution_interrupted') {
-                                        window._executionError = msg.data || 'Execution interrupted';
-                                        window._executionComplete = true;
-                                    }
-                                } catch (e) {}
-                            }
-                        };
-                    } else {
-                        window._executionError = 'window.app.api.socket not available';
+                node_section, hit_sel = find_node_section()
+                if node_section is None:
+                    # Earlier this loop scrolled `nav .scrollbar-hide.overflow-y-auto:visible`
+                    # via .first + el.scrollBy(...). Frames from a recent run
+                    # (CADabra-1248 macos-desktop) showed the panel state was
+                    # IDENTICAL across 33 seconds of scroll iterations -- the
+                    # scroll was a no-op. Two reasons it failed:
+                    #   1. .first arbitrarily picked one match among several
+                    #      overflow-y-auto divs in the dialog (the right-panel
+                    #      template grid scrolls too); could be wrong element.
+                    #   2. We never verified scrollTop actually changed, so a
+                    #      no-op scrollBy looked the same as a successful one.
+                    # Fix: pick the actual scrollable left-sidebar by max
+                    # (scrollHeight - clientHeight), keep scrolling while
+                    # scrollTop is still moving (= we haven't hit the floor),
+                    # and continue regardless of whether the section is found.
+                    # That way a virtualized list that lazy-renders below the
+                    # current viewport still gets fully traversed.
+                    find_panel_js = """
+                    () => {
+                      const dialogs = Array.from(document.querySelectorAll(
+                        'div[role="dialog"], aside, nav'
+                      ));
+                      const scrollables = [];
+                      dialogs.forEach(d => {
+                        d.querySelectorAll('*').forEach(el => {
+                          const cs = getComputedStyle(el);
+                          if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll')
+                              && el.scrollHeight > el.clientHeight + 4) {
+                            scrollables.push(el);
+                          }
+                        });
+                      });
+                      // Prefer the candidate inside a <nav> (left sidebar) over
+                      // ones inside the right-panel grid. Fall back to the one
+                      // with the largest scroll range.
+                      const nav_first = scrollables.find(el => el.closest('nav'));
+                      const chosen = nav_first || scrollables.sort(
+                        (a,b) => (b.scrollHeight-b.clientHeight) - (a.scrollHeight-a.clientHeight)
+                      )[0];
+                      if (!chosen) return null;
+                      chosen.setAttribute('data-driver-scroll', '1');
+                      return {
+                        scrollHeight: chosen.scrollHeight,
+                        clientHeight: chosen.clientHeight,
+                        scrollTop: chosen.scrollTop,
+                      };
                     }
-                """)
-            except Exception as e:
-                log(f'  ext: WS listener install failed: {e}')
+                    """
+                    info = page.evaluate(find_panel_js)
+                    if info:
+                        log(f'  ext: scroll target found (scrollHeight={info["scrollHeight"]} '
+                            f'clientHeight={info["clientHeight"]})')
+                    else:
+                        log('  ext: no scrollable panel found, falling back to PageDown')
 
-            log('  ext: clicking Run')
-            try:
-                run_btn = page.locator(
-                    'button[aria-label="Run"]:visible, '
-                    'button:has-text("Run"):visible'
-                ).first
-                if run_btn.count():
-                    click_with_cursor(page, run_btn)
-                    log('  ext: clicked Run')
+                    step_js = """
+                    () => {
+                      const el = document.querySelector('[data-driver-scroll="1"]');
+                      if (!el) return null;
+                      const before = el.scrollTop;
+                      el.scrollBy(0, Math.max(40, el.clientHeight * 0.7));
+                      return {
+                        before,
+                        after: el.scrollTop,
+                        max: el.scrollHeight - el.clientHeight,
+                      };
+                    }
+                    """
+                    stuck = 0
+                    last_top = -1
+                    MAX_ITERS = 60
+                    for i in range(MAX_ITERS):
+                        res = page.evaluate(step_js) if info else None
+                        if res is None:
+                            try: page.keyboard.press('PageDown')
+                            except Exception: pass
+                        else:
+                            if res['after'] == res['before']:
+                                stuck += 1
+                            else:
+                                stuck = 0
+                            last_top = res['after']
+                            # Hit the floor: scrollTop didn't move 2 iterations
+                            # in a row AND we're at scrollHeight - clientHeight.
+                            at_floor = (res['after'] >= res['max'] - 2 and stuck >= 2)
+                            if at_floor:
+                                log(f'  ext: reached scroll floor at iter {i+1} '
+                                    f'(scrollTop={res["after"]} max={res["max"]})')
+                                sleep_capturing(page, 1, fps=5)
+                                node_section, hit_sel = find_node_section()
+                                break
+                        sleep_capturing(page, 0.7, fps=5)
+                        node_section, hit_sel = find_node_section()
+                        if node_section is not None:
+                            log(f'  ext: scrolled {i+1}x to {NODE_PACKAGE_NAME} ({hit_sel}, scrollTop={last_top})')
+                            break
+                    else:
+                        log(f'  ext: ran {MAX_ITERS} scroll iters, last scrollTop={last_top}')
+                if node_section is not None:
+                    node_section.scroll_into_view_if_needed()
+                    sleep_capturing(page, 1, fps=5)
+                    click_with_cursor(page, node_section)
+                    log(f'  ext: clicked {NODE_PACKAGE_NAME} section')
+                    sleep_capturing(page, 2, fps=5)
                 else:
-                    log('  ext: Run button not found')
+                    log(f'  ext: {NODE_PACKAGE_NAME} section not found after scrolling')
+                    # Same diagnostic as _open_templates_and_section() -- see
+                    # comment there. Tells us whether the section text is
+                    # literally absent (backend never registered install) vs
+                    # present but our nav-selectors missed it.
+                    try:
+                        diag = page.evaluate(f"""
+                        (name) => {{
+                            const nav = document.querySelector('nav');
+                            if (!nav) return {{nav: false}};
+                            const text = (nav.textContent || '').toLowerCase();
+                            const hit = text.includes(name.toLowerCase());
+                            const labels = [...nav.querySelectorAll(
+                                '[role="button"], button, span, a'
+                            )].map(el => (el.textContent||'').trim())
+                              .filter(t => t && t.length < 80);
+                            const seen = new Set(); const uniq = [];
+                            for (const l of labels) {{
+                                if (!seen.has(l)) {{ seen.add(l); uniq.push(l); }}
+                                if (uniq.length >= 40) break;
+                            }}
+                            return {{
+                                nav: true, text_contains: hit,
+                                label_count: labels.length, labels: uniq,
+                            }};
+                        }}""", NODE_PACKAGE_NAME)
+                        log(f'  ext:   diag: nav-present={diag.get("nav")} '
+                            f'text_contains_{NODE_PACKAGE_NAME}={diag.get("text_contains")} '
+                            f'label_count={diag.get("label_count")}')
+                        for lbl in (diag.get('labels') or []):
+                            log(f'  ext:     nav label: {lbl!r}')
+                    except Exception as e:
+                        log(f'  ext:   diag failed: {e}')
+                    # Leave Comfy Desktop running for 4 minutes so we can
+                    # inspect the live DOM via CDP from outside the driver.
+                    log('  ext: PAUSING 240s so external CDP inspection is possible')
+                    log('  ext:   port:  cat "$HOME/Library/Application Support/Comfy Desktop/DevToolsActivePort"')
+                    log('  ext:   pages: curl -s http://localhost:<port>/json/list')
+                    try:
+                        sleep_capturing(page, 240, fps=5)
+                    except Exception:
+                        pass
             except Exception as e:
-                log(f'  ext: Run click failed: {e}')
+                log(f'  ext: {NODE_PACKAGE_NAME} section click failed: {e}')
 
-            # Wait for execution_success / execution_error from the WS.
-            log('  ext: waiting for execution_success / execution_error')
-            run_deadline = time.time() + 600
-            run_start = time.time()
-            while time.time() < run_deadline:
-                frame(page)
+            # Pick the first CPU-compatible template per the node repo's
+            # comfy-test.toml [test.workflows].cpu spec. Mirrors
+            # comfy-test/src/comfy_test/common/config_file.py:resolve_workflows
+            #   - cpu = "all"            -> any card
+            #   - cpu = ["a","b"]        -> only "a" or "b"
+            #   - cpu = ["!a"] (any !)   -> any card except those listed
+            if node_section is not None:
+                cpu_mode = 'all'   # 'all' | 'include' | 'exclude'
+                cpu_items = []     # list of workflow names (without .json)
                 try:
-                    complete = page.evaluate('window._executionComplete')
-                except Exception:
-                    complete = False
-                if complete:
-                    break
-                time.sleep(0.5)
-            elapsed = int(time.time() - run_start)
-            try:
-                events = page.evaluate('window._executionEvents') or []
-                err = page.evaluate('window._executionError')
-            except Exception:
-                events, err = [], None
-            log(f'  ext: WS events={len(events)} elapsed={elapsed}s')
-            for ev in events[-15:]:
-                log(f'    ws: {ev}')
-            if err:
-                # err is the raw msg.data from execution_error -- typically
-                # has node_type, exception_type, exception_message, traceback.
-                try:
-                    log('  ext: execution_error data:')
-                    log(json.dumps(err, indent=2, default=str))
-                except Exception:
-                    log(f'  ext: execution_error (non-serializable): {err!r}')
-            elif elapsed >= 600:
-                log('  ext: WORKFLOW TIMEOUT (no execution_success/error in 10min)')
-            else:
-                log(f'  ext: execution_success after {elapsed}s')
+                    node_repo = os.environ.get('NODE_REPO', '')
+                    node_branch = os.environ.get('NODE_BRANCH', 'main')
+                    if node_repo:
+                        toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
+                        log(f'  ext: fetching comfy-test.toml from {toml_url}')
+                        toml_text = urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8')
+                        try:
+                            import tomllib
+                        except ImportError:
+                            import tomli as tomllib  # type: ignore
+                        data = tomllib.loads(toml_text)
+                        # Read .cuda when COMFY_TEST_CUDA=1, else .cpu. Earlier
+                        # this was hardcoded to 'cpu' which silently picked the
+                        # wrong workflow on --desktop_windows_cuda (the spec's
+                        # cpu-mode exclude list happened to allow alpha_wrap).
+                        spec_key_inline = 'cuda' if os.environ.get('COMFY_TEST_CUDA', '0') == '1' else 'cpu'
+                        spec_inline = data.get('test', {}).get('workflows', {}).get(spec_key_inline)
+                        if spec_inline == 'all' or spec_inline is None:
+                            cpu_mode = 'all'
+                        elif isinstance(spec_inline, list):
+                            excludes = [f.lstrip('!') for f in spec_inline if isinstance(f, str) and f.startswith('!')]
+                            if excludes:
+                                cpu_mode = 'exclude'
+                                cpu_items = [e[:-5] if e.endswith('.json') else e for e in excludes]
+                            else:
+                                cpu_mode = 'include'
+                                cpu_items = [f[:-5] if f.endswith('.json') else f for f in spec_inline]
+                        log(f'  ext: {spec_key_inline} spec = {cpu_mode} {cpu_items}')
+                except Exception as e:
+                    log(f'  ext: comfy-test.toml fetch/parse failed ({e}); defaulting to all')
 
-            # Record this workflow's outcome for results.json.
-            if err:
-                _status = 'fail'
-                _err_str = json.dumps(err, default=str) if err else None
-            elif elapsed >= 600:
-                _status = 'timeout'
-                _err_str = 'no execution_success/error in 10min'
-            else:
-                _status = 'pass'
-                _err_str = None
-            _workflow_results.append({
-                'name': picked_name or 'unknown_template',
-                'status': _status,
-                'duration_seconds': elapsed,
-                'error': _err_str,
-            })
-            sleep_capturing(page, 5, fps=5)
+                log(f'  ext: picking first matching {NODE_PACKAGE_NAME} template')
+                picked_card = None
+                picked_name = None
+                try:
+                    cards = page.locator('[data-testid^="template-workflow-"]:visible')
+                    n = cards.count()
+                    log(f'  ext: {n} visible cards')
+                    for i in range(n):
+                        c = cards.nth(i)
+                        tid = c.get_attribute('data-testid') or ''
+                        name = tid[len('template-workflow-'):] if tid.startswith('template-workflow-') else tid
+                        if cpu_mode == 'all' or \
+                           (cpu_mode == 'include' and name in cpu_items) or \
+                           (cpu_mode == 'exclude' and name not in cpu_items):
+                            picked_card = c
+                            picked_name = name
+                            break
+                        else:
+                            log(f'  ext: skipping {name} (not in CPU list)')
+                    if picked_card is not None:
+                        picked_card.scroll_into_view_if_needed()
+                        sleep_capturing(page, 1, fps=5)
+                        click_with_cursor(page, picked_card)
+                        log(f'  ext: clicked template {picked_name}')
+                        sleep_capturing(page, 5, fps=5)
+                    else:
+                        log('  ext: no CPU-eligible template card found')
+                except Exception as e:
+                    log(f'  ext: template click failed: {e}')
+
+                # Snapshot fi[0] before the first workflow's Run so we can slice
+                # its frame range out of the global frame counter for per-workflow
+                # video encoding at the end of the run.
+                _first_workflow_frame_start = fi[0]
+                # Hook the page's existing WebSocket BEFORE clicking Run.
+                # Same approach as comfy-test/src/comfy_test/reporting/screenshot.py:
+                # intercept window.app.api.socket.onmessage; flag completion on
+                # execution_success / execution_error / execution_interrupted.
+                log('  ext: installing WS execution listener')
+                try:
+                    page.evaluate(r"""
+                        window._executionComplete = false;
+                        window._executionError = null;
+                        window._executionEvents = [];
+                        if (window.app && window.app.api && window.app.api.socket) {
+                            const origOnMessage = window.app.api.socket.onmessage;
+                            window.app.api.socket.onmessage = function(event) {
+                                if (origOnMessage) {
+                                    try { origOnMessage.call(this, event); } catch(e) {}
+                                }
+                                if (event && typeof event.data === 'string') {
+                                    try {
+                                        const msg = JSON.parse(event.data);
+                                        window._executionEvents.push({type: msg.type, ts: Date.now()});
+                                        if (msg && msg.type === 'execution_success') {
+                                            window._executionComplete = true;
+                                        } else if (msg && msg.type === 'execution_error') {
+                                            window._executionError = msg.data;
+                                            window._executionComplete = true;
+                                        } else if (msg && msg.type === 'execution_interrupted') {
+                                            window._executionError = msg.data || 'Execution interrupted';
+                                            window._executionComplete = true;
+                                        }
+                                    } catch (e) {}
+                                }
+                            };
+                        } else {
+                            window._executionError = 'window.app.api.socket not available';
+                        }
+                    """)
+                except Exception as e:
+                    log(f'  ext: WS listener install failed: {e}')
+
+                _queued = _queue_prompt(page)
+                if not _queued:
+                    log('  ext: clicking Run')
+                try:
+                    run_btn = page.locator(
+                        'button[aria-label="Run"]:visible, '
+                        'button:has-text("Run"):visible'
+                    ).first
+                    if _queued:
+                        pass
+                    elif run_btn.count():
+                        click_with_cursor(page, run_btn)
+                        log('  ext: clicked Run')
+                    else:
+                        log('  ext: Run button not found')
+                except Exception as e:
+                    log(f'  ext: Run click failed: {e}')
+
+                # Wait for execution_success / execution_error from the WS.
+                log('  ext: waiting for execution_success / execution_error')
+                run_deadline = time.time() + _WORKFLOW_TIMEOUT_S
+                run_start = time.time()
+                while time.time() < run_deadline:
+                    frame(page)
+                    try:
+                        complete = page.evaluate('window._executionComplete')
+                    except Exception:
+                        complete = False
+                    if complete:
+                        break
+                    time.sleep(0.5)
+                elapsed = int(time.time() - run_start)
+                try:
+                    events = page.evaluate('window._executionEvents') or []
+                    err = page.evaluate('window._executionError')
+                except Exception:
+                    events, err = [], None
+                log(f'  ext: WS events={len(events)} elapsed={elapsed}s')
+                for ev in events[-15:]:
+                    log(f'    ws: {ev}')
+                if err:
+                    # err is the raw msg.data from execution_error -- typically
+                    # has node_type, exception_type, exception_message, traceback.
+                    try:
+                        log('  ext: execution_error data:')
+                        log(json.dumps(err, indent=2, default=str))
+                    except Exception:
+                        log(f'  ext: execution_error (non-serializable): {err!r}')
+                elif elapsed >= _WORKFLOW_TIMEOUT_S:
+                    log(f'  ext: WORKFLOW TIMEOUT (no execution_success/error in '
+                f'{_WORKFLOW_TIMEOUT_S}s)')
+                else:
+                    log(f'  ext: execution_success after {elapsed}s')
+
+                # Record this workflow's outcome for results.json.
+                if err:
+                    _status = 'fail'
+                    _err_str = json.dumps(err, default=str) if err else None
+                elif elapsed >= _WORKFLOW_TIMEOUT_S:
+                    _status = 'timeout'
+                    _err_str = f'no execution_success/error in {_WORKFLOW_TIMEOUT_S}s'
+                else:
+                    _status = 'pass'
+                    _err_str = None
+                _workflow_results.append({
+                    'name': picked_name or 'unknown_template',
+                    'status': _status,
+                    'duration_seconds': elapsed,
+                    'error': _err_str,
+                })
+                sleep_capturing(page, 5, fps=5)
 
         # Multi-workflow loop. The block above ran the FIRST matching
         # workflow inline (current behavior). For each remaining matching
@@ -2712,14 +3447,20 @@ with sync_playwright() as p:
                 log('  loop: restart failed (no page); bailing out of remaining workflows')
                 break
             _dismiss_post_restart_modals(page)
-            if not _open_templates_and_section(page, NODE_PACKAGE_NAME_outer):
-                log(f'  loop: Templates+section open failed for {_wf_name}; recording fail')
-                _workflow_results.append({
-                    'name': _wf_name, 'status': 'fail',
-                    'duration_seconds': 0,
-                    'error': 'Templates+section not openable after restart',
-                })
-                continue
+            # Templates is only needed when the graph has to come from the UI.
+            # After a git-clone install the JSON is on disk and _run_named_card
+            # loads it directly, so skip the sidebar entirely -- a non-registry
+            # clone is not in the frontend's template manifest, and each failed
+            # lookup costs a restart, ~42s of scrolling and a 240s pause.
+            if not _did_visible_install:
+                if not _open_templates_and_section(page, NODE_PACKAGE_NAME_outer):
+                    log(f'  loop: Templates+section open failed for {_wf_name}; recording fail')
+                    _workflow_results.append({
+                        'name': _wf_name, 'status': 'fail',
+                        'duration_seconds': 0,
+                        'error': 'Templates+section not openable after restart',
+                    })
+                    continue
             _start = fi[0]
             _result = _run_named_card(page, _wf_name)
             _workflow_results.append(_result)
@@ -2728,6 +3469,11 @@ with sync_playwright() as p:
     snap(page, 'final')
     log(f'Captured {fi[0]} frames')
     browser.close()
+    # The browser-UI window lives in session 1 under its own scheduled task, so
+    # it survives this process unless we explicitly end it. A leftover one would
+    # sit on the desktop and get captured by the next run's screencap.
+    if sys.platform == 'win32':
+        _stop_browser_ui()
 
 # Write results.json at the run root. Schema matches cpu's
 # orchestration/levels/execution.py: timestamp, platform, hardware,
@@ -2782,6 +3528,15 @@ try:
 except Exception as e:
     log(f'results.json write failed: {e}')
 
+# Nothing to encode if capture never worked. Without this guard ffmpeg is
+# handed a frame_%06d.png pattern matching no files and fails with a
+# confusing "Could find no file with path ... and index in the range 0-4",
+# which reads like an ffmpeg bug rather than "there were no frames".
+_have_frames = fi[0] > 0 and any(FRAMES.glob('frame_*.png'))
+if not _have_frames:
+    log('No frames captured -- skipping video encode. results.json and the '
+        'workflow results above are unaffected.')
+
 # imageio-ffmpeg ships a static ffmpeg binary so we don't need a system install.
 try:
     import imageio_ffmpeg
@@ -2794,28 +3549,33 @@ except Exception as e:
 # Useful for end-to-end debugging; per-workflow mp4s are sliced from the
 # global frame sequence below using `_frame_ranges` populated by the loop.
 mp4 = OUT / 'driver.mp4'
-# Silence ffmpeg's per-encode chatter (~100 lines of libx264 config +
-# frame stats). `-loglevel error` mutes info/warning, `-nostats` mutes
-# the progress line. capture_output preserves stderr for the error path.
-r = subprocess.run(
-    [ffmpeg_exe, '-y', '-loglevel', 'error', '-nostats',
-     '-framerate', '5',
-     '-i', str(FRAMES / 'frame_%06d.png'),
-     '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-     '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
-     str(mp4)],
-    capture_output=True, text=True,
-)
-if r.returncode == 0:
-    log(f'Wrote {mp4}')
-else:
-    log(f'ffmpeg failed rc={r.returncode}: {r.stderr[:500]}')
+if _have_frames:
+    # Silence ffmpeg's per-encode chatter (~100 lines of libx264 config +
+    # frame stats). `-loglevel error` mutes info/warning, `-nostats` mutes
+    # the progress line. capture_output preserves stderr for the error path.
+    r = subprocess.run(
+        [ffmpeg_exe, '-y', '-loglevel', 'error', '-nostats',
+         '-framerate', '5',
+         '-i', str(FRAMES / 'frame_%06d.png'),
+         '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+         '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+         str(mp4)],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        log(f'Wrote {mp4}')
+    else:
+        log(f'ffmpeg failed rc={r.returncode}: {r.stderr[:500]}')
 
 # Per-workflow mp4 encoding. Each entry in _frame_ranges is
 # (workflow_name, start_idx, end_idx). frame_NNNNNN.png is 1-indexed
 # (fi[0] is incremented BEFORE the screenshot), so ffmpeg's
 # -start_number is start_idx+1 and -frames:v is the count.
-_frame_ranges_local = locals().get('_frame_ranges', [])
+# Same guard as the master encode above -- without it this loop ran ffmpeg
+# once per workflow against a frames dir that does not exist, producing 18
+# identical "Could find no file with path" errors in a run where capture was
+# disabled from the start.
+_frame_ranges_local = locals().get('_frame_ranges', []) if _have_frames else []
 videos_root = _RUN_DIR / 'videos'
 try:
     for wf_name, start_idx, end_idx in _frame_ranges_local:

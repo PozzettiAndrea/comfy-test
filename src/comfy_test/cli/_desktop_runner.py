@@ -106,8 +106,14 @@ def _enable_manager_legacy_ui() -> None:
     #   macOS:   ~/Library/Application Support/Comfy Desktop/installations.json
     #   Windows: %APPDATA%\Comfy Desktop\installations.json
     if sys.platform == "win32":
-        appdata = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
-        settings_dir = appdata / "Comfy Desktop"
+        # Not os.environ["APPDATA"] -- that can name the SYSTEM profile. Take
+        # the first app-name variant that actually holds the file, falling
+        # back to the current name for the first-run message below.
+        roaming = Path(_user_env_overrides()["APPDATA"])
+        settings_dir = next(
+            (roaming / n for n in _APP_NAMES
+             if (roaming / n / "installations.json").is_file()),
+            roaming / _APP_NAMES[0])
     else:
         settings_dir = _resolve_user_profile() / "Library" / "Application Support" / "Comfy Desktop"
     installations = settings_dir / "installations.json"
@@ -148,7 +154,7 @@ _CACHE_DIR = Path.home() / ".comfy-test-cache" / "desktop"
 # the new name; _ensure_desktop_app auto-detects the actual bundle name
 # from the mount so future renames don't break the download step.
 _APP_DIR = _CACHE_DIR / "Comfy Desktop.app"    # mac
-_APP_EXE = _CACHE_DIR / "ComfyUI" / "ComfyUI.exe"  # windows portable-ish layout
+_APP_INSTALL_DIR = _CACHE_DIR / "ComfyUI"      # windows: the NSIS /D= target
 _VENV_DIR = _CACHE_DIR / "venv"
 
 # CFBundleName / productName candidates used for Electron userData +
@@ -156,6 +162,26 @@ _VENV_DIR = _CACHE_DIR / "venv"
 # resolver that hunts for DevToolsActivePort or ComfyUI logs iterates this
 # list so a rename doesn't require touching every call site.
 _APP_NAMES = ("Comfy Desktop", "ComfyUI")
+
+
+def _find_app_exe() -> Optional[Path]:
+    """The installed Electron binary on Windows, or None if not installed.
+
+    The NSIS build renamed the executable the same way the mac bundle was
+    renamed (ComfyUI.exe -> "Comfy Desktop.exe"), so probe the known product
+    names first, then fall back to any top-level .exe that isn't the
+    uninstaller. Mirrors how the mac branch globs *.app instead of
+    hardcoding a name.
+    """
+    for name in _APP_NAMES:
+        p = _APP_INSTALL_DIR / f"{name}.exe"
+        if p.is_file():
+            return p
+    for p in sorted(_APP_INSTALL_DIR.glob("*.exe")):
+        if not p.name.lower().startswith("uninstall"):
+            return p
+    return None
+
 
 _DESKTOP_DOWNLOAD_URLS = {
     "mac":         "https://download.comfy.org/mac/dmg/arm64",
@@ -187,7 +213,35 @@ def _validate_host(desktop_mode: str) -> Optional[str]:
     return None
 
 
-def _ensure_desktop_app(desktop_mode: str) -> Path:
+def resolve_logs_dir_for_sandbox(node_name: str, node_branch: str,
+                                 desktop_mode: str) -> Path:
+    """The <logs_root>/<run_id>/<branch>/<platform>/ dir for a desktop run.
+
+    Shared with the sandbox runner so the host can compute the same
+    destination the guest wrote to, and the artifact tree keeps the shape
+    dispatch-test.yml's publish glob expects:
+    `*/<short>-*/<branch>/<platform>/results.json`.
+
+    Note the run_id embeds %H%M, so host and guest must not straddle a minute
+    boundary; the sandbox runner therefore computes this once, after the run,
+    rather than deriving it independently on both sides.
+    """
+    short = node_name.removeprefix("ComfyUI-")
+    run_id = f"{short}-{datetime.now().strftime('%H%M')}"
+    platform_dir = {
+        "mac":          "macos-desktop",
+        "windows":      "windows-desktop",
+        "windows_cuda": "windows-desktop-cuda",
+    }.get(desktop_mode, desktop_mode)
+    # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
+    # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
+    # finds the run dir). Fall back to ~/comfy-test-logs for local use.
+    _env_logs = os.environ.get("COMFY_TEST_LOGS_DIR")
+    logs_root = Path(_env_logs) if _env_logs else Path.home() / "comfy-test-logs"
+    return logs_root / run_id / node_branch / platform_dir
+
+
+def _ensure_desktop_app(desktop_mode: str, refresh: bool = False) -> Path:
     """Cache ComfyUI Desktop into our private dir and return the launchable
     path. Never touches /Applications or %LOCALAPPDATA%\\Programs -- the
     whole point of `dockertest` is isolation, so the host stays clean.
@@ -196,6 +250,11 @@ def _ensure_desktop_app(desktop_mode: str) -> Path:
     Returns the .app dir on macOS, the .exe path on Windows.
     """
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if refresh:
+        stale = _APP_DIR if desktop_mode == "mac" else _APP_INSTALL_DIR
+        if stale.exists():
+            print(f"[desktop] --refresh-app: discarding cached app at {stale}")
+            _force_rmtree(stale)
     if desktop_mode == "mac":
         if _APP_DIR.exists():
             print(f"[desktop] reusing cached app at {_APP_DIR}")
@@ -242,20 +301,31 @@ def _ensure_desktop_app(desktop_mode: str) -> Path:
         return _APP_DIR
 
     # windows / windows_cuda
-    if _APP_EXE.exists():
-        print(f"[desktop] reusing cached app at {_APP_EXE}")
-        return _APP_EXE
+    cached = _find_app_exe()
+    if cached is not None:
+        print(f"[desktop] reusing cached app at {cached}")
+        return cached
     setup = _CACHE_DIR / "ComfyUI-Setup.exe"
     _download(_DESKTOP_DOWNLOAD_URLS["windows"], setup)
     # NSIS supports /D for install dir. Use our cache root so the install
     # doesn't pollute %LOCALAPPDATA%\Programs\ComfyUI on the host.
-    install_dir = _CACHE_DIR / "ComfyUI"
-    subprocess.run([str(setup), "/S", f"/D={install_dir}"], check=True)
+    subprocess.run([str(setup), "/S", f"/D={_APP_INSTALL_DIR}"], check=True)
     for _ in range(180):
-        if _APP_EXE.exists():
-            return _APP_EXE
+        found = _find_app_exe()
+        if found is not None:
+            return found
         time.sleep(1)
-    raise RuntimeError(f"ComfyUI.exe not present at {_APP_EXE} after silent install")
+    # Report what actually landed so the next rename is self-diagnosing
+    # instead of another silent 3-minute poll.
+    try:
+        present = sorted(p.name for p in _APP_INSTALL_DIR.iterdir())
+    except OSError:
+        present = []
+    raise RuntimeError(
+        f"No Comfy Desktop executable in {_APP_INSTALL_DIR} after silent "
+        f"install (tried {', '.join(n + '.exe' for n in _APP_NAMES)} and any "
+        f"non-uninstaller *.exe). Directory contains: "
+        f"{', '.join(present) if present else '<nothing>'}")
 
 
 def _ensure_venv() -> Path:
@@ -342,6 +412,15 @@ def _kill_existing(desktop_mode: str) -> None:
         subprocess.run(["taskkill", "/F", "/IM", "ComfyUI.exe"], capture_output=True)
         subprocess.run(["taskkill", "/F", "/IM", "Comfy Desktop.exe"],
                        capture_output=True)
+        # End the session-1 scheduled tasks too. They are deliberately not
+        # deleted while running (deleting a running task kills its process
+        # tree, which would take the app down mid-test), so a run that was
+        # killed rather than exited leaves them alive -- and the capture loop
+        # then keeps writing screenshots into the PREVIOUS run's directory.
+        for tn in (_SESSION_TASK_NAME, _SCREENCAP_TASK_NAME):
+            subprocess.run(["schtasks", "/end", "/tn", tn],
+                           check=False, capture_output=True, text=True)
+        _kill_stray_screencap_processes()
     _kill_port_owner(8000)
     time.sleep(2)
 
@@ -371,6 +450,23 @@ def _resolve_user_profile() -> Path:
     except Exception:
         pass
     return Path.home()
+
+
+def _user_env_overrides() -> dict:
+    """APPDATA/LOCALAPPDATA corrected to the real user profile.
+
+    Both can point at the SYSTEM profile when comfy-test is launched from an
+    agent harness or a scheduled task. Electron derives its userData dir from
+    APPDATA, so an uncorrected value sends DevToolsActivePort to
+    C:\\Windows\\system32\\config\\systemprofile\\... -- exactly where
+    _devtools_active_port_candidates deliberately refuses to look, which
+    turns into a silent _wait_for_cdp timeout.
+    """
+    profile = _resolve_user_profile()
+    return {
+        "APPDATA": str(profile / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(profile / "AppData" / "Local"),
+    }
 
 
 def _force_rmtree(p: Path) -> None:
@@ -415,13 +511,33 @@ def _wipe_comfy_state() -> None:
         targets += [home / "ComfyUI-Installs"]
     else:
         profile = _resolve_user_profile()
-        targets += [_CACHE_DIR / "ComfyUI", _CACHE_DIR / "Comfy Desktop"]
+        # NB: _APP_INSTALL_DIR (the cached app itself) is deliberately NOT a
+        # target. Wiping it defeated _ensure_desktop_app's reuse fast path,
+        # so every Windows run re-downloaded ~150MB and re-ran the NSIS
+        # installer. macOS never wiped its _APP_DIR either. The isolation
+        # contract is about ComfyUI state, not about reinstalling Electron;
+        # --refresh-app forces a clean reinstall when that's what you want.
         for name in _APP_NAMES:
             targets += [
                 profile / "AppData" / "Roaming" / name,
                 profile / "AppData" / "Local" / "Programs" / name,
                 profile / "Documents" / name,
             ]
+        # Windows equivalent of mac's ~/ComfyUI-Installs wipe above. Comfy
+        # Desktop increments a `ComfyUI (N)` slot on every fresh setup, so
+        # without this each run orphans ~2.5GB -- measured at 81GB across 15
+        # slots before this was added.
+        #
+        # Note the dir is "Comfy-Desktop" with a HYPHEN, under LocalAppData.
+        # That is a third app-name variant, absent from _APP_NAMES ("Comfy
+        # Desktop", "ComfyUI"), which is why the loop above never matched it.
+        #
+        # Deliberately NOT wiping the sibling ComfyUI-Shared (models) or
+        # ComfyUI-Cache dirs: mac leaves its equivalents alone, and clearing
+        # them would force a full model re-download every run.
+        targets += [
+            profile / "AppData" / "Local" / "Comfy-Desktop" / "ComfyUI-Installs",
+        ]
     for t in targets:
         if t.exists():
             print(f"[desktop] wipe: {t}", flush=True)
@@ -484,6 +600,193 @@ def _devtools_active_port_path(desktop_mode: str) -> Path:
     return _devtools_active_port_candidates(desktop_mode)[0]
 
 
+_SESSION_TASK_NAME = "comfy-test-desktop"
+
+def _current_session_id() -> Optional[int]:
+    """Windows session this process is in, or None off-Windows / on error.
+
+    0 is the non-interactive services session. SSH and JupyterLab both land
+    there, and everything they spawn inherits it.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        sid = ctypes.c_ulong()
+        if ctypes.windll.kernel32.ProcessIdToSessionId(
+                ctypes.windll.kernel32.GetCurrentProcessId(), ctypes.byref(sid)):
+            return int(sid.value)
+    except Exception:
+        pass
+    return None
+
+
+_SCREENCAP_TASK_NAME = "comfy-test-screencap"
+
+# Windows counterpart of the macOS /usr/sbin/screencapture loop in
+# _start_host_screencap. Photographs the SCREEN rather than asking chromium to
+# present a surface, which is the whole point: on this host the Electron window
+# renders black and every CDP capture hangs, so the OS-level grab is the only
+# thing that sees anything at all.
+#
+# Same output contract as macOS -- host_%06d.jpg into the frames dir -- so the
+# live viewer needs no change: its JS already takes the max index across both
+# `host_*` and `frame_*` prefixes.
+#
+# MUST run in session 1: session 0 has no desktop to photograph.
+_SCREENCAP_PS1 = r'''param([string]$Dir, [int]$Fps = 1)
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+# JPEG at ~70% keeps a long run's frames to a sane size; the report only ever
+# shows these as thumbnails or a timelapse.
+$codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() |
+         Where-Object { $_.MimeType -eq 'image/jpeg' }
+$eps = New-Object Drawing.Imaging.EncoderParameters 1
+$eps.Param[0] = New-Object Drawing.Imaging.EncoderParameter(
+    [Drawing.Imaging.Encoder]::Quality, [long]70)
+$i = 0
+$interval = [int](1000 / [Math]::Max(1, $Fps))
+while ($true) {
+    try {
+        $b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bmp = New-Object Drawing.Bitmap $b.Width, $b.Height
+        $g = [Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)
+        $i++
+        $bmp.Save((Join-Path $Dir ('host_{0:D6}.jpg' -f $i)), $codec, $eps)
+        $g.Dispose(); $bmp.Dispose()
+    } catch { }
+    Start-Sleep -Milliseconds $interval
+}
+'''
+
+
+def _start_host_screencap_windows(logs_dir: Path) -> None:
+    """Start the session-1 screen-capture loop. Best effort, never fatal."""
+    frames_dir = logs_dir / "debug" / "electron_inspect" / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    script = logs_dir / "debug" / "screencap.ps1"
+    script.write_text(_SCREENCAP_PS1, encoding="ascii")
+    user = _resolve_user_profile().name
+    cmd = (f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File '
+           f'"{script}" -Dir "{frames_dir}" -Fps 1')
+    # Kill any capture left over from a previous run FIRST. `/create /f`
+    # rewrites the task definition but does NOT touch an already-running
+    # instance, and `/run` will not start a second one -- so a survivor keeps
+    # looping with its ORIGINAL -Dir and quietly files every screenshot under
+    # the previous run, leaving this one with zero. That is not hypothetical:
+    # a leftover from CADabra-1058 did exactly this to CADabra-1103.
+    _stop_host_screencap_windows()   # also kills stray loops from killed runs
+    try:
+        subprocess.run(["schtasks", "/create", "/tn", _SCREENCAP_TASK_NAME, "/f",
+                        "/sc", "once", "/st", "23:59", "/ru", user, "/it",
+                        "/tr", cmd], check=True, capture_output=True, text=True)
+        subprocess.run(["schtasks", "/run", "/tn", _SCREENCAP_TASK_NAME],
+                       check=True, capture_output=True, text=True)
+    except Exception as e:
+        print(f"[desktop] host-screencap: skip ({e})", file=sys.stderr)
+        return
+    # This loop runs forever by design, so make very sure it dies with us --
+    # leftover background tasks have already corrupted several runs.
+    atexit.register(_stop_host_screencap_windows)
+    print(f"[desktop] host-screencap: writing host_*.jpg to {frames_dir} "
+          f"(session 1, 1fps)")
+
+
+def _kill_stray_screencap_processes() -> None:
+    """Kill capture loops that outlived their run.
+
+    `schtasks /end` asks Task Scheduler to stop the task, but a run that was
+    killed rather than exited cleanly never reached the atexit hook, and the
+    powershell loop then survives indefinitely -- writing frames into a stale
+    run's directory. Match on the script name so we only ever touch our own.
+    """
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*screencap.ps1*' } | "
+             "ForEach-Object { $_.ProcessId }"],
+            capture_output=True, text=True, timeout=30)
+        for line in (r.stdout or "").split():
+            if line.strip().isdigit():
+                subprocess.run(["taskkill", "/F", "/PID", line.strip()],
+                               check=False, capture_output=True, text=True)
+    except Exception:
+        pass
+
+
+def _stop_host_screencap_windows() -> None:
+    for args in (["schtasks", "/end", "/tn", _SCREENCAP_TASK_NAME],
+                 ["schtasks", "/delete", "/tn", _SCREENCAP_TASK_NAME, "/f"]):
+        try:
+            subprocess.run(args, check=False, capture_output=True, text=True)
+        except Exception:
+            pass
+    _kill_stray_screencap_processes()
+
+
+def _launch_in_interactive_session(app_path: Path, flags: list, stdout_log: Path) -> None:
+    """Start the Electron app on the interactive desktop via Task Scheduler.
+
+    Why this exists: session 0 (where ssh/jupyter put us) has no Desktop
+    Window Manager and is pinned by Windows to 1024x768, so Page.
+    captureScreenshot stalls forever waiting for a frame that is never
+    presented, and every frame_*.png comes back empty. schtasks /it runs the
+    task with TASK_LOGON_INTERACTIVE_TOKEN, i.e. on the logged-on user's
+    desktop.
+
+    Only the GUI process moves. cdp_driver, orchestration and the live viewer
+    stay in session 0 and reach the app over 127.0.0.1:<cdp port>, which is
+    session-agnostic.
+    """
+    profile = _resolve_user_profile()
+    user = profile.name
+    # A .cmd wrapper keeps schtasks out of the quoting business (the flags
+    # contain '*' and '=') and gives us the stdout redirect that a bare
+    # /tr cannot.
+    #
+    # Launch the app and NOTHING ELSE. We used to also start a size-window.ps1
+    # helper here that hunted for the app's HWND and resized / SW_SHOW'd /
+    # foregrounded it. Every "the screen is black" symptom traced back to that
+    # helper picking the wrong window: Comfy Desktop keeps two large
+    # Chrome_WidgetWin windows alive, one of which it deliberately keeps
+    # hidden, and the helper force-showed whichever it happened to find first
+    # -- then in one run resized it to full-screen, covering the desktop.
+    #
+    # The app manages its own windows correctly when left alone. Screen
+    # visibility comes from the host screencap loop (a plain CopyFromScreen at
+    # 1fps), which photographs whatever is actually on screen and needs no
+    # knowledge of window handles at all.
+    wrapper = stdout_log.parent / "launch-desktop.cmd"
+    quoted = " ".join(f'"{f}"' if " " in f else f for f in flags)
+    wrapper.write_text(
+        "@echo off\r\n"
+        f'"{app_path}" {quoted} > "{stdout_log}" 2>&1\r\n',
+        encoding="ascii",
+    )
+    # /f overwrites any task left behind by a previous run. We deliberately do
+    # not delete it afterwards: schtasks /delete on a *running* task kills the
+    # process tree, which would take the app down with it.
+    create = ["schtasks", "/create", "/tn", _SESSION_TASK_NAME, "/f",
+              "/sc", "once", "/st", "23:59", "/ru", user, "/it",
+              "/tr", str(wrapper)]
+    r = subprocess.run(create, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"could not register interactive launch task as {user!r}: "
+            f"{(r.stderr or r.stdout).strip()}")
+    r = subprocess.run(["schtasks", "/run", "/tn", _SESSION_TASK_NAME],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"could not start interactive launch task: "
+            f"{(r.stderr or r.stdout).strip()}")
+    print(f"[desktop] launched on the interactive desktop (session != 0) as "
+          f"{user} via scheduled task {_SESSION_TASK_NAME!r}")
+
+
 def _launch(app_path: Path, desktop_mode: str, stdout_log: Path) -> None:
     """Launch the Desktop app with --remote-debugging-port=0; chromium picks
     a fresh ephemeral port the kernel guarantees is unbound, sidestepping
@@ -509,13 +812,49 @@ def _launch(app_path: Path, desktop_mode: str, stdout_log: Path) -> None:
     # (websocket-client) sends the CDP HTTP endpoint's own origin, which
     # chromium rejects. Passing `*` here matches what playwright's own
     # `chromium.launch()` does under the hood.
-    flags = ["--remote-debugging-port=0", "--remote-allow-origins=*"]
+    flags = [
+        "--remote-debugging-port=0", "--remote-allow-origins=*",
+        # Keep the compositor committing frames when the window is occluded,
+        # backgrounded or simply idle. Without these, chromium throttles the
+        # renderer and Page.captureScreenshot never returns -- which surfaces
+        # as `page.screenshot: Timeout 30000ms exceeded` after "fonts loaded",
+        # and as zero frame_*.png for the whole run. Playwright sets all three
+        # itself (see its driver's server/electron/loader.js); we launch
+        # Electron by hand, so we have to pass them ourselves.
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        # Windows-specific and distinct from the three above: chromium runs a
+        # native occlusion detector that marks a covered HWND as occluded and
+        # stops producing frames for it, regardless of the backgrounding flags.
+        # Comfy Desktop keeps a second, empty top-level window around that can
+        # sit over the app window, so this is reachable in normal operation.
+        # No frames -> requestAnimationFrame stops -> playwright's "stable"
+        # actionability check can never pass and EVERY click times out, which
+        # is what made all 21 workflows report `timeout`. Unlike --disable-gpu
+        # this does not change the compositing path, only the occlusion policy.
+        "--disable-features=CalculateNativeWinOcclusion",
+    ]
+    # DO NOT add --disable-gpu / --disable-gpu-compositing here. It was tried
+    # (theory: a WebGL canvas that cannot present blocks the page's compositor
+    # frame) and it makes Comfy Desktop EXIT a few seconds after the wizard:
+    # run 2153 died with `connect_over_cdp: ECONNREFUSED` at ~153s and left no
+    # crash trace, where run 2145 -- identical but for these flags -- ran on
+    # past 166s. Software compositing is not a safe swap for this app.
     if desktop_mode == "mac":
         _open_mac_app(app_path, flags, out_fh)
+    elif _current_session_id() == 0:
+        # Session 0 has no desktop and Windows pins it to 1024x768, so an
+        # Electron window launched here can never be composited or captured.
+        # Bounce the GUI into the interactive console session instead. This is
+        # the Windows analogue of the `launchctl asuser` bridge _open_mac_app
+        # already does for SSH-spawned shells on macOS.
+        _launch_in_interactive_session(app_path, flags, stdout_log)
     else:
         subprocess.Popen(
             [str(app_path), *flags],
             stdout=out_fh, stderr=out_fh,
+            env={**os.environ, **_user_env_overrides()},
             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
         )
 
@@ -555,8 +894,14 @@ def _start_host_screencap(logs_dir: Path, desktop_mode: str):
     (typically the first-run install wizard) before CDP comes up. Drops
     `host_NNNNNN.jpg` into the same frames dir cdp_driver.py writes to;
     monitor JS picks max index across both prefixes. Returns a Popen
-    handle (or None) for cleanup."""
+    handle (or None) for cleanup.
+
+    Windows takes the equivalent path via _start_host_screencap_windows():
+    same host_*.jpg contract, but driven by a session-1 scheduled task rather
+    than a Popen, so it returns None and cleans up through atexit instead."""
     if desktop_mode != "mac":
+        if sys.platform == "win32":
+            _start_host_screencap_windows(logs_dir)
         return None
     frames_dir = logs_dir / "debug" / "electron_inspect" / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -652,14 +997,14 @@ def _collect_logs(desktop_mode: str, dest: Path) -> None:
                 home / "Library" / "Application Support" / name / "logs",
             ]
     else:
-        appdata = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        appdata = Path(_user_env_overrides()["APPDATA"])
         for name in _APP_NAMES:
             sources.append(appdata / name / "logs")
     # Modern Comfy Desktop writes its backend log to a per-install path
     # (macOS default: ~/ComfyUI-Installs/<slot>/logs/comfyui.log; Windows
     # default: %LOCALAPPDATA%\Programs\Comfy Desktop\..., user-chosen).
     # Ask installations.json for the authoritative slot rather than
-    # guessing — that's how cdp_driver's live-tailer resolves it too.
+    # guessing -- that's how cdp_driver's live-tailer resolves it too.
     try:
         from comfy_test.platforms.desktop.cdp_driver import _find_active_comfy_install
         _install_path, _comfy_root, _, _ = _find_active_comfy_install()
@@ -667,7 +1012,7 @@ def _collect_logs(desktop_mode: str, dest: Path) -> None:
         sources.append(_comfy_root / "user")
     except Exception:
         # Fall back to the macOS default glob when installations.json
-        # isn't readable (e.g. Desktop never launched — nothing to collect
+        # isn't readable (e.g. Desktop never launched -- nothing to collect
         # anyway, but the fallback keeps prior behavior).
         sources += list(Path.home().glob("ComfyUI-Installs/*/logs"))
         sources += list(Path.home().glob("ComfyUI-Installs/*/ComfyUI/user"))
@@ -688,7 +1033,7 @@ def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str,
     optional dep doesn't fail the whole run.
 
     `dev` is accepted for backward compat with existing call sites but
-    ignored — --desktop and --desktop --dev share the same platform id;
+    ignored -- --desktop and --desktop --dev share the same platform id;
     branch separation happens at the run-dir level (branch subdir).
     """
     platform_id = {"mac": "macos-desktop",
@@ -1032,10 +1377,33 @@ def _start_monitor_server(port: int, logs_dir: Path) -> None:
 
 def run_desktop(args, desktop_mode: str) -> int:
     """Local-host equivalent of the desktop YMLs. Returns process rc."""
+    # We relay ComfyUI's log and cdp_driver's output to this console, which on
+    # Windows is cp1252. Keep its encoding (switching to UTF-8 would just
+    # mojibake) but stop an unrepresentable character from raising
+    # UnicodeEncodeError and killing the run. Scoped to desktop runs rather
+    # than done at import, so importing this module has no global side effect.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     err = _validate_host(desktop_mode)
     if err:
         print(f"[desktop] {err}", file=sys.stderr)
         return 2
+
+    # windows_cuda runs inside Windows Sandbox: it executes each node's
+    # requirements.txt and install.py with Manager's security_level=weak, so
+    # it needs a blast-radius boundary the host cannot provide. The CPU path
+    # (`windows`) stays on the host, where GitHub-hosted runners already give
+    # us disposability for free.
+    #
+    # COMFY_TEST_IN_SANDBOX is set by the guest bootstrap script; without this
+    # guard the guest would recurse and try to launch a nested sandbox.
+    if desktop_mode == "windows_cuda" and not os.environ.get("COMFY_TEST_IN_SANDBOX"):
+        from .sandbox.run import run_in_sandbox
+        return run_in_sandbox(args, desktop_mode)
 
     if not _CDP_DRIVER.is_file():
         print(f"[desktop] cdp_driver.py not found at {_CDP_DRIVER}", file=sys.stderr)
@@ -1124,21 +1492,7 @@ def run_desktop(args, desktop_mode: str) -> int:
     # uses for cpu / gpu jobs. --desktop and --desktop --dev share the same
     # platform dir; separation comes naturally from the branch subdir
     # (main/ vs dev/) same as cpu vs gpu.
-    short = node_name.removeprefix("ComfyUI-")
-    timestamp = datetime.now().strftime("%H%M")
-    run_id = f"{short}-{timestamp}"
-    branch_dir = node_branch
-    platform_dir = {
-        "mac":         "macos-desktop",
-        "windows":     "windows-desktop",
-        "windows_cuda": "windows-desktop-cuda",
-    }.get(desktop_mode, desktop_mode)
-    # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
-    # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
-    # finds the run dir). Fall back to ~/comfy-test-logs for local use.
-    _env_logs = os.environ.get("COMFY_TEST_LOGS_DIR")
-    logs_root = Path(_env_logs) if _env_logs else Path.home() / "comfy-test-logs"
-    logs_dir = logs_root / run_id / branch_dir / platform_dir
+    logs_dir = resolve_logs_dir_for_sandbox(node_name, node_branch, desktop_mode)
     debug_dir = logs_dir / "debug"
     for d in (logs_dir, debug_dir,
               logs_dir / "logs", logs_dir / "screenshots", logs_dir / "videos"):
@@ -1159,7 +1513,10 @@ def run_desktop(args, desktop_mode: str) -> int:
     # ephemeral port -- no fight with stale Windows orphan-LISTEN sockets
     # from prior killed runs. We read the chosen port from
     # <userData>/DevToolsActivePort.
-    app_path = _ensure_desktop_app(desktop_mode)
+    # getattr: run_desktop is also reached from `docker run --desktop_windows`,
+    # whose parser doesn't define --refresh-app.
+    app_path = _ensure_desktop_app(
+        desktop_mode, refresh=getattr(args, "refresh_app", False))
     stdout_log = debug_dir / "electron_stdout.log"
     _launch(app_path, desktop_mode, stdout_log)
     screencap_proc = _start_host_screencap(logs_dir, desktop_mode)
@@ -1167,9 +1524,14 @@ def run_desktop(args, desktop_mode: str) -> int:
     try:
         cdp_port = _wait_for_cdp(desktop_mode, 240)
     finally:
-        # Stop host capture as soon as cdp_driver takes over (or we bail).
-        # cdp_driver writes higher-indexed frame_*.png that the monitor JS
-        # picks over our host_*.jpg from this point on.
+        # macOS stops host capture here because cdp_driver then writes
+        # higher-indexed frame_*.png that supersede it.
+        #
+        # Windows deliberately does NOT: CDP capture produces nothing on this
+        # host (the Electron window renders black, so captureScreenshot hangs
+        # for every page), which makes the OS-level grab the only thing that
+        # ever sees anything. It runs for the whole run and is torn down by
+        # the atexit hook _start_host_screencap_windows registered.
         if screencap_proc is not None:
             try: screencap_proc.terminate()
             except Exception: pass
@@ -1181,6 +1543,11 @@ def run_desktop(args, desktop_mode: str) -> int:
 
     # Drive the app via cdp_driver. Env vars match what the YMLs set.
     env = os.environ.copy()
+    # cdp_driver relaunches the app itself after Apply-Changes and passes no
+    # env= of its own, so it inherits this dict. Without the correction that
+    # relaunched instance writes DevToolsActivePort back under the SYSTEM
+    # profile and the reconnect hangs.
+    env.update(_user_env_overrides())
     env.update({
         "PYTHONUNBUFFERED": "1",
         "COMFY_TEST_CUDA": "1" if desktop_mode == "windows_cuda" else "0",
@@ -1207,7 +1574,7 @@ def run_desktop(args, desktop_mode: str) -> int:
         }.get(desktop_mode, "unknown_desktop"),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.
-        "COMFY_DESKTOP_APP_EXE": str(_APP_EXE),
+        "COMFY_DESKTOP_APP_EXE": str(app_path),
         "COMFY_DESKTOP_APP_PATH": str(_APP_DIR),
         # cdp_driver uses this for its initial connect, post-relaunch
         # poll/reconnect, and the post-Apply-Changes app Popen flag.
@@ -1251,10 +1618,13 @@ def run_desktop(args, desktop_mode: str) -> int:
     tail_thread.start()
 
     try:
+        # encoding/errors must be explicit: cdp_driver relays ComfyUI's log
+        # file, which is UTF-8, while text=True alone would decode this pipe
+        # with the console's cp1252 default and mangle or raise on it.
         proc = subprocess.Popen(
             [str(venv_python), str(_CDP_DRIVER)],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=True, bufsize=1, encoding="utf-8", errors="replace",
         )
         for line in proc.stdout:
             session_log.write(line)
@@ -1284,7 +1654,7 @@ def run_desktop(args, desktop_mode: str) -> int:
 
 
 def _print_workflow_summary(results_json: Path, tag: str = "desktop") -> None:
-    """Print a compact pass/fail table from results.json — one line per
+    """Print a compact pass/fail table from results.json -- one line per
     workflow with a status icon, duration, and (for failures) the first
     line of the error message. Followed by an aggregate `N/M passed`
     line. Called at end-of-run so users see outcomes without opening
@@ -1300,7 +1670,7 @@ def _print_workflow_summary(results_json: Path, tag: str = "desktop") -> None:
     passed = int(s.get("passed", 0))
     failed = int(s.get("failed", 0))
     other = max(0, total - passed - failed)
-    icons = {"pass": "✓", "fail": "✗", "error": "✗", "skip": "·"}
+    icons = {"pass": "+", "fail": "x", "error": "x", "skip": "-"}
     print(f"\n[{tag}] === Workflow summary ({data.get('platform', '?')}) ===",
           flush=True)
     for w in data.get("workflows") or []:
@@ -1312,11 +1682,11 @@ def _print_workflow_summary(results_json: Path, tag: str = "desktop") -> None:
         if status != "pass":
             first = ((w.get("error") or "").splitlines() or [""])[0].strip()
             if first:
-                err = f"  — {first[:80]}"
+                err = f"  -- {first[:80]}"
         print(f"[{tag}]   {icon} {name:40s} {dur}{err}", flush=True)
     tail = f"{passed}/{total} passed"
     if failed:
         tail += f", {failed} failed"
     if other:
         tail += f", {other} other"
-    print(f"[{tag}]   → {tail}", flush=True)
+    print(f"[{tag}]   -> {tail}", flush=True)

@@ -1,0 +1,125 @@
+# Guest-side entrypoint, run by the .wsb <LogonCommand>.
+#
+# The guest is a pristine Windows 11 Enterprise image with no Python, git,
+# node or winget -- but it does ship curl, tar, msiexec, powershell 5.1 and
+# .NET 4.8, and it runs as WDAGUtilityAccount WITH admin rights.
+#
+# Notably absent from this script: an NVIDIA driver install. GPU-PV maps the
+# host driver store into the guest, so CUDA is already there. That is the one
+# step this drops relative to _docker/windows-cuda/Dockerfile, and it removes
+# the exact-host-version-match constraint along with it.
+#
+# Windows Sandbox has no process I/O, so everything -- log, exit code,
+# completion sentinel -- travels through the mapped folder.
+
+$ErrorActionPreference = 'Continue'
+$Work = '<<GUEST_WORK_DIR>>'
+$Log = Join-Path $Work 'bootstrap.log'
+Set-Content $Log "=== comfy-test sandbox bootstrap ===" -Encoding ascii
+function L($m) { Add-Content $Log ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $m) -Encoding ascii }
+function Step($name, [scriptblock]$body) {
+    L ""
+    L "--- $name ---"
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $body
+        $sw.Stop()
+        L ("  ok ({0:N1}s)" -f $sw.Elapsed.TotalSeconds)
+    } catch {
+        $sw.Stop()
+        L ("  FAILED ({0:N1}s): {1}" -f $sw.Elapsed.TotalSeconds, $_.Exception.Message)
+        throw
+    }
+}
+
+$rc = 1
+try {
+    L "user=$env:USERNAME ram=$([math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize/1MB,1))GB"
+
+    Step "long paths" {
+        # ComfyUI's torch headers and transformers __pycache__ trees exceed
+        # MAX_PATH; shutil.copytree fails without this. Guest is admin.
+        New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
+    }
+
+    Step "uv" {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://astral.sh/uv/install.ps1' -OutFile "$env:TEMP\uv.ps1"
+        & "$env:TEMP\uv.ps1" *>&1 | ForEach-Object { L "  | $_" }
+        $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+        L "  $(& uv --version 2>&1)"
+    }
+
+    Step "python 3.12" {
+        & uv python install 3.12 *>&1 | ForEach-Object { L "  | $_" }
+    }
+
+    Step "git" {
+        # Full Git for Windows, not MinGit: ComfyUI-Manager's installer needs
+        # the MSYS userland (sh.exe et al), not just git.exe.
+        $rel = Invoke-RestMethod -UseBasicParsing `
+            -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'
+        $asset = $rel.assets | Where-Object { $_.name -match '^Git-.*-64-bit\.exe$' } | Select-Object -First 1
+        L "  $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB)"
+        & curl.exe -L -s --max-time 600 -o "$env:TEMP\git.exe" $asset.browser_download_url
+        $p = Start-Process -FilePath "$env:TEMP\git.exe" -Wait -PassThru `
+            -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES','/NOCANCEL','/SP-'
+        if ($p.ExitCode -ne 0) { throw "git installer rc=$($p.ExitCode)" }
+        $env:PATH = "C:\Program Files\Git\cmd;$env:PATH"
+        L "  $(& git --version 2>&1)"
+        # Node repos are cloned into paths the guest user doesn't own.
+        & git config --global --add safe.directory '*'
+    }
+
+    Step "vc++ redist" {
+        # torch's c10.dll needs vcruntime140.dll. Slowest step by far
+        # (~4 min observed) -- everything else combined is under 30s.
+        & curl.exe -L -s --max-time 600 -o "$env:TEMP\vc.exe" 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+        $p = Start-Process -FilePath "$env:TEMP\vc.exe" -Wait -PassThru `
+            -ArgumentList '/install','/quiet','/norestart'
+        # 3010 == success, reboot requested; harmless here.
+        if ($p.ExitCode -notin 0, 3010) { throw "vc_redist rc=$($p.ExitCode)" }
+    }
+
+    Step "comfy-test (from mapped local source)" {
+        # Deliberately NOT `uv tool install comfy-test` from PyPI, which is
+        # what the docker entrypoint does -- that would test the published
+        # release rather than the working tree being developed.
+        if (-not (Test-Path '<<GUEST_SRC_DIR>>\pyproject.toml')) {
+            throw "comfy-test source not mapped at <<GUEST_SRC_DIR>>"
+        }
+        Copy-Item '<<GUEST_SRC_DIR>>' 'C:\comfy-test' -Recurse -Force
+        & uv tool install -e 'C:\comfy-test' --force *>&1 | ForEach-Object { L "  | $_" }
+        $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+    }
+
+    # --- run the real harness ---
+    L ""
+    L "--- comfy-test run ---"
+    $env:COMFY_TEST_IN_SANDBOX = '1'          # recursion guard: no nested sandbox
+    $env:COMFY_TEST_LOGS_DIR = Join-Path $Work 'logs'
+    $env:COMFY_TEST_CUDA = '<<CUDA>>'
+    $env:PYTHONUNBUFFERED = '1'
+    New-Item -ItemType Directory -Path $env:COMFY_TEST_LOGS_DIR -Force | Out-Null
+
+    $ctArgs = @('run', '<<NODE_URL>>', '--branch', '<<BRANCH>>', '--desktop')
+    if ('<<CUDA>>' -eq '1') { $ctArgs += '--cuda' }
+    if ('<<DEV>>' -eq '1') { $ctArgs += '--dev' }
+    L "  $ $env:USERPROFILE\.local\bin\comfy-test.exe $($ctArgs -join ' ')"
+
+    & comfy-test @ctArgs *>&1 | ForEach-Object {
+        Add-Content $Log "  | $_" -Encoding ascii
+        Write-Host $_
+    }
+    $rc = $LASTEXITCODE
+    L "comfy-test exited rc=$rc"
+} catch {
+    L "BOOTSTRAP ABORTED: $($_.Exception.Message)"
+    $rc = 90
+} finally {
+    # rc.txt then done.flag, in that order -- the host polls the flag and
+    # reads rc.txt once it appears, so the flag must be written last.
+    Set-Content (Join-Path $Work 'rc.txt') "$rc" -Encoding ascii
+    Set-Content (Join-Path $Work 'done.flag') 'done' -Encoding ascii
+}
