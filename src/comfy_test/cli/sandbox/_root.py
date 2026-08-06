@@ -133,3 +133,10 @@ def kill_running_sandboxes() -> None:
     _ps("Get-Process -Name WindowsSandbox,WindowsSandboxClient,"
         "WindowsSandboxRemoteSession -ErrorAction SilentlyContinue "
         "| Stop-Process -Force", check=False)
+    # Sweep the session-1 launch task too: its /sc once trigger is real, and
+    # a leftover registration re-fires at its nominal time and relaunches the
+    # last run's sandbox (measured GeometryPack-2255). run.py deletes it
+    # right after launch; this catches aborted runs killed before that.
+    for a in (["schtasks", "/end", "/tn", "comfy-test-sandbox-launch"],
+              ["schtasks", "/delete", "/tn", "comfy-test-sandbox-launch", "/f"]):
+        subprocess.run(a, check=False, capture_output=True)

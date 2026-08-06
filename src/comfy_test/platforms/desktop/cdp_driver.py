@@ -199,6 +199,15 @@ def _log_capture_diagnostics(page):
 # Set when neither the surface nor the renderer path can produce an image.
 # frame() then becomes a no-op so the run proceeds at normal speed.
 _capture_disabled = [False]
+# Consecutive frame() failures. Capture is only disabled after a sustained
+# streak: a SINGLE transient miss (page mid-navigation, server restart)
+# used to disable capture permanently, which is why sandbox runs whose
+# Electron phase disabled capture and whose browser-ui phase re-enabled it
+# still ended with "Captured 1 frames" and no video (measured
+# GeometryPack-2208: the first post-re-enable frame failed once, capture
+# died for the remaining 10 minutes of perfectly capturable chrome).
+_capture_fail_streak = [0]
+_CAPTURE_FAIL_LIMIT = 10
 
 
 def frame(page):
@@ -209,10 +218,14 @@ def frame(page):
         # frames we never wrote produced "Captured 1877 frames" against an
         # empty dir and then an ffmpeg "Could find no file with path" error.
         return
-    fi[0] += 1
-    path = str(FRAMES / f'frame_{fi[0]:06d}.png')
+    # Reserve the next index only on success: a failed attempt must not
+    # burn an index, or the frame_%06d sequence gets holes and ffmpeg
+    # stops encoding at the first gap.
+    path = str(FRAMES / f'frame_{fi[0] + 1:06d}.png')
     try:
         page.screenshot(path=path, timeout=_SHOT_TIMEOUT_MS)
+        fi[0] += 1
+        _capture_fail_streak[0] = 0
         return
     except Exception as e:
         # Page is probably detached after browser.close()+reconnect.
@@ -231,11 +244,18 @@ def frame(page):
                     _capture_warned[0] = True
                 return
             fresh.screenshot(path=path, timeout=_SHOT_TIMEOUT_MS)
+            fi[0] += 1
+            _capture_fail_streak[0] = 0
         except Exception as e2:
+            _capture_fail_streak[0] += 1
             if not _capture_warned[0]:
-                log(f'  frame: capture failed: {e2}')
+                log(f'  frame: capture failed '
+                    f'({_capture_fail_streak[0]}/{_CAPTURE_FAIL_LIMIT}): {e2}')
                 _log_capture_diagnostics(page)
                 _capture_warned[0] = True
+            if _capture_fail_streak[0] < _CAPTURE_FAIL_LIMIT:
+                # Transient (navigation, restart in progress): keep trying.
+                return
             # Deliberately NO fromSurface=false retry here. That path cannot
             # help and actively hangs: chromium's page_handler.cc bails out
             # before any emulation handling ("We don't support clip/emulation
@@ -250,10 +270,10 @@ def frame(page):
             # and every workflow assertion are unaffected, so give up on
             # capture and let the run proceed.
             _capture_disabled[0] = True
-            log('  frame: capture unavailable -- disabling frame capture for '
-                'this run so it can proceed. No frames/video will be '
-                'produced; results.json and workflow assertions are '
-                'unaffected.')
+            log(f'  frame: {_CAPTURE_FAIL_LIMIT} consecutive capture failures '
+                '-- disabling frame capture for this run so it can proceed. '
+                'No further frames will be produced; results.json and '
+                'workflow assertions are unaffected.')
 
 def sleep_capturing(page, seconds, fps=5):
     interval = 1.0 / fps
@@ -2891,6 +2911,7 @@ with sync_playwright() as p:
             # composites normally, so give it another chance.
             _capture_disabled[0] = False
             _capture_warned[0] = False
+            _capture_fail_streak[0] = 0
             install_cursor(page)
             install_dialog_handler(page)
             # Deliberately NOT install_viewport_size() here.

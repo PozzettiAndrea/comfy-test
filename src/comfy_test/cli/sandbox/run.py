@@ -167,6 +167,16 @@ def _launch_sandbox(wsb: Path, work_dir: Path) -> None:
         raise RuntimeError(f"could not run sandbox launch task: "
                            f"{(r.stderr or r.stdout).strip()}")
     print(f"[sandbox] launched in interactive session as {user!r}")
+    # Delete the task IMMEDIATELY: /sc once /st 23:59 is a real trigger, not
+    # a placeholder -- left registered, Windows fires it again at 23:59 and
+    # relaunches this run's sandbox.wsb as a rogue full pipeline run that
+    # overwrites the finished run's artifacts (measured GeometryPack-2255:
+    # fresh VM at 16 GB an hour after the run completed, frames renumbered
+    # from 1). The wrapper uses `start ""`, so the already-launched sandbox
+    # is detached and survives the deletion; 3s grace lets the wrapper exit.
+    time.sleep(3)
+    subprocess.run(["schtasks", "/delete", "/tn", _SANDBOX_TASK, "/f"],
+                   capture_output=True, timeout=15)
 
 
 def run_in_sandbox(args, desktop_mode: str) -> int:
