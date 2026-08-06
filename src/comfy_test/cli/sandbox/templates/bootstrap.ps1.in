@@ -26,13 +26,19 @@ $Log = 'C:\bootstrap.log'
 $ShareLog = Join-Path $Work 'bootstrap.log'
 Set-Content $Log "=== comfy-test sandbox bootstrap ===" -Encoding ascii
 function L($m) { Add-Content $Log ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $m) -Encoding ascii }
+# Two destinations: the work-dir share (host cds tails this and mirrors it
+# to its stdout) and the run's artifact dir (D:\logs\<run-id>\bootstrap.log
+# via the C:\ct-logs mapping) -- so the run folder carries the t=0 story
+# (sandbox creation, python/git/nvidia setup) live, not just session.log
+# which starts ~4 min in at the CDP driver's own t=0.
 $MirrorJob = Start-Job -ScriptBlock {
-    param($src, $dst)
+    param($src, $dst, $dst2)
     while ($true) {
         Copy-Item $src $dst -Force -ErrorAction SilentlyContinue
+        Copy-Item $src $dst2 -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 5
     }
-} -ArgumentList $Log, $ShareLog
+} -ArgumentList $Log, $ShareLog, '<<GUEST_LOGS_DIR>>\bootstrap.log'
 function Step($name, [scriptblock]$body) {
     L ""
     L "--- $name ---"

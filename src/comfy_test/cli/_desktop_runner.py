@@ -330,7 +330,21 @@ def _ensure_desktop_app(desktop_mode: str, refresh: bool = False) -> Path:
     _download(_DESKTOP_DOWNLOAD_URLS["windows"], setup)
     # NSIS supports /D for install dir. Use our cache root so the install
     # doesn't pollute %LOCALAPPDATA%\Programs\ComfyUI on the host.
-    subprocess.run([str(setup), "/S", f"/D={_APP_INSTALL_DIR}"], check=True)
+    # One retry with a FRESH download: the installer itself crashed once with
+    # 0xC0000005 right after a size-plausible download (GeometryPack-2242) --
+    # a transient that otherwise costs the whole run.
+    for _attempt in (1, 2):
+        try:
+            subprocess.run([str(setup), "/S", f"/D={_APP_INSTALL_DIR}"],
+                           check=True)
+            break
+        except subprocess.CalledProcessError as e:
+            if _attempt == 2:
+                raise
+            print(f"[desktop] installer failed (rc={e.returncode}); "
+                  f"re-downloading and retrying once")
+            setup.unlink(missing_ok=True)
+            _download(_DESKTOP_DOWNLOAD_URLS["windows"], setup)
     for _ in range(180):
         found = _find_app_exe()
         if found is not None:
