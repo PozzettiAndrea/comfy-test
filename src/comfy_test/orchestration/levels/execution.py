@@ -115,18 +115,42 @@ def run(ctx: LevelContext) -> LevelContext:
 
     if is_cuda_runner:
         allowed_workflows = cuda_workflows
+        other_list = cpu_workflows
         runner_type = "CUDA"
     else:
         allowed_workflows = cpu_workflows
+        other_list = cuda_workflows
         runner_type = "CPU"
 
-    if allowed_workflows:
-        ctx.log(f"{runner_type} runner - will execute {len(allowed_workflows)} workflow(s)")
-    else:
-        ctx.log(f"{runner_type} runner - no workflows configured for this runner type")
+    # Empty-list semantics. An empty allowed list disables the skip filter,
+    # which is right for nodes that never configured routing at all -- but when
+    # the OTHER accelerator's list IS configured, the node has clearly
+    # expressed routing intent and an empty list here means "nothing runs on
+    # this runner" (as the WorkflowConfig docstring has always said: "If
+    # empty, skip CUDA jobs"). Previously this case fell through to
+    # run-everything, which is how a typo'd key ('gpu' instead of 'cuda')
+    # executed all 59 workflows on a runner configured to run 3, presented as
+    # a plausible 48/59 result.
+    if not allowed_workflows and other_list:
+        ctx.log(
+            f"{runner_type} runner - the {runner_type.lower()} list is empty "
+            f"while the other accelerator list is configured; running nothing. "
+            f"Populate [test.workflows] {runner_type.lower()} = [...] to run "
+            f"workflows on this runner.")
+        return ctx
 
     total_workflows = len(workflows)
-    ctx.log(f"Running {total_workflows} workflow(s) (all with videos)...")
+    if allowed_workflows:
+        _names = sorted(w.stem for w in workflows if w in allowed_workflows)
+        _n_skipped = total_workflows - len(_names)
+        ctx.log(f"{runner_type} runner - will execute {len(_names)} workflow(s): "
+                f"[{', '.join(_names)}]")
+        if _n_skipped:
+            ctx.log(f"  ({_n_skipped} workflow(s) not in the "
+                    f"{runner_type.lower()} list; recorded as skipped)")
+    else:
+        ctx.log(f"{runner_type} runner - no workflows configured for this runner type")
+        ctx.log(f"Running {total_workflows} workflow(s) (all with videos)...")
 
     # Log capture for workflow-specific logs
     current_workflow_log: List[str] = []
@@ -175,18 +199,14 @@ def run(ctx: LevelContext) -> LevelContext:
 
         for idx, workflow_file in enumerate(workflows, 1):
             # Unload models and clear cache before each workflow
-            ctx.api.free_memory(unload_models=True)
-
-            # Reset workflow log
-            current_workflow_log.clear()
-            ctx.server.add_log_listener(capture_log)
-            start_time = time.time()
-            status = "pass"
-            error_msg = None
-
-            # Skip workflows not configured for this runner type
+            # Skip workflows not configured for this runner type. Checked FIRST,
+            # before free_memory and before registering the log listener:
+            # previously every skipped iteration hit the server's /free endpoint
+            # (56 pointless calls per cuda run, each echoing "Using RAM pressure
+            # cache" into the log between SKIPPED lines) and leaked one log
+            # listener per skip. Silent on purpose -- the executed set is
+            # announced up front; skips only appear in results.json.
             if allowed_workflows and workflow_file not in allowed_workflows:
-                ctx.log(f"  [{idx}/{total_workflows}] SKIPPED (not in {runner_type.lower()} list) {workflow_file.name}")
                 results.append({
                     "name": workflow_file.stem,
                     "status": "skipped",
@@ -195,6 +215,15 @@ def run(ctx: LevelContext) -> LevelContext:
                     "hardware": None,
                 })
                 continue
+
+            ctx.api.free_memory(unload_models=True)
+
+            # Reset workflow log
+            current_workflow_log.clear()
+            ctx.server.add_log_listener(capture_log)
+            start_time = time.time()
+            status = "pass"
+            error_msg = None
 
             spinner = ProgressSpinner(workflow_file.name, idx, total_workflows)
             spinner.start()

@@ -1,5 +1,6 @@
 """INSTALL level - Setup ComfyUI and install custom node."""
 
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -92,14 +93,32 @@ def run(ctx: LevelContext) -> LevelContext:
     # and we still need to mock them so `import flash_attn` doesn't crash node
     # code at import time.
     declared_cuda_packages = get_cuda_packages(ctx.node_dir)
+    _py = getattr(paths, "python", None)
     cuda_packages = [
         pkg for pkg in declared_cuda_packages
-        if not _cuda_wheel_present(paths.comfyui_dir, pkg)
+        if not _cuda_wheel_present(paths.comfyui_dir, pkg, _py)
     ]
     if declared_cuda_packages:
+        # Finding NO environment at all is a resolution failure, not evidence
+        # of absence -- that is exactly how the stale `.ce` path silently mocked
+        # everything for weeks. Say so, so the next layout change is a visible
+        # warning instead of a wrong verdict.
+        if not any(True for _ in _iter_env_site_packages(paths.comfyui_dir, _py)):
+            _roots, _abi = _comfy_env_roots(paths.comfyui_dir, _py)
+            ctx.log(
+                "CUDA wheel check: no materialized comfy-env environment found "
+                f"for abi={_abi or 'unknown'} (looked in {[str(r) for r in _roots]}); "
+                "treating all declared CUDA packages as absent"
+            )
         installed = [p for p in declared_cuda_packages if p not in cuda_packages]
         if installed:
             ctx.log(f"CUDA packages installed (no mock): {', '.join(installed)}")
+            if _UNVERIFIED_ENV_DIRS:
+                ctx.log(
+                    "  note: matched in comfy-env dir(s) with no ABI tag, so the "
+                    "build stack could not be verified -- re-run comfy-env install "
+                    f"to re-materialize: {sorted(_UNVERIFIED_ENV_DIRS)}"
+                )
         if cuda_packages:
             ctx.log(f"CUDA packages absent (will mock): {', '.join(cuda_packages)}")
 
@@ -155,41 +174,122 @@ def _setup_full(
     return paths
 
 
-def _cuda_wheel_present(comfyui_dir: Path, pkg: str) -> bool:
-    """True iff `pkg` is installed in any of the workspace's per-node pixi envs.
+_ENV_ROOTS_CACHE: dict = {}
+_UNVERIFIED_ENV_DIRS: set = set()
 
-    Looks under `<comfyui_dir>/.ce/.pixi/envs/*/Lib/site-packages/` (Windows)
-    and the equivalent `lib/python*/site-packages/` (Linux/macOS). Tolerates
-    both `pkg/` (package dir) and `pkg.dist-info/` (metadata-only) layouts.
-    Underscores and hyphens are normalized -- e.g. `flash-attn` and `flash_attn`
-    both match a `flash_attn/` site-packages dir.
+
+def _comfy_env_roots(comfyui_dir, python_exe=None) -> list:
+    """Directories that may contain materialized comfy-env environments.
+
+    Ask comfy-env where its envs live rather than hardcoding a layout. This
+    used to probe `<comfyui_dir>/.ce/.pixi/envs` only -- the v0.3.x layout.
+    comfy-env moved to a machine-global root in 2026-07-31 (`4b21e5d`), so that
+    path stopped existing and `_cuda_wheel_present` returned False for EVERY
+    package on EVERY host, which made the INSTALL level log
+    "CUDA packages absent (will mock)" unconditionally -- even with the wheels
+    installed and a working GPU (measured: GeometryPack-1821 mocked cumesh and
+    faithc_aot while both were present as `+cu128torch2.10` dist-infos).
+
+    Resolution order: import comfy-env here; else ask the workspace venv, which
+    always has it installed; else fall back to the legacy path so old
+    workspaces still resolve.
     """
-    if not comfyui_dir:
-        return False
-    envs_dir = Path(comfyui_dir) / ".ce" / ".pixi" / "envs"
-    if not envs_dir.is_dir():
-        return False
+    key = (str(comfyui_dir), str(python_exe))
+    if key in _ENV_ROOTS_CACHE:
+        return _ENV_ROOTS_CACHE[key]
 
+    roots = []
+    abi = ""
+    snippet = (
+        "from comfy_env.environment.cache import get_workspace_dir, _abi_tag; "
+        "print(get_workspace_dir(None)); print(_abi_tag())"
+    )
+    try:
+        from comfy_env.environment.cache import (  # type: ignore
+            get_workspace_dir, _abi_tag,
+        )
+        roots.append(Path(get_workspace_dir(None)) / "envs")
+        abi = _abi_tag()
+    except Exception:
+        if python_exe:
+            try:
+                out = subprocess.run(
+                    [str(python_exe), "-c", snippet],
+                    capture_output=True, text=True, timeout=60,
+                )
+                # comfy-env prints its banner to stderr; stdout is root then tag.
+                lines = [l.strip() for l in (out.stdout or "").strip().splitlines() if l.strip()]
+                if lines:
+                    roots.append(Path(lines[0]) / "envs")
+                if len(lines) > 1:
+                    abi = lines[1]
+            except Exception:
+                pass
+    if comfyui_dir:
+        roots.append(Path(comfyui_dir) / ".ce" / ".pixi" / "envs")  # legacy v0.3.x
+
+    _ENV_ROOTS_CACHE[key] = (roots, abi)
+    return _ENV_ROOTS_CACHE[key]
+
+
+def _iter_env_site_packages(comfyui_dir, python_exe=None):
+    """Yield site-packages dirs of envs built for THIS stack.
+
+    comfy-env tags env directories with the ABI they were built against
+    (`<name>-py313-torch2-10-cu128`). Scanning every directory would let a wheel
+    from another stack count as "installed" -- this box really does have
+    `cumesh-0.0.1+cu128torch2.8` and `cumesh-0.0.1+cu128torch2.10` for the same
+    node -- which is the same false verdict this function exists to stop, just
+    from a different direction. Accept only an exact tag match, or an untagged
+    directory left over from before comfy-env started tagging.
+    """
+    roots, abi = _comfy_env_roots(comfyui_dir, python_exe)
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for env_dir in root.iterdir():
+            if not env_dir.is_dir():
+                continue
+            tagged = "-py" in env_dir.name
+            if abi and tagged and not env_dir.name.endswith("-" + abi):
+                continue  # tagged for a different python/torch/backend
+            if not tagged:
+                # Pre-dates ABI tagging: we cannot tell what it was built
+                # against. Still scanned, so a box that has not re-materialized
+                # yet does not regress to mocking everything -- but record it so
+                # the verdict is not presented as verified.
+                _UNVERIFIED_ENV_DIRS.add(str(env_dir))
+            # v0.4: <root>/envs/<name-abi>/.pixi/envs/default/
+            # v0.3: <comfyui>/.ce/.pixi/envs/<name>/
+            for base in (env_dir / ".pixi" / "envs" / "default", env_dir):
+                if not base.is_dir():
+                    continue
+                candidates = [base / "Lib" / "site-packages"]
+                candidates += list((base / "lib").glob("python*/site-packages"))
+                for sp in candidates:
+                    if sp.is_dir():
+                        yield sp
+
+
+def _cuda_wheel_present(comfyui_dir: Path, pkg: str, python_exe=None) -> bool:
+    """True iff `pkg` is installed in any materialized comfy-env environment.
+
+    Tolerates both `pkg/` (package dir) and `pkg.dist-info/` (metadata-only)
+    layouts. Underscores and hyphens are normalized -- e.g. `flash-attn` and
+    `flash_attn` both match a `flash_attn/` site-packages dir.
+    """
     norm = pkg.replace("-", "_").lower()
     candidate_names = {norm, pkg.replace("_", "-").lower()}
 
-    for env_dir in envs_dir.iterdir():
-        if not env_dir.is_dir():
-            continue
-        site_packages_candidates = [
-            env_dir / "Lib" / "site-packages",                 # Windows pixi env
-        ] + list((env_dir / "lib").glob("python*/site-packages"))  # POSIX pixi env
-        for sp in site_packages_candidates:
-            if not sp.is_dir():
-                continue
-            for entry in sp.iterdir():
-                name = entry.name.lower().split("-")[0]
-                if name in candidate_names:
+    for sp in _iter_env_site_packages(comfyui_dir, python_exe):
+        for entry in sp.iterdir():
+            name = entry.name.lower().split("-")[0]
+            if name in candidate_names:
+                return True
+            if entry.name.lower().endswith(".dist-info"):
+                base = entry.name.rsplit("-", 1)[0].lower()
+                if base.replace("-", "_") in candidate_names:
                     return True
-                if entry.name.lower().endswith(".dist-info"):
-                    base = entry.name.rsplit("-", 1)[0].lower()
-                    if base.replace("-", "_") in candidate_names:
-                        return True
     return False
 
 

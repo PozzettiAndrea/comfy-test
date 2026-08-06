@@ -330,7 +330,27 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
       - cuda = "all" or [...] - workflows to run on CUDA runners
       - rocm = "all" or [...] - reserved (no ROCm runner wired yet)
     Each list also supports "!name" entries meaning "all except these".
+
+    Unknown keys are a hard error, mirroring the platform-token validator in
+    load_config. They used to be silently ignored, which is how a node shipping
+    `gpu = [...]` (there is no `gpu`; the accelerator is named by backend) got
+    an empty cuda list, no warning, and a full 59-workflow run on a CUDA runner
+    that was configured to run 3 (GeometryPack-2329, 2h of wrong work).
     """
+    _KNOWN_KEYS = {
+        "cpu", "cuda", "rocm", "timeout",
+        # deprecated but still parsed:
+        "run", "screenshot", "files", "file",
+    }
+    _unknown = sorted(set(data) - _KNOWN_KEYS)
+    if _unknown:
+        _hint = ""
+        if "gpu" in _unknown:
+            _hint = " ('gpu' is not a key -- the accelerator is named by backend: use 'cuda')"
+        raise ConfigError(
+            f"Unknown key(s) in [test.workflows]: {', '.join(_unknown)}{_hint}",
+            "Valid keys: " + ", ".join(sorted(_KNOWN_KEYS)))
+
     workflows_dir = base_dir / "workflows"
     dev_tests_dir = workflows_dir / "tests"
 

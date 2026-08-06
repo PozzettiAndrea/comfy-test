@@ -1,4 +1,4 @@
-import json, os, re as _re, shutil, subprocess, sys, threading, time, urllib.request
+import atexit, json, os, re as _re, shutil, subprocess, sys, threading, time, urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -1758,16 +1758,49 @@ def _launch_browser_ui(p_arg, url, debug_dir):
     except Exception:
         pass
     log(f'  browser-ui: attached at {pg.url}')
+    # The window is detached from this process, so a crash or an early exit
+    # anywhere below would otherwise leave it on the desktop for the next run
+    # to photograph. atexit covers every exit path, not just the happy one.
+    atexit.register(_stop_browser_ui, str(debug_dir))
     return b, pg
 
 
-def _stop_browser_ui():
+def _stop_browser_ui(debug_dir=None):
+    """Tear down the browser-UI window.
+
+    Ending the scheduled task is NOT enough: the wrapper launches the browser
+    with `start ""`, which detaches it, so it outlives the task. Measured after
+    CADabra-1709 -- the run finished and 8 msedge processes were still up, with
+    the window sitting on the desktop where the next run's screencap would
+    photograph it.
+
+    Kill by --user-data-dir so we only ever touch the browser WE launched and
+    never the user's own Edge/Chrome session.
+    """
     for a in (['schtasks', '/end', '/tn', 'comfy-test-browser-ui'],
               ['schtasks', '/delete', '/tn', 'comfy-test-browser-ui', '/f']):
         try:
             subprocess.run(a, capture_output=True, timeout=15)
         except Exception:
             pass
+    profile = str(Path(debug_dir or OUT) / 'browser-ui-profile')
+    # $_.ProcessId -ne $PID is load-bearing: this very powershell has the
+    # profile path in its own command line, so without the guard the filter
+    # matches the cleanup process itself and Stop-Process kills it -- possibly
+    # before it has killed the browser.
+    ps = (
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and "
+        f"$_.CommandLine -like '*{profile}*'" " } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+        "-ErrorAction SilentlyContinue }"
+    )
+    try:
+        subprocess.run(['powershell', '-NoProfile', '-Command', ps],
+                       capture_output=True, timeout=30)
+        log('  browser-ui: stopped')
+    except Exception as e:
+        log(f'  browser-ui: teardown failed (non-fatal): {e}')
 
 
 def _restart_comfy(p_arg, current_browser):

@@ -20,7 +20,38 @@ def _safe_str(s) -> str:
 
 
 def get_current_platform() -> str:
-    """Detect current OS and return matching platform name."""
+    """Detect current OS and return matching platform name.
+
+    COMFY_TEST_PLATFORM overrides detection. Wrappers that choose the platform
+    for the user (cds `--portable`) need it: auto-detection distinguishes
+    venv-vs-portable by whether comfy-test's OWN interpreter is python_embeded,
+    which is never true when a wrapper launches comfy-test from a normal
+    python -- so the wrapper's choice used to be silently discarded
+    (GeometryPack-1425: `--portable` produced an empty windows-portable-cuda
+    log dir while the actual run executed platform `windows`). Invalid values
+    raise rather than fall through: a platform request that cannot be honored
+    must not silently become a different platform.
+    """
+    override = os.environ.get("COMFY_TEST_PLATFORM", "").strip().lower().replace("-", "_")
+    if override:
+        valid = {"linux", "macos", "windows", "windows_portable"}
+        if override not in valid:
+            raise RuntimeError(
+                f"COMFY_TEST_PLATFORM={override!r} is not a platform "
+                f"(valid: {', '.join(sorted(valid))})")
+        if override.startswith("windows") and sys.platform != "win32":
+            raise RuntimeError(
+                f"COMFY_TEST_PLATFORM={override!r} requires Windows "
+                f"(running on {sys.platform})")
+        if override == "macos" and sys.platform != "darwin":
+            raise RuntimeError(
+                f"COMFY_TEST_PLATFORM={override!r} requires macOS "
+                f"(running on {sys.platform})")
+        if override == "linux" and sys.platform != "linux":
+            raise RuntimeError(
+                f"COMFY_TEST_PLATFORM={override!r} requires Linux "
+                f"(running on {sys.platform})")
+        return override
     if sys.platform == "linux":
         return "linux"
     elif sys.platform == "darwin":
