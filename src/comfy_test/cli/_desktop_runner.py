@@ -172,14 +172,29 @@ def _find_app_exe() -> Optional[Path]:
     names first, then fall back to any top-level .exe that isn't the
     uninstaller. Mirrors how the mac branch globs *.app instead of
     hardcoding a name.
+
+    Searches the /D= target FIRST, then electron-builder's default per-user
+    install roots: one-click NSIS installers are known to ignore /D and land
+    in %LOCALAPPDATA%\\Programs\\<product> -- in the sandbox guest the
+    installer exited 0 with the /D directory left completely empty
+    (GeometryPack-1750).
     """
-    for name in _APP_NAMES:
-        p = _APP_INSTALL_DIR / f"{name}.exe"
-        if p.is_file():
-            return p
-    for p in sorted(_APP_INSTALL_DIR.glob("*.exe")):
-        if not p.name.lower().startswith("uninstall"):
-            return p
+    roots = [_APP_INSTALL_DIR]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        for name in _APP_NAMES:
+            roots.append(Path(local) / "Programs" / name)
+        roots.append(Path(local) / "Programs" / "comfyui-electron")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for name in _APP_NAMES:
+            p = root / f"{name}.exe"
+            if p.is_file():
+                return p
+        for p in sorted(root.glob("*.exe")):
+            if not p.name.lower().startswith("uninstall"):
+                return p
     return None
 
 
@@ -222,10 +237,16 @@ def resolve_logs_dir_for_sandbox(node_name: str, node_branch: str,
     dispatch-test.yml's publish glob expects:
     `*/<short>-*/<branch>/<platform>/results.json`.
 
-    Note the run_id embeds %H%M, so host and guest must not straddle a minute
-    boundary; the sandbox runner therefore computes this once, after the run,
-    rather than deriving it independently on both sides.
+    COMFY_TEST_RUN_DIR short-circuits everything: it names the EXACT run dir
+    to use. The sandbox bootstrap sets it to the guest view of the host's
+    pre-created D:\\logs\\<run-id>\\<branch>\\<platform> mapped folder, so the
+    guest writes final artifacts directly (live logs on the host, no
+    end-of-run collection, no duplicated <run-id> nesting, and no
+    minute-boundary skew between host- and guest-minted run ids).
     """
+    _exact = os.environ.get("COMFY_TEST_RUN_DIR")
+    if _exact:
+        return Path(_exact)
     short = node_name.removeprefix("ComfyUI-")
     run_id = f"{short}-{datetime.now().strftime('%H%M')}"
     platform_dir = {
@@ -315,17 +336,24 @@ def _ensure_desktop_app(desktop_mode: str, refresh: bool = False) -> Path:
         if found is not None:
             return found
         time.sleep(1)
-    # Report what actually landed so the next rename is self-diagnosing
-    # instead of another silent 3-minute poll.
-    try:
-        present = sorted(p.name for p in _APP_INSTALL_DIR.iterdir())
-    except OSError:
-        present = []
+    # Report what actually landed EVERYWHERE we know to look, so the next
+    # location change is self-diagnosing instead of another silent poll.
+    report = []
+    probes = [_APP_INSTALL_DIR]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        probes.append(Path(local) / "Programs")
+    for root in probes:
+        try:
+            names = sorted(p.name for p in root.iterdir())
+        except OSError:
+            names = ["<unreadable>"]
+        report.append(f"{root}: {', '.join(names) if names else '<nothing>'}")
     raise RuntimeError(
-        f"No Comfy Desktop executable in {_APP_INSTALL_DIR} after silent "
-        f"install (tried {', '.join(n + '.exe' for n in _APP_NAMES)} and any "
-        f"non-uninstaller *.exe). Directory contains: "
-        f"{', '.join(present) if present else '<nothing>'}")
+        f"No Comfy Desktop executable found after silent install "
+        f"(tried {', '.join(n + '.exe' for n in _APP_NAMES)} and any "
+        f"non-uninstaller *.exe under the /D target and "
+        f"%LOCALAPPDATA%\\Programs). Contents: " + " | ".join(report))
 
 
 def _ensure_venv() -> Path:

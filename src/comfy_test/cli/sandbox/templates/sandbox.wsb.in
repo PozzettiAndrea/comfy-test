@@ -20,6 +20,16 @@
       <SandboxFolder><<GUEST_SRC_DIR>></SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
+    <!-- Read-write: THIS RUN's final artifact dir (D:\logs\<run-id>). The
+         guest's comfy-test writes results/session.log/frames here directly,
+         so logs are live on the host during the run and no end-of-run
+         collection (with its duplicated <run-id> nesting) is needed. Scoped
+         to the single run dir, not the logs root. -->
+    <MappedFolder>
+      <HostFolder><<RUN_ROOT_DIR>></HostFolder>
+      <SandboxFolder><<GUEST_LOGS_DIR>></SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
   </MappedFolders>
   <LogonCommand>
     <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File <<GUEST_WORK_DIR>>\bootstrap.ps1</Command>

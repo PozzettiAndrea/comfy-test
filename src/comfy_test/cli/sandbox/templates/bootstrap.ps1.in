@@ -14,9 +14,25 @@
 
 $ErrorActionPreference = 'Continue'
 $Work = '<<GUEST_WORK_DIR>>'
-$Log = Join-Path $Work 'bootstrap.log'
+# The log is GUEST-LOCAL; a background job mirrors it to the share.
+# Appending to the VMSMB-mapped file per line is a run-killer: a host-side
+# reader that holds the share file open (a tail -f) wedges that file's
+# lease, every later guest append hangs, the stdout pipeline stops
+# consuming, python's pipe fills, and every printing thread in comfy-test
+# freezes while file-writing threads keep going (measured GeometryPack-2012
+# and -2038; the wedge is per-file -- new files on the same share kept
+# working). Local appends cannot wedge; a stale mirror is now the worst case.
+$Log = 'C:\bootstrap.log'
+$ShareLog = Join-Path $Work 'bootstrap.log'
 Set-Content $Log "=== comfy-test sandbox bootstrap ===" -Encoding ascii
 function L($m) { Add-Content $Log ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $m) -Encoding ascii }
+$MirrorJob = Start-Job -ScriptBlock {
+    param($src, $dst)
+    while ($true) {
+        Copy-Item $src $dst -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    }
+} -ArgumentList $Log, $ShareLog
 function Step($name, [scriptblock]$body) {
     L ""
     L "--- $name ---"
@@ -32,9 +48,163 @@ function Step($name, [scriptblock]$body) {
     }
 }
 
+function Fetch($url, $out) {
+    # Verbose download with hard evidence: curl exit code and byte count go to
+    # the log. A run once sat wedged for an hour inside a bare
+    # `& curl.exe -s ...` with nothing to autopsy -- never again.
+    L "  fetch $url"
+    # --retry-all-errors: guest DNS resolution flakes per-boot (measured:
+    # github.com unresolvable seconds after nuget.org resolved fine, curl
+    # rc=6); plain --retry does not retry DNS failures.
+    & curl.exe -L --max-time 600 --connect-timeout 30 --retry 5 --retry-delay 5 --retry-all-errors -sS -o $out $url 2>&1 |
+        ForEach-Object { L "  curl: $_" }
+    $code = $LASTEXITCODE
+    $size = if (Test-Path $out) { (Get-Item $out).Length } else { -1 }
+    L "  curl rc=$code size=$size"
+    if ($code -ne 0 -or $size -lt 100000) {
+        throw "download failed (rc=$code size=$size): $url"
+    }
+}
+
+function RunInstaller($exe, $argList, $timeoutS) {
+    # Raw CreateProcess (UseShellExecute=false), NOT Start-Process/ShellExecute.
+    # Measured: every GUI-subsystem DOWNLOADED exe (WiX python bundle,
+    # InnoSetup git, 7z SFX PortableGit) hung forever under Start-Process,
+    # while console exes and system GUI exes (winver) ran fine -- the
+    # signature of a shell-integration reputation hook (SmartScreen/App
+    # Control) stalling on its cloud check. CreateProcess skips those hooks.
+    # Bounded wait regardless: kill and throw rather than wait forever.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = ($argList -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    if (-not $p.WaitForExit($timeoutS * 1000)) {
+        try { $p.Kill() } catch {}
+        throw "installer $exe did not finish within ${timeoutS}s (killed)"
+    }
+    return $p.ExitCode
+}
+
 $rc = 1
 try {
     L "user=$env:USERNAME ram=$([math]::Round((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize/1MB,1))GB"
+
+    Step "guest shell state" {
+        # Three different self-installing executables (WiX, InnoSetup, 7z SFX)
+        # all hung to their kill-bounds while console programs run fine, and
+        # the guest's display renders black in the client. Hypothesis: no
+        # desktop/shell in the guest, so GUI-subsystem processes block at
+        # startup forever. This step measures it directly.
+        $exp = Get-Process -Name explorer -ErrorAction SilentlyContinue
+        L "  explorer running: $([bool]$exp)"
+        $sess = & quser 2>&1
+        L "  quser: $sess"
+        L "  session id: $((Get-Process -Id $PID).SessionId)"
+        # winver.exe, not notepad: Win11's notepad is a Store app and the
+        # sandbox image has no Store apps -- probing it aborted a whole run.
+        try {
+            $np = Start-Process -FilePath "$env:WINDIR\System32\winver.exe" -PassThru
+            Start-Sleep -Seconds 5
+            if ($np -and -not $np.HasExited) {
+                $np.Refresh()
+                L "  winver: alive=True window=$($np.MainWindowHandle -ne 0)"
+                Stop-Process -Id $np.Id -Force -ErrorAction SilentlyContinue
+            } else {
+                L "  winver: exited immediately (rc=$($np.ExitCode))"
+            }
+        } catch {
+            L "  winver probe failed: $($_.Exception.Message)"
+        }
+        # Integrity check: if this script is NOT elevated, child installers
+        # trigger a UAC consent no one can click.
+        $pr = [Security.Principal.WindowsPrincipal]::new(
+            [Security.Principal.WindowsIdentity]::GetCurrent())
+        L "  elevated: $($pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+    }
+
+    Step "pin github dns" {
+        # Host-resolved IPs rendered in by run.py; guest DNS flakes
+        # intermittently and git has no resolver retry.
+        $pins = @'
+<<HOSTS_LINES>>
+'@
+        if ($pins.Trim()) {
+            Add-Content "$env:WINDIR\System32\drivers\etc\hosts" "`r`n$pins" -Encoding ascii
+            L "  pinned:"
+            $pins.Trim() -split "`n" | ForEach-Object { L "    $_" }
+        } else {
+            L "  no pins provided (host resolution failed); relying on guest DNS"
+        }
+        # The hosts pin alone was NOT enough: git still failed with "Could not
+        # resolve host: github.com" while curl on the same guest resolved it --
+        # git's libcurl does its own DNS against the guest's flaky NAT
+        # resolver and bypasses the hosts file. Point the adapter at public
+        # resolvers directly.
+        try {
+            Get-NetAdapter | Where-Object Status -eq 'Up' |
+                Set-DnsClientServerAddress -ServerAddresses '1.1.1.1','8.8.8.8' -ErrorAction Stop
+            Clear-DnsClientCache -ErrorAction SilentlyContinue
+            L "  adapter DNS -> 1.1.1.1, 8.8.8.8"
+        } catch { L "  could not set adapter DNS: $($_.Exception.Message)" }
+        # Resolver triangulation for the log: which paths work?
+        L "  nslookup: $((& nslookup -timeout=5 github.com 2>&1 | Select-Object -Last 2) -join ' / ')"
+        L "  ping: $((& ping -n 1 github.com 2>&1 | Select-Object -First 2) -join ' / ')"
+    }
+
+    Step "network reachability" {
+        # If guest networking is down every later download hangs mysteriously;
+        # fail here with a named cause instead.
+        # Probe BOTH hosts we download from -- DNS in the guest can resolve
+        # one domain and flake on another within the same boot -- and retry:
+        # early-boot DNS often needs a few seconds to come up.
+        foreach ($u in 'https://www.python.org/', 'https://github.com/') {
+            $r = & curl.exe -sI --max-time 20 --connect-timeout 10 --retry 5 --retry-delay 5 --retry-all-errors -o "$env:TEMP\probe" -w '%{http_code}' $u
+            L "  $u HTTP $r (curl rc=$LASTEXITCODE)"
+            if ($LASTEXITCODE -ne 0) { throw "guest cannot reach $u (curl rc=$LASTEXITCODE)" }
+        }
+    }
+
+    Step "application control state" {
+        # Best-effort disable of the enforced code-integrity policy that
+        # blocks unsigned executables (killed uv.exe and pip's comfy-test.exe
+        # shim with "An Application Control policy has blocked this file").
+        # comfy-test itself is invoked via signed python.exe (`python -m`),
+        # but downstream tools ship unsigned binaries we cannot re-route
+        # (imageio's ffmpeg, comfy-env's pixi). CI policy changes may need a
+        # reboot to fully apply -- which a sandbox cannot do -- so this LOGS
+        # the state and tries CiTool refresh; treat the log as evidence, not
+        # the block as fixed.
+        $ci = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' -ErrorAction SilentlyContinue
+        L "  VerifiedAndReputablePolicyState = $($ci.VerifiedAndReputablePolicyState)"
+        try {
+            Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' `
+                -Name VerifiedAndReputablePolicyState -Value 0 -Force
+            L "  set VerifiedAndReputablePolicyState = 0"
+        } catch { L "  could not set policy state: $($_.Exception.Message)" }
+        if (Test-Path "$env:WINDIR\System32\CiTool.exe") {
+            # --refresh (not --refresh-policy, which is not a command and
+            # dumps usage ending in a "Press Enter to Exit" stdin read).
+            # echo | guards against any interactive prompt eating the run.
+            Write-Output '' | & "$env:WINDIR\System32\CiTool.exe" --refresh --json 2>&1 |
+                ForEach-Object { L "  citool: $_" }
+        } else {
+            L "  CiTool.exe not present"
+        }
+    }
+
+    Step "disable smartscreen" {
+        # Belt to CreateProcess's braces: kill the reputation checks at the
+        # policy level too, so nothing downstream (Comfy Desktop's NSIS
+        # installer, its bundled uv) can stall on an unanswerable cloud query.
+        # Guest is disposable; there is nothing to protect.
+        New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' -Force | Out-Null
+        New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' `
+            -Name EnableSmartScreen -Value 0 -PropertyType DWORD -Force | Out-Null
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' `
+            -Name SmartScreenEnabled -Value 'Off' -Force -ErrorAction SilentlyContinue
+    }
 
     Step "long paths" {
         # ComfyUI's torch headers and transformers __pycache__ trees exceed
@@ -43,62 +213,139 @@ try {
             -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force | Out-Null
     }
 
-    Step "uv" {
+    # NO uv anywhere in this script. Measured (GeometryPack-1532): the host's
+    # Application Control policy reaches inside the guest and kills uv.exe
+    # with "An Application Control policy has blocked this file" -- the same
+    # block seen in the Docker container. Microsoft-signed installers
+    # (python.org, git, vc_redist) pass, so the toolchain comes from those:
+    # the exact fallback the old VM image used (vm/post-install.ps1).
+    Step "python 3.12 (nuget zip, no installer)" {
+        # NO installer. Measured in-guest: the python.org exe (a WiX burn
+        # bundle) hangs indefinitely under /quiet in Windows Sandbox -- run 2
+        # sat for an hour, run 3 hit the 900s kill-bound. The NuGet python
+        # package is the same full CPython (venv + ensurepip included) as a
+        # plain zip, and the guest's tar (bsdtar) extracts zips natively.
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://astral.sh/uv/install.ps1' -OutFile "$env:TEMP\uv.ps1"
-        & "$env:TEMP\uv.ps1" *>&1 | ForEach-Object { L "  | $_" }
-        $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
-        L "  $(& uv --version 2>&1)"
+        Fetch 'https://www.nuget.org/api/v2/package/python/3.12.10' "$env:TEMP\python.nupkg"
+        New-Item -ItemType Directory -Path 'C:\Python312' -Force | Out-Null
+        & tar.exe -xf "$env:TEMP\python.nupkg" -C 'C:\Python312' 2>&1 | ForEach-Object { L "  tar: $_" }
+        if (-not (Test-Path 'C:\Python312\tools\python.exe')) {
+            throw "python.exe not found after extract (nupkg layout changed?)"
+        }
+        $env:PATH = "C:\Python312\tools;C:\Python312\tools\Scripts;$env:PATH"
+        L "  $(& python --version 2>&1)"
+        & python -m ensurepip --upgrade *>&1 | ForEach-Object { L "  | $_" }
+        & python -m pip install --quiet --upgrade pip *>&1 | ForEach-Object { L "  | $_" }
     }
 
-    Step "python 3.12" {
-        & uv python install 3.12 *>&1 | ForEach-Object { L "  | $_" }
-    }
-
-    Step "git" {
-        # Full Git for Windows, not MinGit: ComfyUI-Manager's installer needs
-        # the MSYS userland (sh.exe et al), not just git.exe.
+    Step "git (PortableGit, no installer)" {
+        # PortableGit, NOT the InnoSetup installer: silent installers hang
+        # indefinitely in this guest regardless of engine (WiX python.org
+        # bundle AND InnoSetup Git both measured hitting the 900s kill-bound).
+        # PortableGit is a 7z self-extractor -- pure extraction -- and still
+        # carries the full MSYS userland (sh.exe et al) that ComfyUI-Manager's
+        # installer needs, unlike MinGit.
         $rel = Invoke-RestMethod -UseBasicParsing `
             -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest'
-        $asset = $rel.assets | Where-Object { $_.name -match '^Git-.*-64-bit\.exe$' } | Select-Object -First 1
+        $asset = $rel.assets | Where-Object { $_.name -match '^PortableGit-.*-64-bit\.7z\.exe$' } | Select-Object -First 1
         L "  $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB)"
-        & curl.exe -L -s --max-time 600 -o "$env:TEMP\git.exe" $asset.browser_download_url
-        $p = Start-Process -FilePath "$env:TEMP\git.exe" -Wait -PassThru `
-            -ArgumentList '/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES','/NOCANCEL','/SP-'
-        if ($p.ExitCode -ne 0) { throw "git installer rc=$($p.ExitCode)" }
-        $env:PATH = "C:\Program Files\Git\cmd;$env:PATH"
+        Fetch $asset.browser_download_url "$env:TEMP\pgit.exe"
+        $code = RunInstaller "$env:TEMP\pgit.exe" @('-o', 'C:\Git', '-y') 600
+        if ($code -ne 0) { throw "PortableGit extract rc=$code" }
+        if (-not (Test-Path 'C:\Git\cmd\git.exe')) { throw "git.exe missing after extract" }
+        $env:PATH = "C:\Git\cmd;C:\Git\bin;$env:PATH"
+        # Persist machine-wide too: the desktop pipeline spawns processes
+        # several layers deep (comfy-test -> cdp_driver venv -> git), and any
+        # layer that rebuilds its environment from the registry would lose a
+        # process-local PATH.
+        $mp = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        [Environment]::SetEnvironmentVariable('Path', "C:\Git\cmd;C:\Git\bin;C:\Python312\tools;C:\Python312\tools\Scripts;$mp", 'Machine')
         L "  $(& git --version 2>&1)"
         # Node repos are cloned into paths the guest user doesn't own.
         & git config --global --add safe.directory '*'
+        # PortableGit resolves its CA bundle relative to its prefix; make it
+        # explicit so HTTPS clones cannot fail on certificate lookup in odd
+        # process contexts.
+        & git config --system http.sslCAInfo 'C:\Git\mingw64\etc\ssl\certs\ca-bundle.crt' 2>&1 | Out-Null
+        L "  https probe: $(& git ls-remote --heads https://github.com/git-for-windows/git.git HEAD 2>&1 | Select-Object -First 1)"
     }
 
     Step "vc++ redist" {
         # torch's c10.dll needs vcruntime140.dll. Slowest step by far
         # (~4 min observed) -- everything else combined is under 30s.
-        & curl.exe -L -s --max-time 600 -o "$env:TEMP\vc.exe" 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
-        $p = Start-Process -FilePath "$env:TEMP\vc.exe" -Wait -PassThru `
-            -ArgumentList '/install','/quiet','/norestart'
-        # 3010 == success, reboot requested; harmless here.
-        if ($p.ExitCode -notin 0, 3010) { throw "vc_redist rc=$($p.ExitCode)" }
+        # No vc_redist.x64.exe attempt at all: silent installers hang in this
+        # guest regardless of engine (WiX python bundle AND InnoSetup git both
+        # measured hitting their kill-bounds). The msvc-runtime wheel ships
+        # the same DLLs; System32 is where torch's loader finds them.
+        & python -m pip install --quiet msvc-runtime *>&1 | ForEach-Object { L "  | $_" }
+        $src = Split-Path (& python -c "import sys; print(sys.executable)")
+        $dlls = Get-ChildItem -Path $src -Recurse -Include 'msvcp140*.dll','vcruntime140*.dll','concrt140.dll','vcomp140.dll' -ErrorAction SilentlyContinue
+        foreach ($d in $dlls) {
+            Copy-Item $d.FullName 'C:\Windows\System32\' -Force -ErrorAction SilentlyContinue
+        }
+        L "  copied $(@($dlls).Count) runtime DLL(s) to System32"
+        if (@($dlls).Count -eq 0) { throw "no VC runtime DLLs found via msvc-runtime wheel" }
+    }
+
+    Step "nvidia tooling from HostDriverStore (GPU-PV)" {
+        # GPU-PV maps the host NVIDIA driver into the guest, but ONLY under
+        # C:\Windows\System32\HostDriverStore -- nvidia-smi.exe and nvml.dll
+        # are NOT on PATH / in System32 like on a normal NVIDIA machine.
+        # Measured GeometryPack-2012: nvidia-smi ran fine IN PLACE from the
+        # driver store (RTX 4060 Ti, driver 581.57), yet comfy-env said
+        # "No GPU detected" (its Windows order is nvidia-smi -> nvml ->
+        # torch, and all three miss the driver store) and the desktop
+        # wizard installed CPU torch.
+        # PATH exposure, NOT Copy-Item: relocated copies in System32 fail
+        # with "couldn't communicate with the NVIDIA driver" (measured
+        # GeometryPack-2058) -- NVML only initializes from its home
+        # directory, where its driver siblings live.
+        $smi = Get-ChildItem 'C:\Windows\System32\HostDriverStore\FileRepository' -Recurse -Filter 'nvidia-smi.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($smi) {
+            $nvdir = $smi.DirectoryName
+            # This shell's env covers comfy-test -> desktop app -> comfy-env
+            # (all children). The Machine persist covers schtasks-launched
+            # processes (session-1 app relaunch, browser-ui), which build
+            # their environment from the registry, not from this process.
+            $env:PATH = "$env:PATH;$nvdir"
+            $mp = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+            [Environment]::SetEnvironmentVariable('Path', "$mp;$nvdir", 'Machine')
+            L "  PATH += $nvdir"
+            L "  $(& nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>&1)"
+        } else {
+            L "  no nvidia-smi under HostDriverStore -- GPU-PV gave this boot no NVIDIA adapter"
+        }
     }
 
     Step "comfy-test (from mapped local source)" {
-        # Deliberately NOT `uv tool install comfy-test` from PyPI, which is
-        # what the docker entrypoint does -- that would test the published
-        # release rather than the working tree being developed.
+        # pip -e from the mapped working tree, NOT a PyPI install -- this must
+        # test the tree being developed, not the published release. pip (not
+        # uv) because Application Control kills uv.exe in the guest.
         if (-not (Test-Path '<<GUEST_SRC_DIR>>\pyproject.toml')) {
             throw "comfy-test source not mapped at <<GUEST_SRC_DIR>>"
         }
         Copy-Item '<<GUEST_SRC_DIR>>' 'C:\comfy-test' -Recurse -Force
-        & uv tool install -e 'C:\comfy-test' --force *>&1 | ForEach-Object { L "  | $_" }
-        $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+        & python -m pip install --quiet -e 'C:\comfy-test' *>&1 | ForEach-Object { L "  | $_" }
+        # python -m, NOT the comfy-test.exe console shim: pip's shim is a
+        # freshly-written unsigned executable and Application Control blocks
+        # it outright ("has blocked this file"), same as uv.exe. python.exe
+        # is PSF-signed and allowed; the module code runs inside it.
+        L "  $(& python -m comfy_test --version 2>&1)"
     }
 
     # --- run the real harness ---
     L ""
     L "--- comfy-test run ---"
     $env:COMFY_TEST_IN_SANDBOX = '1'          # recursion guard: no nested sandbox
-    $env:COMFY_TEST_LOGS_DIR = Join-Path $Work 'logs'
+    # Host-side clone mapped into the guest: the driver copies this instead of
+    # cloning, because git inside the guest fails DNS intermittently no matter
+    # how the resolver is configured (hosts pin + adapter DNS both measured
+    # insufficient on first attempts).
+    $env:COMFY_TEST_NODE_LOCAL_COPY = Join-Path '<<GUEST_WORK_DIR>>' 'node-src'
+    # The run dir is the host's REAL D:\logs\<run-id>\... mapped straight in:
+    # artifacts land on the host live and nothing needs collecting afterwards.
+    $env:COMFY_TEST_LOGS_DIR = '<<GUEST_LOGS_DIR>>'
+    $env:COMFY_TEST_RUN_DIR = '<<GUEST_RUN_DIR>>'
     $env:COMFY_TEST_CUDA = '<<CUDA>>'
     $env:PYTHONUNBUFFERED = '1'
     New-Item -ItemType Directory -Path $env:COMFY_TEST_LOGS_DIR -Force | Out-Null
@@ -106,11 +353,18 @@ try {
     $ctArgs = @('run', '<<NODE_URL>>', '--branch', '<<BRANCH>>', '--desktop')
     if ('<<CUDA>>' -eq '1') { $ctArgs += '--cuda' }
     if ('<<DEV>>' -eq '1') { $ctArgs += '--dev' }
-    L "  $ $env:USERPROFILE\.local\bin\comfy-test.exe $($ctArgs -join ' ')"
+    L "  $ python -m comfy_test $($ctArgs -join ' ')"
 
-    & comfy-test @ctArgs *>&1 | ForEach-Object {
-        Add-Content $Log "  | $_" -Encoding ascii
-        Write-Host $_
+    # File-only, NO Write-Host: a console window in QuickEdit selection mode
+    # (one stray click in the guest cmd window) blocks console writes forever;
+    # the pipeline then stops consuming, python's stdout pipe fills, and every
+    # thread in comfy-test that prints freezes mid-run (measured
+    # GeometryPack-1902: 50+ min of total silence while the screenshot thread,
+    # which writes files directly, kept going). -ErrorAction SilentlyContinue
+    # so a transient share-file error drops a line instead of erroring to the
+    # same blockable console.
+    & python -m comfy_test @ctArgs *>&1 | ForEach-Object {
+        Add-Content $Log "  | $_" -Encoding ascii -ErrorAction SilentlyContinue
     }
     $rc = $LASTEXITCODE
     L "comfy-test exited rc=$rc"
@@ -118,6 +372,13 @@ try {
     L "BOOTSTRAP ABORTED: $($_.Exception.Message)"
     $rc = 90
 } finally {
+    Stop-Job $MirrorJob -ErrorAction SilentlyContinue
+    Remove-Job $MirrorJob -Force -ErrorAction SilentlyContinue
+    # Final mirror, plus a fresh-named copy: if a host-side reader wedged
+    # the share bootstrap.log, writes to THAT file fail but new files on
+    # the share still work (measured), so bootstrap-final.log always lands.
+    Copy-Item $Log $ShareLog -Force -ErrorAction SilentlyContinue
+    Copy-Item $Log (Join-Path $Work 'bootstrap-final.log') -Force -ErrorAction SilentlyContinue
     # rc.txt then done.flag, in that order -- the host polls the flag and
     # reads rc.txt once it appears, so the flag must be written last.
     Set-Content (Join-Path $Work 'rc.txt') "$rc" -Encoding ascii

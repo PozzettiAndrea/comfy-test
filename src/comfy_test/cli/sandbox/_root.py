@@ -26,6 +26,7 @@ SANDBOX_EXE = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "
 # Where the guest sees our mapped folders.
 GUEST_WORK_DIR = r"C:\ct"
 GUEST_SRC_DIR = r"C:\src"
+GUEST_LOGS_DIR = r"C:\ct-logs"
 
 # Headroom left to the host. The guest's RAM is host physical RAM -- Sandbox
 # overcommits rather than reserves -- so this is a ceiling, not a reservation.
@@ -113,14 +114,17 @@ def render(template_name: str, subs: dict) -> str:
     return text
 
 
-def render_wsb(*, memory_mb: int, work_dir: Path, src_dir: Path) -> str:
+def render_wsb(*, memory_mb: int, work_dir: Path, src_dir: Path,
+               run_root_dir: Path) -> str:
     """Render the .wsb config. Every interpolated path is XML-escaped."""
     return render("sandbox.wsb.in", {
         "MEMORY_MB": memory_mb,
         "WORK_DIR": xml_escape(str(work_dir)),
         "SRC_DIR": xml_escape(str(src_dir)),
+        "RUN_ROOT_DIR": xml_escape(str(run_root_dir)),
         "GUEST_WORK_DIR": xml_escape(GUEST_WORK_DIR),
         "GUEST_SRC_DIR": xml_escape(GUEST_SRC_DIR),
+        "GUEST_LOGS_DIR": xml_escape(GUEST_LOGS_DIR),
     })
 
 

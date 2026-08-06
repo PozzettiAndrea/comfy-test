@@ -1409,11 +1409,23 @@ def _install_via_visible_shell(page, node_repo, node_branch,
                 text=True, bufsize=1,
             )
         except FileNotFoundError as e:
+            # log() as well as the overlay: in the sandbox guest a failed git
+            # clone left NOTHING in the session log -- the only evidence went
+            # to an in-app console overlay nobody records, and the install
+            # "succeeded" into an empty custom_nodes. Every failure and every
+            # output line must reach the durable log.
+            log(f'  install-shell:   -> command not found: {e}')
             _console_append(page, f'  -> command not found: {e}\n\n')
             return 127
+        except OSError as e:
+            # e.g. WinError 1260: blocked by policy (Application Control).
+            log(f'  install-shell:   -> could not start: {e}')
+            _console_append(page, f'  -> could not start: {e}\n\n')
+            return 126
         buf = []
         last_flush = time.time()
         for line in proc.stdout:
+            log(f'  install-shell:   | {line.rstrip()}')
             buf.append(line)
             if time.time() - last_flush > 0.15:
                 _console_append(page, ''.join(buf))
@@ -1422,6 +1434,7 @@ def _install_via_visible_shell(page, node_repo, node_branch,
         if buf:
             _console_append(page, ''.join(buf))
         rc = proc.wait()
+        log(f'  install-shell:   -> exit {rc}')
         _console_append(page, f'  -> exit {rc}\n\n')
         return rc
 
@@ -1435,8 +1448,42 @@ def _install_via_visible_shell(page, node_repo, node_branch,
         except Exception as e:
             _console_append(page, f'  -> wipe failed: {e}\n\n')
 
-    _stream(['git', 'clone', '--depth', '1', '-b', node_branch,
-             f'https://github.com/{node_repo}.git', str(node_dir)])
+    # Prefer a host-provided local copy over cloning: inside the Windows
+    # Sandbox guest, git's DNS fails intermittently no matter how the resolver
+    # is configured (hosts-file pin and adapter-level public DNS both measured
+    # insufficient on first attempts), so the sandbox runner clones on the
+    # HOST and maps the tree in via COMFY_TEST_NODE_LOCAL_COPY.
+    _local_copy = os.environ.get('COMFY_TEST_NODE_LOCAL_COPY', '')
+    if _local_copy and Path(_local_copy).is_dir():
+        log(f'  install-shell: using host-provided clone at {_local_copy}')
+        _console_append(page, f'# copying host-provided clone {_local_copy}\n')
+        import shutil as _shutil
+        _shutil.copytree(_local_copy, node_dir,
+                         ignore=_shutil.ignore_patterns('__pycache__', '*.pyc'))
+        _rc_clone = 0
+    else:
+        _rc_clone = -1
+    # Otherwise clone with retries: transient DNS/network failures inside
+    # sandboxed guests are real, and git does not retry on its own. A failed
+    # attempt leaves a partial dir that would make the next attempt refuse,
+    # so wipe between tries.
+    for _attempt in range(1, 4):
+        if _rc_clone == 0:
+            break
+        rc = _stream(['git', 'clone', '--depth', '1', '-b', node_branch,
+                      f'https://github.com/{node_repo}.git', str(node_dir)])
+        if rc == 0:
+            break
+        log(f'  install-shell: clone attempt {_attempt}/3 failed (rc={rc})'
+            + ('; retrying in 10s' if _attempt < 3 else '; giving up'))
+        if node_dir.exists():
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(node_dir)
+            except Exception as _e:
+                log(f'  install-shell: partial-clone wipe failed: {_e}')
+        if _attempt < 3:
+            time.sleep(10)
 
     reqs = node_dir / 'requirements.txt'
     if reqs.is_file() and venv_python.exists():
@@ -1461,11 +1508,11 @@ def _install_via_visible_shell(page, node_repo, node_branch,
     # post-Apply-Changes reload at ~L2075.
     _console_append(page, '# reloading renderer to refresh extension list\n')
     log('  install-shell: reloading renderer')
+    page, _reloaded = _reload_renderer_hard(page, None)
     try:
-        page.reload(wait_until='load', timeout=30_000)
         install_cursor(page)   # cursor injection is DOM-based; wiped by reload
     except Exception as e:
-        log(f'  install-shell: post-reboot reload failed (non-fatal): {e}')
+        log(f'  install-shell: post-reload cursor install failed (non-fatal): {e}')
     _console_append(page, '# done. running tests now.\n')
     time.sleep(4)   # let the viewer read the "done" line before we hide
     _hide_install_console(page)
@@ -1645,6 +1692,23 @@ def _browser_ui_executable(p_arg):
     return None
 
 
+def _browser_ui_profile_dir(debug_dir):
+    """Where the browser-UI chromium keeps --user-data-dir.
+
+    Normally inside debug_dir so the profile is part of the run's
+    inspectable artifacts. In the Windows Sandbox guest, debug_dir sits on
+    a VMSMB mapped folder and chromium cannot lock a profile there: every
+    launch throws a modal 'Profile error occurred' dialog and
+    DevToolsActivePort never appears (measured GeometryPack-1902:
+    connect_over_cdp timed out after 180s). Guest-local %TEMP% instead --
+    the guest is disposable, so losing the profile artifact costs nothing.
+    """
+    if os.environ.get('COMFY_TEST_IN_SANDBOX') == '1':
+        import tempfile
+        return Path(tempfile.gettempdir()) / 'comfy-test-browser-ui-profile'
+    return Path(debug_dir) / 'browser-ui-profile'
+
+
 def _launch_browser_ui(p_arg, url, debug_dir):
     """Serve the ComfyUI UI from a real browser window in session 1.
 
@@ -1668,11 +1732,12 @@ def _launch_browser_ui(p_arg, url, debug_dir):
 
     Returns (browser, page) or (None, None).
     """
+    # (profile placement: see _browser_ui_profile_dir)
     exe = _browser_ui_executable(p_arg)
     if not exe:
         log('  browser-ui: no chromium/edge found; staying on the Electron page')
         return None, None
-    profile = Path(debug_dir) / 'browser-ui-profile'
+    profile = _browser_ui_profile_dir(debug_dir)
     port_file = profile / 'DevToolsActivePort'
     try:
         if profile.exists():
@@ -1783,7 +1848,7 @@ def _stop_browser_ui(debug_dir=None):
             subprocess.run(a, capture_output=True, timeout=15)
         except Exception:
             pass
-    profile = str(Path(debug_dir or OUT) / 'browser-ui-profile')
+    profile = str(_browser_ui_profile_dir(debug_dir or OUT))
     # $_.ProcessId -ne $PID is load-bearing: this very powershell has the
     # profile path in its own command line, so without the guard the filter
     # matches the cleanup process itself and Stop-Process kills it -- possibly
@@ -1801,6 +1866,42 @@ def _stop_browser_ui(debug_dir=None):
         log('  browser-ui: stopped')
     except Exception as e:
         log(f'  browser-ui: teardown failed (non-fatal): {e}')
+
+
+def _reload_renderer_hard(page_arg, browser_arg):
+    """Reload the UI page until it actually loads, goto as a last resort.
+
+    A single 30s page.reload is not enough in the sandbox guest: measured
+    GeometryPack-2012, the reload timed out, the driver carried on with a
+    stale renderer whose object_info predated the node install, the
+    Templates panel had no section for the pack, and every workflow
+    serialized class_type-less placeholder nodes -> PROMPT REJECTED x3.
+    A half-loaded page after a timed-out reload is worse than no reload.
+
+    Returns (page, ok). page may be a re-fetched main page when
+    browser_arg is provided.
+    """
+    for attempt in range(1, 4):
+        try:
+            page_arg.reload(wait_until='domcontentloaded', timeout=120_000)
+            return page_arg, True
+        except Exception as e:
+            log(f'  ext: renderer reload attempt {attempt}/3 failed: {e}')
+            if browser_arg is not None:
+                try:
+                    fresh = main_page(browser_arg)
+                    if fresh is not None:
+                        page_arg = fresh
+                except Exception:
+                    pass
+    try:
+        page_arg.goto(_comfy_base_url(), wait_until='domcontentloaded',
+                      timeout=120_000)
+        log('  ext: renderer goto fallback succeeded')
+        return page_arg, True
+    except Exception as e:
+        log(f'  ext: renderer goto fallback failed: {e}')
+        return page_arg, False
 
 
 def _restart_comfy(p_arg, current_browser):
@@ -1828,12 +1929,14 @@ def _restart_comfy(p_arg, current_browser):
         log('  loop: no main page after Python restart, bailing')
         return None, current_browser
     log('  loop: reloading renderer to re-fetch object_info + node manifest')
+    page, reloaded = _reload_renderer_hard(page, current_browser)
+    if not reloaded:
+        log('  loop: renderer never reloaded; workflows will see stale object_info')
     try:
-        page.reload(wait_until='load', timeout=30000)
         install_cursor(page)
         _wait_canvas_ready(page, 120)
     except Exception as e:
-        log(f'  loop: post-restart reload failed: {e}')
+        log(f'  loop: post-restart canvas wait failed: {e}')
     sleep_capturing(page, 3, fps=5)
     return page, current_browser
 
@@ -2345,23 +2448,54 @@ def _fetch_workflow_list_from_repo():
         return []
 
 
+def _load_node_toml():
+    """Parse the node's comfy-test.toml, preferring the LOCAL copy the host
+    staged (COMFY_TEST_NODE_LOCAL_COPY). The GitHub-raw fallback fetches the
+    remote branch's file, which silently ignores uncommitted --dev changes
+    to the toml (workflow lists, timeout)."""
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore
+    local = os.environ.get('COMFY_TEST_NODE_LOCAL_COPY', '')
+    if local:
+        p = Path(local) / 'comfy-test.toml'
+        if p.is_file():
+            log(f'  ext: reading comfy-test.toml from local copy {p}')
+            return tomllib.loads(p.read_text(encoding='utf-8'))
+    node_repo = os.environ.get('NODE_REPO', '')
+    node_branch = os.environ.get('NODE_BRANCH', 'main')
+    if node_repo:
+        toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
+        log(f'  ext: fetching comfy-test.toml from {toml_url}')
+        return tomllib.loads(
+            urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8'))
+    return {}
+
+
+def _apply_workflow_timeout(data):
+    """Honor [test.workflows].timeout unless the operator pinned
+    COMFY_TEST_WORKFLOW_TIMEOUT_S. The 180s default killed remeshing_all
+    mid-execution (measured GeometryPack-2121: legitimate 260s+ workload
+    reported as WORKFLOW TIMEOUT while the toml said timeout = 300)."""
+    global _WORKFLOW_TIMEOUT_S
+    if os.environ.get('COMFY_TEST_WORKFLOW_TIMEOUT_S'):
+        return
+    t = data.get('test', {}).get('workflows', {}).get('timeout')
+    if isinstance(t, (int, float)) and t > 0:
+        _WORKFLOW_TIMEOUT_S = int(t)
+        log(f'  ext: per-workflow timeout {_WORKFLOW_TIMEOUT_S}s (from comfy-test.toml)')
+
+
 def _parse_cpu_spec():
     """Returns (mode, items) parsed from comfy-test.toml's
     [test.workflows].cpu (or .cuda when COMFY_TEST_CUDA=1)."""
     cpu_mode = 'all'
     cpu_items = []
     try:
-        node_repo = os.environ.get('NODE_REPO', '')
-        node_branch = os.environ.get('NODE_BRANCH', 'main')
-        if node_repo:
-            toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
-            log(f'  ext: fetching comfy-test.toml from {toml_url}')
-            toml_text = urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8')
-            try:
-                import tomllib
-            except ImportError:
-                import tomli as tomllib  # type: ignore
-            data = tomllib.loads(toml_text)
+        data = _load_node_toml()
+        if data:
+            _apply_workflow_timeout(data)
             spec_key = 'cuda' if os.environ.get('COMFY_TEST_CUDA', '0') == '1' else 'cpu'
             spec = data.get('test', {}).get('workflows', {}).get(spec_key)
             if spec == 'all' or spec is None:
@@ -2489,6 +2623,7 @@ with sync_playwright() as p:
         return None
 
     clicked = {}  # sig -> last_click_time; allow re-click after CLICK_TTL
+    tiles_picked = []  # every TILE| click across all wizard screens
     CLICK_TTL = 5
     page_url = page.url
     start = time.time()
@@ -2519,6 +2654,8 @@ with sync_playwright() as p:
                 click_with_cursor(page, loc)
                 log(f'  clicked [{sig}]')
                 clicked[sig] = time.time()
+                if kind == 'tile':
+                    tiles_picked.append(sig)
                 sleep_capturing(page, 1, fps=4)
             except Exception as e:
                 log(f'  click [{sig}] failed: {e}')
@@ -2527,6 +2664,33 @@ with sync_playwright() as p:
             time.sleep(2)
     else:
         log(f'  driver timed out after {int(time.time()-start)}s without /system_stats')
+
+    if _CUDA_MODE:
+        # Verify what the wizard actually installed by asking the server,
+        # not by tile bookkeeping: on a detected-NVIDIA box the wizard
+        # PRE-selects CUDA and enables Continue on entry, so zero tile
+        # clicks is normal there (measured GeometryPack-2104: no tile
+        # clicked, Device: cuda:0). The failure this guards is the wizard
+        # silently installing CPU torch when GPU detection is broken in
+        # the environment (measured GeometryPack-2012 in the sandbox guest
+        # before nvidia-smi was exposed on PATH).
+        dev_types = 'unknown'
+        try:
+            with urllib.request.urlopen(
+                    f'http://127.0.0.1:{_COMFY_PORT or 8188}/system_stats',
+                    timeout=5) as r:
+                stats = json.loads(r.read().decode())
+            dev_types = ','.join(d.get('type', '?')
+                                 for d in stats.get('devices', [])) or 'none'
+        except Exception as e:
+            dev_types = f'unknown ({e.__class__.__name__})'
+        if 'cuda' in dev_types:
+            log(f'  wizard: server devices [{dev_types}] confirm CUDA '
+                f'(tiles clicked: {tiles_picked or "none -- wizard pre-selected"})')
+        else:
+            log(f'  wizard: WARN: COMFY_TEST_CUDA=1 but server devices are '
+                f'[{dev_types}] (tiles clicked: {tiles_picked}); the app '
+                f'installed a non-CUDA torch -- check GPU detection in the guest')
 
     # ComfyUI Desktop's first-boot path triggers MULTIPLE Python-backend
     # restarts within the first 1-2 minutes (validate install, migrate,
@@ -3445,17 +3609,9 @@ with sync_playwright() as p:
                 cpu_mode = 'all'   # 'all' | 'include' | 'exclude'
                 cpu_items = []     # list of workflow names (without .json)
                 try:
-                    node_repo = os.environ.get('NODE_REPO', '')
-                    node_branch = os.environ.get('NODE_BRANCH', 'main')
-                    if node_repo:
-                        toml_url = f'https://raw.githubusercontent.com/{node_repo}/{node_branch}/comfy-test.toml'
-                        log(f'  ext: fetching comfy-test.toml from {toml_url}')
-                        toml_text = urllib.request.urlopen(toml_url, timeout=10).read().decode('utf-8')
-                        try:
-                            import tomllib
-                        except ImportError:
-                            import tomli as tomllib  # type: ignore
-                        data = tomllib.loads(toml_text)
+                    data = _load_node_toml()
+                    if data:
+                        _apply_workflow_timeout(data)
                         # Read .cuda when COMFY_TEST_CUDA=1, else .cpu. Earlier
                         # this was hardcoded to 'cpu' which silently picked the
                         # wrong workflow on --desktop_windows_cuda (the spec's
@@ -3727,7 +3883,11 @@ def _comfyui_version():
         return None
 
 _passed = sum(1 for w in _workflow_results if w.get("status") == "pass")
-_failed = sum(1 for w in _workflow_results if w.get("status") == "fail")
+# Anything that is not a pass counts as failed -- 'timeout' and 'rejected'
+# included. Counting only status=='fail' reported success=true with a
+# timed-out workflow (measured GeometryPack-2144: remeshing_all timeout,
+# summary said failed=0).
+_failed = sum(1 for w in _workflow_results if w.get("status") != "pass")
 _results_data = {
     "timestamp":   _dt.now(_tz.utc).isoformat(),
     "platform":    os.environ.get("COMFY_TEST_DESKTOP_PLATFORM", "unknown_desktop"),
