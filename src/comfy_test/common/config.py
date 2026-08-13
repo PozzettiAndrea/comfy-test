@@ -101,6 +101,7 @@ class TestLevel(str, Enum):
     COVERAGE = "coverage"
     INSTALL = "install"
     REGISTRATION = "registration"
+    JAVASCRIPT = "javascript"  # after registration: the pack's web/ is generated at server boot
     INSTANTIATION = "instantiation"
     STATIC_CAPTURE = "static_capture"
     VALIDATION = "validation"
@@ -120,6 +121,10 @@ class TestLevel(str, Enum):
             cls.COVERAGE: [],
             cls.INSTALL: [],
             cls.REGISTRATION: [cls.INSTALL],
+            # JS lint reads the pack's served web/ dir, which for copy-dance
+            # packs is only generated when the server boots (prestartup at
+            # registration); vendored packs have it after install.
+            cls.JAVASCRIPT: [cls.INSTALL, cls.REGISTRATION],
             cls.INSTANTIATION: [cls.INSTALL],
             cls.STATIC_CAPTURE: [cls.INSTALL],
             cls.VALIDATION: [cls.INSTALL],
@@ -276,6 +281,35 @@ class CoverageConfig:
 
 
 @dataclass
+class JavascriptConfig:
+    """Configuration for the JAVASCRIPT level.
+
+    Args:
+        namespaces: The prefixes this pack's frontend JS legitimately owns, for
+            ``app.registerExtension`` names, custom-element names, and any
+            window globals. A pack may own several (GeometryPack ships
+            ``geompack.*``, ``comfy3d.*``, ``unirig.*``). When declared, the
+            name-namespacing rules are ENFORCED as errors::
+
+                [test.javascript]
+                namespaces = ["geompack", "comfy3d"]
+
+            When omitted, a prefix is guessed from the pack folder name and the
+            name rules are downgraded to warnings (we can't hard-error on a
+            guessed prefix). The global-write rule (window.X = ...) is always an
+            error regardless -- it needs no namespace to be wrong.
+    """
+
+    namespaces: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not isinstance(self.namespaces, list) or not all(
+            isinstance(n, str) for n in self.namespaces
+        ):
+            raise ValueError("[test.javascript] namespaces must be a list of strings")
+
+
+@dataclass
 class PlatformTestConfig:
     """Platform-specific test configuration.
 
@@ -332,6 +366,7 @@ class TestConfig:
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     coverage: CoverageConfig = field(default_factory=CoverageConfig)
+    javascript: JavascriptConfig = field(default_factory=JavascriptConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     linux_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     macos: PlatformTestConfig = field(default_factory=PlatformTestConfig)
@@ -370,6 +405,9 @@ class TestConfig:
         # Ensure coverage is CoverageConfig
         if isinstance(self.coverage, dict):
             self.coverage = CoverageConfig(**self.coverage)
+
+        if isinstance(self.javascript, dict):
+            self.javascript = JavascriptConfig(**self.javascript)
 
         # Ensure platform configs are PlatformTestConfig
         if isinstance(self.linux, dict):

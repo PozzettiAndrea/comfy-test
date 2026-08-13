@@ -37,6 +37,7 @@ else:
 
 from .config import (
     TestConfig, TestLevel, WorkflowConfig, PlatformTestConfig, CoverageConfig,
+    JavascriptConfig,
     ALL_LEVELS, DEFAULT_LEVELS,
 )
 from .errors import ConfigError
@@ -283,6 +284,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
             "levels": levels,
             "workflow": workflow,
             "coverage": CoverageConfig(**test_section.get("coverage", {})),
+            "javascript": JavascriptConfig(**test_section.get("javascript", {})),
             "linux": linux_config,
             "linux_cuda": linux_cuda_config,
             "macos": macos_config,

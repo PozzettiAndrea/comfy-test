@@ -7,6 +7,7 @@ from .syntax import run as run_syntax
 from .coverage import run as run_coverage
 from .install import run as run_install
 from .registration import run as run_registration
+from .javascript import run as run_javascript
 from .instantiation import run as run_instantiation
 from .static_capture import run as run_static_capture
 from .validation import run as run_validation
@@ -19,6 +20,7 @@ __all__ = [
     "run_coverage",
     "run_install",
     "run_registration",
+    "run_javascript",
     "run_instantiation",
     "run_static_capture",
     "run_validation",
