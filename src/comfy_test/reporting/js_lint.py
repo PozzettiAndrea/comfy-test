@@ -40,11 +40,36 @@ from typing import List, Optional
 # writing these is legitimate and must not be flagged.
 _ALLOWED_GLOBAL_PROPS = {"__THREE__"}  # three.js's own multi-instance guard flag
 
-# Shared objects every pack sees. Patching a method on one of these can break
-# every other pack. Overriding a method on the node's OWN class prototype
+# Identifiers that ARE the global object. `window`/`globalThis` unambiguously so.
+_GLOBAL_OBJECTS = {"window", "globalThis"}
+# ...and these, which resolve to the global object in the main realm too, but
+# are ALSO common local-variable names (`const self = this`, a DOM `parent`, a
+# scroll `top`). We only treat them as the global when the file never binds
+# that name locally -- otherwise it's an ordinary variable and flagging it is
+# a false positive.
+_GLOBAL_OBJECT_ALIASES = {"self", "top", "parent", "frames"}
+
+# Shared objects every pack sees. Patching a member on one of these can break
+# every other pack. Overriding a member on the node's OWN class prototype
 # (nodeType.prototype.onExecuted, the standard extension pattern) is per-node
 # and safe, so it is NOT flagged -- only patches rooted at these globals are.
-_SHARED_PROTOTYPE_ROOTS = {"LiteGraph", "LGraphCanvas", "LGraphNode", "LGraph", "app", "api"}
+# Includes the JS builtins (prototype pollution) and ComfyUI's shared widget
+# registry / graph objects.
+_SHARED_PROTOTYPE_ROOTS = {
+    "LiteGraph", "LGraphCanvas", "LGraphNode", "LGraph", "LGraphGroup",
+    "ContextMenu", "app", "api", "ComfyWidgets", "ComfyApp",
+    "Object", "Array", "String", "Number", "Boolean", "Function",
+}
+
+# document.<prop> = ... : writing one of these mutates shared page-wide state
+# (cookies; the document's global stylesheet list) even though the LHS object
+# is `document`, not `window`.
+_SHARED_DOCUMENT_PROPS = {"cookie", "adoptedStyleSheets"}
+
+# Shared per-origin key/value stores. An unprefixed key collides with every
+# other pack's key of the same name.
+_STORAGE_OBJECTS = {"localStorage", "sessionStorage"}
+_STORAGE_METHODS = {"setItem", "getItem", "removeItem"}
 
 # DOM-insertion methods: calling one of these with a callee rooted at
 # `document` (document.body.appendChild, document.head.append,
@@ -69,6 +94,33 @@ def _member_root(node) -> Optional[str]:
     if node is not None and node.type == "identifier":
         return node.text.decode("utf-8", errors="replace")
     return None
+
+
+def _bound_names(root) -> set:
+    """Identifiers the file binds as locals (declaration names + parameters +
+    function/class names). Used to tell a real `const self = this` apart from a
+    write to the global `self`. Over-collecting only makes us MISS a global
+    write (conservative), never raise a false positive."""
+    names = set()
+    for n in _walk(root):
+        if n.type == "variable_declarator":
+            nm = n.child_by_field_name("name")
+            if nm is not None and nm.type == "identifier":
+                names.add(_text(nm))
+        elif n.type in ("function_declaration", "generator_function_declaration",
+                        "class_declaration"):
+            nm = n.child_by_field_name("name")
+            if nm is not None and nm.type == "identifier":
+                names.add(_text(nm))
+        elif n.type == "formal_parameters":
+            for c in n.children:
+                if c.type == "identifier":
+                    names.add(_text(c))
+        elif n.type == "arrow_function":
+            p = n.child_by_field_name("parameter")  # single bare param: x => ...
+            if p is not None and p.type == "identifier":
+                names.add(_text(p))
+    return names
 
 
 @dataclass
@@ -168,6 +220,10 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
     tree = parser.parse(text.encode("utf-8"))
     findings: List[Finding] = []
     name_sev = "error" if namespaces_declared else "warn"
+    bound = _bound_names(tree.root_node)
+    # global-object identifiers active in THIS file (aliases only count when the
+    # file doesn't shadow them with a local binding).
+    global_objs = _GLOBAL_OBJECTS | (_GLOBAL_OBJECT_ALIASES - bound)
 
     for node in _walk(tree.root_node):
         line = node.start_point[0] + 1
@@ -187,24 +243,33 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
                     f"auto-imports it. If it is iframe-only code, rename it to "
                     f".mjs so it leaves the auto-import glob."))
 
-        # --- global writes: window.X = / globalThis.X = ---
+        # --- global / shared-document writes ---
         if node.type == "assignment_expression":
             lhs = node.child_by_field_name("left")
             if lhs is not None and lhs.type == "member_expression":
                 obj = lhs.child_by_field_name("object")
                 prop = lhs.child_by_field_name("property")
-                if obj is not None and _text(obj) in ("window", "globalThis") and prop is not None:
+                obj_text = _text(obj) if obj is not None else None
+                # window.X = / globalThis.X = / (unshadowed) self|top|parent.X =.
+                # Isolation standard: NO globals at all, namespaced or not --
+                # module scope + iframes cover every legitimate need.
+                if obj_text in global_objs and prop is not None:
                     pname = _text(prop)
-                    # Isolation standard: NO globals at all, namespaced or not.
-                    # Until the platform offers a sanctioned shared-state API,
-                    # module scope + iframes cover every legitimate need.
                     if pname not in _ALLOWED_GLOBAL_PROPS:
                         findings.append(Finding(
                             "error", "global-write", rel_path, line,
-                            f"writes {_text(obj)}.{pname} into the shared main realm "
+                            f"writes {obj_text}.{pname} into the shared main realm "
                             f"(auto-imported .js). Keep state in module scope, or keep "
                             f"the code iframe-local (rename the file to .mjs so ComfyUI "
                             f"does not auto-import it)."))
+                # document.cookie = / document.adoptedStyleSheets = : shared
+                # page-wide state written through `document`, not `window`.
+                elif obj_text == "document" and prop is not None \
+                        and _text(prop) in _SHARED_DOCUMENT_PROPS:
+                    findings.append(Finding(
+                        "error", "shared-document-write", rel_path, line,
+                        f"writes document.{_text(prop)} -- shared page-wide state. "
+                        f"Keep per-pack state in module scope / your own storage key."))
 
         # --- calls: registerExtension / customElements.define ---
         if node.type == "call_expression":
@@ -303,6 +368,65 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
                                         f"({callee.rsplit('.', 1)[0] or 'window'}) is not "
                                         f"namespaced -- prefix it (e.g. '{sugg}') so a "
                                         f"listener in another pack cannot match it."))
+            # --- Object.assign / defineProperty on a shared target ---
+            # The call-form of a global write / monkeypatch:
+            # Object.assign(window, {...}), Object.defineProperty(LiteGraph, ...).
+            elif callee in ("Object.assign", "Object.defineProperty",
+                            "Object.defineProperties"):
+                args = node.child_by_field_name("arguments")
+                first = None
+                if args is not None:
+                    first = next((c for c in args.children
+                                  if c.type not in ("(", ")", ",")), None)
+                tgt = None
+                if first is not None:
+                    tgt = _text(first) if first.type == "identifier" \
+                        else _member_root(first) if first.type == "member_expression" else None
+                if tgt in global_objs:
+                    findings.append(Finding(
+                        "error", "global-write", rel_path, line,
+                        f"{callee}({tgt}, ...) writes onto the shared global object."))
+                elif tgt in _SHARED_PROTOTYPE_ROOTS:
+                    findings.append(Finding(
+                        "error", "shared-object-monkeypatch", rel_path, line,
+                        f"{callee}({_text(first)}, ...) mutates a shared object other "
+                        f"packs rely on -- nothing guarantees your change composes "
+                        f"with theirs."))
+            # --- localStorage / sessionStorage with an unprefixed key ---
+            elif "." in callee and callee.rsplit(".", 1)[0] in _STORAGE_OBJECTS \
+                    and callee.rsplit(".", 1)[1] in _STORAGE_METHODS:
+                args = node.child_by_field_name("arguments")
+                key = None
+                if args is not None:
+                    first = next((c for c in args.children
+                                  if c.type not in ("(", ")", ",")), None)
+                    key = _string_literal_value(first)
+                if key is not None and not _is_namespaced(key, namespaces):
+                    store = callee.rsplit(".", 1)[0]
+                    sugg = f"{namespaces[0]}:{key}" if namespaces else f"<ns>:{key}"
+                    findings.append(Finding(
+                        name_sev, "unprefixed-storage-key", rel_path, line,
+                        f"{store} key '{key}' is not namespaced -- it is shared per "
+                        f"origin, so another pack's same-named key clobbers yours. "
+                        f"Prefix it (e.g. '{sugg}')."))
+
+        # --- BroadcastChannel("name") with an unprefixed channel name ---
+        if node.type == "new_expression":
+            ctor = node.child_by_field_name("constructor")
+            if ctor is not None and _text(ctor) == "BroadcastChannel":
+                args = node.child_by_field_name("arguments")
+                chan = None
+                if args is not None:
+                    first = next((c for c in args.children
+                                  if c.type not in ("(", ")", ",")), None)
+                    chan = _string_literal_value(first)
+                if chan is not None and not _is_namespaced(chan, namespaces):
+                    sugg = f"{namespaces[0]}:{chan}" if namespaces else f"<ns>:{chan}"
+                    findings.append(Finding(
+                        name_sev, "unprefixed-broadcast-channel", rel_path, line,
+                        f"BroadcastChannel('{chan}') is not namespaced -- every pack "
+                        f"(and every tab) opening the same channel name shares the bus. "
+                        f"Prefix it (e.g. '{sugg}')."))
 
         # --- monkeypatch of a SHARED object (LiteGraph, app, api, ...) ---
         # Isolation standard: patching objects every pack sees is not accepted
@@ -323,17 +447,63 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
     return findings
 
 
+def _relative_imports(text: str) -> List[str]:
+    """Relative import/export specifiers in a module (./x.mjs, ../y.js)."""
+    parser = _parser()
+    tree = parser.parse(text.encode("utf-8"))
+    out: List[str] = []
+    for node in _walk(tree.root_node):
+        if node.type in ("import_statement", "export_statement"):
+            src = _string_literal_value(node.child_by_field_name("source"))
+            if src is not None and src.startswith("."):
+                out.append(src)
+    return out
+
+
 def lint_web_dir(web_dir: Path, namespaces: List[str],
                  namespaces_declared: bool) -> List[Finding]:
-    """Lint every auto-imported .js under web_dir. .mjs is exempt (ComfyUI's
-    glob is **/*.js, so .mjs never enters the main realm)."""
+    """Lint every auto-imported .js under web_dir, PLUS any .mjs reachable by a
+    relative import from those .js. ComfyUI's glob is **/*.js, so a bare .mjs
+    never enters the main realm on its own -- but a .js that `import`s one pulls
+    it in, so a leaking file cannot hide behind the .mjs extension."""
     findings: List[Finding] = []
     web_dir = Path(web_dir)
-    for js in sorted(web_dir.rglob("*.js")):
+
+    js_files = sorted(web_dir.rglob("*.js"))
+    scanned = set()               # resolved paths already linted
+    reached_mjs: List[Path] = []  # .mjs pulled into the main realm via import
+
+    def _follow(src_file: Path, text: str) -> None:
+        for spec in _relative_imports(text):
+            target = (src_file.parent / spec).resolve()
+            if target.suffix == ".mjs" and target.is_file() and target not in scanned:
+                scanned.add(target)
+                reached_mjs.append(target)
+
+    for js in js_files:
         try:
             text = js.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        rel = js.relative_to(web_dir).as_posix()
+        scanned.add(js.resolve())
+        findings.extend(lint_source(text, js.relative_to(web_dir).as_posix(),
+                                    namespaces, namespaces_declared))
+        _follow(js, text)
+
+    # BFS through .mjs -> .mjs imports as well.
+    i = 0
+    while i < len(reached_mjs):
+        mjs = reached_mjs[i]
+        i += 1
+        try:
+            text = mjs.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        try:
+            rel = mjs.relative_to(web_dir).as_posix()
+        except ValueError:
+            rel = mjs.name
         findings.extend(lint_source(text, rel, namespaces, namespaces_declared))
+        _follow(mjs, text)
+
     return findings

@@ -163,6 +163,74 @@ def test_bare_import_specifier_warns():
     assert lint_source("import x from '/extensions/pack/js/x.js';", "x.js", [], True) == []
 
 
+# --- Tier-1 hardening: catch honest packs via the aliases they actually use ---
+
+def test_global_object_aliases_when_unbound():
+    # self/top/parent/frames ARE the global object in the main realm.
+    assert _rules(lint_source("self.THREE = x;", "x.js", [], True)) == [
+        ("error", "global-write")]
+    assert _rules(lint_source("parent.foo = x;", "x.js", [], True)) == [
+        ("error", "global-write")]
+
+
+def test_global_object_alias_shadowed_by_local_is_not_flagged():
+    # `const self = this` (and a DOM `parent`) are ordinary locals -> no FP.
+    assert lint_source("function f(){ const self = this; self.foo = 1; }", "x.js", [], True) == []
+    assert lint_source("const parent = el.parentNode; parent.x = 1;", "x.js", [], True) == []
+
+
+def test_object_assign_and_defineproperty_on_shared_targets():
+    assert _rules(lint_source("Object.assign(window, {THREE: x});", "x.js", [], True)) == [
+        ("error", "global-write")]
+    assert _rules(lint_source('Object.defineProperty(window, "THREE", d);', "x.js", [], True)) == [
+        ("error", "global-write")]
+    assert _rules(lint_source("Object.assign(LGraphCanvas.prototype, {draw: f});", "x.js", [], True)) == [
+        ("error", "shared-object-monkeypatch")]
+    # assigning onto your own object is fine
+    assert lint_source("Object.assign(myState, {a: 1});", "x.js", [], True) == []
+
+
+def test_prototype_pollution_and_widget_registry_are_errors():
+    for src in ("Object.prototype.pwned = 1;", "Array.prototype.z = 2;",
+                "ComfyWidgets.MYTYPE = function(){};"):
+        assert _rules(lint_source(src, "x.js", [], True)) == [
+            ("error", "shared-object-monkeypatch")], src
+
+
+def test_shared_document_write_cookie_and_stylesheets():
+    assert _rules(lint_source('document.cookie = "s=1";', "x.js", [], True)) == [
+        ("error", "shared-document-write")]
+    assert _rules(lint_source("document.adoptedStyleSheets = [s];", "x.js", [], True)) == [
+        ("error", "shared-document-write")]
+
+
+def test_unprefixed_storage_key():
+    assert _rules(lint_source('localStorage.setItem("theme", v);', "x.js", ["gp"], True)) == [
+        ("error", "unprefixed-storage-key")]
+    assert lint_source('localStorage.setItem("gp:theme", v);', "x.js", ["gp"], True) == []
+    # guessed namespace -> advisory
+    assert _rules(lint_source('sessionStorage.getItem("theme");', "x.js", ["gp"], False)) == [
+        ("warn", "unprefixed-storage-key")]
+
+
+def test_unprefixed_broadcast_channel():
+    assert _rules(lint_source('new BroadcastChannel("comfy");', "x.js", ["gp"], True)) == [
+        ("error", "unprefixed-broadcast-channel")]
+    assert lint_source('new BroadcastChannel("gp:bus");', "x.js", ["gp"], True) == []
+
+
+def test_mjs_pulled_in_by_a_js_import_is_scanned(tmp_path):
+    sub = tmp_path / "js"; sub.mkdir()
+    (sub / "glue.js").write_text('import "./leak.mjs"; app.registerExtension({name:"gp.x"});',
+                                 encoding="utf-8")
+    (sub / "leak.mjs").write_text("window.THREE = x;", encoding="utf-8")
+    (sub / "orphan.mjs").write_text("window.VTK = y;", encoding="utf-8")  # imported by nobody
+    findings = lint_web_dir(tmp_path, ["gp"], True)
+    files = {f.file for f in findings}
+    assert "js/leak.mjs" in files       # pulled into the main realm via import -> scanned
+    assert "js/orphan.mjs" not in files  # never imported -> stays iframe-exempt
+
+
 def test_mjs_files_are_not_scanned(tmp_path):
     # A bundle that writes window.THREE, but as .mjs -> ComfyUI never auto-imports
     # it into the main realm, so it is exempt.
