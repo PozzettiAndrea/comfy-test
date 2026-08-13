@@ -16,14 +16,52 @@ from ...common.errors import TestError
 from ..context import LevelContext
 
 
+def _normalize_ns(name: str) -> str:
+    """Lowercase a name and strip it to alphanumerics -> a single namespace
+    token. 'GeometryPack' -> 'geometrypack', 'My Nodes!' -> 'mynodes'."""
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
+def _display_namespace(pack_dir: Path) -> Optional[str]:
+    """The pack's required JS namespace = its ComfyUI DisplayName, lowercased
+    and stripped to alphanumerics (pyproject [tool.comfy].DisplayName). Falls
+    back to [project].name minus a 'comfyui-' prefix (the globally-unique
+    registry id). Returns None if pyproject declares no usable identity.
+
+    This is the canonical, zero-config source: every registerExtension name in
+    the pack's web dir must sit under this one prefix, so the pack's frontend
+    can never squat another pack's names.
+    """
+    pyproject = pack_dir / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        try:
+            import tomllib as toml
+        except ModuleNotFoundError:
+            import tomli as toml
+        data = toml.loads(pyproject.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    name = data.get("tool", {}).get("comfy", {}).get("DisplayName")
+    if not name:
+        name = data.get("project", {}).get("name", "") or ""
+        for prefix in ("comfyui-", "comfyui_"):
+            if name.lower().startswith(prefix):
+                name = name[len(prefix):]
+                break
+    return _normalize_ns(name) or None
+
+
 def _guess_namespace(pack_name: str) -> str:
-    """A best-effort namespace prefix from the pack folder name."""
+    """A best-effort namespace prefix from the pack folder name (last resort
+    when pyproject declares no DisplayName / project name)."""
     n = pack_name.lower()
     for prefix in ("comfyui-", "comfyui_"):
         if n.startswith(prefix):
             n = n[len(prefix):]
             break
-    return re.sub(r"[^a-z0-9]+", "", n) or "pack"
+    return _normalize_ns(n) or "pack"
 
 
 def _resolve_web_dir(pack_dir: Path) -> Optional[Path]:
@@ -72,14 +110,28 @@ def run(ctx: LevelContext) -> LevelContext:
         ctx.log("[javascript] pack ships no frontend web dir -- nothing to lint.")
         return ctx
 
-    declared = list(ctx.config.javascript.namespaces)
-    if declared:
-        namespaces, declared_flag = declared, True
+    # Namespace = the pack's DisplayName, lowercased (authoritative, zero-config).
+    # Optional [test.javascript] namespaces are ADDITIONAL allowed prefixes, an
+    # escape hatch for a pack that legitimately ships more than one namespace.
+    extra = list(ctx.config.javascript.namespaces)
+    display_ns = _display_namespace(pack_dir)
+    if display_ns:
+        namespaces = [display_ns] + [e for e in extra if e != display_ns]
+        declared_flag = True
+        ctx.log(f"[javascript] enforcing DisplayName namespace '{display_ns}' -- "
+                f"every registerExtension name under the web dir must start with "
+                f"'{display_ns}.'"
+                + (f"; also allowing {extra}" if extra else ""))
+    elif extra:
+        namespaces, declared_flag = extra, True
+        ctx.log(f"[javascript] pyproject declares no DisplayName; enforcing "
+                f"[test.javascript] namespaces {extra}.")
     else:
         namespaces, declared_flag = [_guess_namespace(ctx.node_dir.name)], False
-        ctx.log(f"[javascript] no [test.javascript] namespaces declared; "
-                f"guessing '{namespaces[0]}' and treating name rules as advisory. "
-                f"Declare namespaces to enforce them.")
+        ctx.log(f"[javascript] pyproject declares no DisplayName and no "
+                f"[test.javascript] namespaces; guessing '{namespaces[0]}' and "
+                f"treating name rules as advisory. Add a [tool.comfy] DisplayName "
+                f"to enforce them.")
 
     ctx.log(f"[javascript] scanning {web_dir.relative_to(pack_dir)}/ "
             f"({len(list(web_dir.rglob('*.js')))} .js files) "

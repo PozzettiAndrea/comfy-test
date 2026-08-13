@@ -43,8 +43,12 @@ def test_global_write_is_error_and_ignores_comments_and_strings():
     assert {f.line for f in findings} == {1, 2}
 
 
-def test_namespaced_global_write_is_allowed():
-    assert lint_source("window.geompack_state = {};", "x.js", ["geompack"], True) == []
+def test_namespaced_global_write_is_also_an_error():
+    # Isolation standard: NO globals at all -- namespacing a global makes it
+    # collision-safe against other packs, but it is still shared-realm state
+    # with no sanctioned platform API behind it.
+    assert _rules(lint_source("window.geompack_state = {};", "x.js", ["geompack"], True)) == [
+        ("error", "global-write")]
 
 
 def test_unnamespaced_extension_error_when_declared_warn_when_not():
@@ -73,20 +77,90 @@ def test_custom_element_namespacing():
 def test_message_listener_guarded_vs_unguarded():
     guarded = ("window.addEventListener('message', (e) => {"
                " if (e.source !== fr.contentWindow) return; go(e.data); });")
+    guarded_origin = ("window.addEventListener('message', (e) => {"
+                      " if (e.origin !== location.origin) return; go(e.data); });")
     unguarded = "window.addEventListener('message', (e) => { go(e.data); });"
     assert lint_source(guarded, "x.js", [], True) == []
+    assert lint_source(guarded_origin, "x.js", [], True) == []
+    # inline handler whose whole body lacks source/origin -> ERROR (a fact)
     assert _rules(lint_source(unguarded, "x.js", [], True)) == [
+        ("error", "unguarded-message-listener")]
+
+
+def test_delegated_message_handler_is_warn_not_error():
+    # handler passed by reference -- its body (and any source check) is hidden,
+    # so we can only warn, never hard-error.
+    src = "window.addEventListener('message', createErrorHandler(panel));"
+    assert _rules(lint_source(src, "x.js", [], True)) == [
         ("warn", "unguarded-message-listener")]
 
 
-def test_shared_object_monkeypatch_warns_but_own_class_does_not():
-    # patching a shared global -> warn
+def test_postmessage_type_receiver_split():
+    # Pairwise send to YOUR OWN iframe's contentWindow: cannot collide with any
+    # other pack's listener -> no finding, prefixed or not.
+    pairwise = 'iframe.contentWindow.postMessage({ type: "LOAD_MESH", x: 1 }, "*");'
+    assert lint_source(pairwise, "x.js", ["geometrypack"], True) == []
+    # Shared receivers (parent / window / unknown): unprefixed type -> error.
+    shared = 'window.parent.postMessage({ type: "SCREENSHOT" }, "*");'
+    assert _rules(lint_source(shared, "x.js", ["geometrypack"], True)) == [
+        ("error", "unprefixed-message-type")]
+    # prefixed with the namespace + colon -> clean
+    ok = 'window.parent.postMessage({ type: "geometrypack:SCREENSHOT" }, "*");'
+    assert lint_source(ok, "x.js", ["geometrypack"], True) == []
+    # only a guessed namespace (not declared) -> advisory warn, not error
+    assert _rules(lint_source(shared, "x.js", ["geometrypack"], False)) == [
+        ("warn", "unprefixed-message-type")]
+    # a message object built from a variable is not a literal -> not flagged
+    assert lint_source('window.parent.postMessage(msg, "*");',
+                       "x.js", ["geometrypack"], True) == []
+
+
+def test_shared_object_monkeypatch_errors_but_own_class_does_not():
+    # Isolation standard: patching a shared global -> ERROR (nothing
+    # guarantees two packs' patches compose)
     assert _rules(lint_source("LiteGraph.prototype.onDrawForeground = f;", "x.js", [], True)) == [
-        ("warn", "shared-object-monkeypatch")]
+        ("error", "shared-object-monkeypatch")]
     assert _rules(lint_source("app.registerNodeType = f;", "x.js", [], True)) == [
-        ("warn", "shared-object-monkeypatch")]
+        ("error", "shared-object-monkeypatch")]
+    assert _rules(lint_source("api.apiURL = f;", "x.js", [], True)) == [
+        ("error", "shared-object-monkeypatch")]
     # overriding the node's OWN class prototype -> the normal pattern, not flagged
     assert lint_source("nodeType.prototype.onExecuted = f;", "x.js", [], True) == []
+
+
+def test_document_level_listener_is_error():
+    assert _rules(lint_source(
+        "document.addEventListener('paste', onPaste);", "x.js", [], True)) == [
+        ("error", "document-level-listener")]
+    assert _rules(lint_source(
+        "document.body.addEventListener('keydown', k);", "x.js", [], True)) == [
+        ("error", "document-level-listener")]
+    # listening on your OWN element is fine
+    assert lint_source("input.addEventListener('keydown', k);", "x.js", [], True) == []
+
+
+def test_shared_dom_injection_is_error():
+    assert _rules(lint_source(
+        "document.body.appendChild(menu);", "x.js", [], True)) == [
+        ("error", "shared-dom-injection")]
+    assert _rules(lint_source(
+        "document.head.append(style);", "x.js", [], True)) == [
+        ("error", "shared-dom-injection")]
+    # injecting into core's chrome DOM via a query chain
+    assert _rules(lint_source(
+        "document.querySelector('.comfy-menu').appendChild(panel);", "x.js", [], True)) == [
+        ("error", "shared-dom-injection")]
+    # appending inside your OWN widget DOM is the sanctioned pattern
+    assert lint_source("wrap.appendChild(menu);", "x.js", [], True) == []
+    assert lint_source("node.widgetContainer.append(el);", "x.js", [], True) == []
+
+
+def test_bare_import_specifier_warns():
+    assert _rules(lint_source("import * as THREE from 'three';", "x.js", [], True)) == [
+        ("warn", "unresolvable-bare-import")]
+    # relative and absolute imports resolve fine
+    assert lint_source("import { app } from '../../scripts/app.js';", "x.js", [], True) == []
+    assert lint_source("import x from '/extensions/pack/js/x.js';", "x.js", [], True) == []
 
 
 def test_mjs_files_are_not_scanned(tmp_path):
@@ -106,3 +180,31 @@ def test_web_dir_scan_reports_relative_paths(tmp_path):
     assert len(findings) == 1
     assert findings[0].file == "js/leak.js"
     assert findings[0].level == "error"
+
+
+# --- DisplayName-derived namespace (the pack's required prefix) ---
+from comfy_test.orchestration.levels.javascript import _display_namespace
+
+
+def _pyproject(tmp_path, body):
+    (tmp_path / "pyproject.toml").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def test_display_namespace_from_display_name(tmp_path):
+    p = _pyproject(tmp_path, '[tool.comfy]\nDisplayName = "GeometryPack"\n')
+    assert _display_namespace(p) == "geometrypack"
+
+
+def test_display_namespace_strips_spaces_and_punctuation(tmp_path):
+    p = _pyproject(tmp_path, '[tool.comfy]\nDisplayName = "My 3D Nodes!"\n')
+    assert _display_namespace(p) == "my3dnodes"
+
+
+def test_display_namespace_falls_back_to_project_name_minus_comfyui(tmp_path):
+    p = _pyproject(tmp_path, '[project]\nname = "comfyui-geometrypack"\n')
+    assert _display_namespace(p) == "geometrypack"
+
+
+def test_display_namespace_none_without_identity(tmp_path):
+    assert _display_namespace(tmp_path) is None  # no pyproject at all

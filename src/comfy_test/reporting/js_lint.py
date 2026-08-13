@@ -19,6 +19,15 @@ Severity, per the static-analysis-lies doctrine:
   - error: unambiguous, literal violations a parser cannot be wrong about
            (a literal ``window.X =``, a literal ``registerExtension("name")``).
   - warn:  heuristics that dynamic JS can defeat in either direction.
+
+The standard enforced is ISOLATION: until ComfyUI provides sanctioned hooks
+for shared surfaces, a pack's main-realm JS may not touch anything it does
+not own -- no window/globalThis writes (namespaced or not), no patches on
+shared objects (LiteGraph/app/api), no appends into the shared document
+(use the Popover API for overlays; keep elements in your own widget DOM),
+no document-level listeners. What remains allowed is exactly the glue tier:
+registerExtension under the pack's namespace, widget DOM inside the node,
+iframes, and guarded pairwise postMessage.
 """
 
 from __future__ import annotations
@@ -35,7 +44,22 @@ _ALLOWED_GLOBAL_PROPS = {"__THREE__"}  # three.js's own multi-instance guard fla
 # every other pack. Overriding a method on the node's OWN class prototype
 # (nodeType.prototype.onExecuted, the standard extension pattern) is per-node
 # and safe, so it is NOT flagged -- only patches rooted at these globals are.
-_SHARED_PROTOTYPE_ROOTS = {"LiteGraph", "LGraphCanvas", "LGraphNode", "LGraph", "app"}
+_SHARED_PROTOTYPE_ROOTS = {"LiteGraph", "LGraphCanvas", "LGraphNode", "LGraph", "app", "api"}
+
+# DOM-insertion methods: calling one of these with a callee rooted at
+# `document` (document.body.appendChild, document.head.append,
+# document.querySelector(...).appendChild, ...) injects into the SHARED
+# document -- DOM the pack does not own.
+_DOM_INSERT_METHODS = {"appendChild", "append", "prepend", "insertBefore",
+                       "insertAdjacentElement", "insertAdjacentHTML", "replaceChildren"}
+
+# Handler node types whose whole body we can see. If such a handler literally
+# never references event.source/.origin, "unguarded" is a fact, not a guess ->
+# error. A handler passed by reference (identifier / factory call) hides its
+# body, so we can only warn.
+_INLINE_FN_TYPES = {"arrow_function", "function", "function_expression",
+                    "function_declaration", "generator_function",
+                    "generator_function_declaration"}
 
 
 def _member_root(node) -> Optional[str]:
@@ -148,6 +172,21 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
     for node in _walk(tree.root_node):
         line = node.start_point[0] + 1
 
+        # --- bare import specifier in an auto-imported main-realm file ---
+        # `import * as THREE from 'three'` only resolves if an import map maps
+        # it -- and pack import maps live in iframe HTML, not the main page.
+        # Classic symptom of iframe-internal code leaking into the auto-import
+        # glob (seen in the wild: ComfyUI-3D-Pack).
+        if node.type == "import_statement":
+            src = _string_literal_value(node.child_by_field_name("source"))
+            if src is not None and not src.startswith((".", "/")):
+                findings.append(Finding(
+                    "warn", "unresolvable-bare-import", rel_path, line,
+                    f"imports bare specifier '{src}' -- the main realm has no "
+                    f"import map for it, so this file will throw when ComfyUI "
+                    f"auto-imports it. If it is iframe-only code, rename it to "
+                    f".mjs so it leaves the auto-import glob."))
+
         # --- global writes: window.X = / globalThis.X = ---
         if node.type == "assignment_expression":
             lhs = node.child_by_field_name("left")
@@ -156,13 +195,16 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
                 prop = lhs.child_by_field_name("property")
                 if obj is not None and _text(obj) in ("window", "globalThis") and prop is not None:
                     pname = _text(prop)
-                    if pname not in _ALLOWED_GLOBAL_PROPS and not _is_namespaced(pname, namespaces):
+                    # Isolation standard: NO globals at all, namespaced or not.
+                    # Until the platform offers a sanctioned shared-state API,
+                    # module scope + iframes cover every legitimate need.
+                    if pname not in _ALLOWED_GLOBAL_PROPS:
                         findings.append(Finding(
                             "error", "global-write", rel_path, line,
                             f"writes {_text(obj)}.{pname} into the shared main realm "
-                            f"(auto-imported .js). Keep it iframe-local, rename the "
-                            f"file to .mjs so ComfyUI does not auto-import it, or "
-                            f"namespace the global."))
+                            f"(auto-imported .js). Keep state in module scope, or keep "
+                            f"the code iframe-local (rename the file to .mjs so ComfyUI "
+                            f"does not auto-import it)."))
 
         # --- calls: registerExtension / customElements.define ---
         if node.type == "call_expression":
@@ -183,6 +225,29 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
                         name_sev, "unnamespaced-custom-element", rel_path, line,
                         f"customElements.define(\"{name}\") is not namespaced -- "
                         f"duplicate names throw across packs."))
+            # --- document-level listeners: document(.body).addEventListener ---
+            # The document is shared: N packs handling the same paste/keydown/
+            # drop race each other. Listen on your OWN elements instead.
+            elif callee.startswith("document.") and callee.endswith(".addEventListener"):
+                findings.append(Finding(
+                    "error", "document-level-listener", rel_path, line,
+                    f"{callee}(...) attaches a listener to the shared document -- "
+                    f"every pack's events flow through it. Attach the listener to "
+                    f"an element your pack owns."))
+            # --- DOM injection into the shared document ---
+            # document.body.appendChild(...), document.head.append(...),
+            # document.querySelector(...).appendChild(...): inserting into DOM
+            # the pack does not own. For floating overlays use the Popover API
+            # on an element inside your own widget DOM (top layer escapes the
+            # canvas transform without touching document.body).
+            elif callee.startswith("document.") and \
+                    callee.rsplit(".", 1)[-1].split("?")[0] in _DOM_INSERT_METHODS:
+                findings.append(Finding(
+                    "error", "shared-dom-injection", rel_path, line,
+                    f"{callee}(...) inserts into the shared document. Keep elements "
+                    f"inside your own widget DOM; for floating overlays use the "
+                    f"Popover API (showPopover renders in the top layer without "
+                    f"appending to document.body)."))
             # --- message listeners: window.addEventListener("message", fn) ---
             elif callee in ("window.addEventListener", "addEventListener") \
                     or callee.endswith(".addEventListener"):
@@ -191,26 +256,69 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
                     real = [c for c in args.children if c.type not in ("(", ")", ",")]
                     if real and _string_literal_value(real[0]) == "message":
                         handler = real[1] if len(real) > 1 else None
-                        if handler is not None and ".source" not in _text(handler):
-                            findings.append(Finding(
-                                "warn", "unguarded-message-listener", rel_path, line,
-                                "window 'message' listener without an event.source "
-                                "check -- fires for every pack's iframe messages, not "
-                                "just yours."))
+                        if handler is not None and ".source" not in _text(handler) \
+                                and ".origin" not in _text(handler):
+                            if handler.type in _INLINE_FN_TYPES:
+                                # whole body visible + no source/origin -> a fact
+                                findings.append(Finding(
+                                    "error", "unguarded-message-listener", rel_path, line,
+                                    "window 'message' listener with no event.source / "
+                                    "event.origin check -- it fires for EVERY pack's "
+                                    "iframe messages, not just yours. Add "
+                                    "'if (e.source !== myIframe.contentWindow) return;' "
+                                    "at the top of the handler."))
+                            else:
+                                # handler passed by reference -- body hidden, can't be sure
+                                findings.append(Finding(
+                                    "warn", "unguarded-message-listener", rel_path, line,
+                                    "window 'message' listener delegates to a named "
+                                    "handler; make sure it checks event.source "
+                                    "(can't verify statically)."))
+            # --- postMessage to a SHARED receiver: message TYPE must be namespaced ---
+            # Receiver-split (an AST-literal fact): posting to your own iframe's
+            # `X.contentWindow` is pairwise delivery -- no other pack's listener
+            # can ever receive it, so an unprefixed type there collides with
+            # nothing. Only posts to shared receivers (window, parent, or an
+            # unknown target) can land in other packs' listeners.
+            elif callee.endswith(".postMessage") or callee == "postMessage":
+                if ".contentWindow" in callee:
+                    pass  # pairwise: cannot collide
+                else:
+                    args = node.child_by_field_name("arguments")
+                    if args is not None:
+                        real = [c for c in args.children if c.type not in ("(", ")", ",")]
+                        if real and real[0].type == "object":
+                            for pair in real[0].children:
+                                if pair.type != "pair":
+                                    continue
+                                key = pair.child_by_field_name("key")
+                                if key is None or _text(key).strip("\"'") != "type":
+                                    continue
+                                val = _string_literal_value(pair.child_by_field_name("value"))
+                                if val is not None and not _is_namespaced(val, namespaces):
+                                    sugg = f"{namespaces[0]}:{val}" if namespaces else f"<ns>:{val}"
+                                    findings.append(Finding(
+                                        name_sev, "unprefixed-message-type", rel_path, line,
+                                        f"postMessage type '{val}' to a shared receiver "
+                                        f"({callee.rsplit('.', 1)[0] or 'window'}) is not "
+                                        f"namespaced -- prefix it (e.g. '{sugg}') so a "
+                                        f"listener in another pack cannot match it."))
 
-        # --- monkeypatch of a SHARED object's method (chaining unverifiable) ---
-        # Only patches rooted at a shared global (LiteGraph, app, ...) collide;
-        # overriding the node's own class prototype is the normal, safe pattern.
+        # --- monkeypatch of a SHARED object (LiteGraph, app, api, ...) ---
+        # Isolation standard: patching objects every pack sees is not accepted
+        # -- there is no way to guarantee two packs' patches compose. Only
+        # overriding the node's OWN class prototype (nodeType.prototype.onX,
+        # the standard extension pattern) is per-node and stays allowed.
         if node.type == "assignment_expression":
             lhs = node.child_by_field_name("left")
             if lhs is not None and lhs.type == "member_expression":
                 if _member_root(lhs) in _SHARED_PROTOTYPE_ROOTS:
                     findings.append(Finding(
-                        "warn", "shared-object-monkeypatch", rel_path, line,
-                        f"assigns {_text(lhs)} on a shared global -- if this "
-                        f"overrides a method other packs rely on, capture and call "
-                        f"the original (apply(this, arguments)) so you don't "
-                        f"clobber them."))
+                        "error", "shared-object-monkeypatch", rel_path, line,
+                        f"assigns {_text(lhs)} on a shared global -- other packs "
+                        f"(and ComfyUI itself) rely on it, and nothing guarantees "
+                        f"your patch composes with theirs. There is currently no "
+                        f"safe way to do this from a pack."))
 
     return findings
 
