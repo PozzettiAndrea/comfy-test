@@ -32,9 +32,10 @@ iframes, and guarded pairwise postMessage.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 # Property names on window/globalThis that are the platform's, not a pack's --
 # writing these is legitimate and must not be flagged.
@@ -208,13 +209,71 @@ def _callee_str(call_node) -> str:
     return _text(fn) if fn is not None else ""
 
 
+def _css_selector_is_scoped(selector: str, namespaces: List[str]) -> bool:
+    """A CSS selector is 'scoped' only if it pins to a class / id / attribute
+    namespaced to the pack, so it can match ONLY the pack's own elements. A bare
+    type selector ('select'), the universal ('*'), or an unnamespaced class
+    ('.panel') matches page-wide -- CSS is global no matter where the <style>
+    lives (short of a shadow root)."""
+    for ns in namespaces:
+        if re.search(r"[.#]" + re.escape(ns) + r"[\w-]*", selector):
+            return True                       # .nsFoo  #ns-foo
+        if re.search(r"\[\s*(data-)?" + re.escape(ns), selector):
+            return True                       # [data-ns...]  [ns...]
+    return False
+
+
+def _scan_css_text(css: str, rel_path: str, line: int, namespaces: List[str],
+                   name_sev: str, findings: List["Finding"]) -> int:
+    """Scan a CSS blob for page-global selectors. Returns the number of rule
+    selector-lists inspected (0 => nothing parseable, caller may warn instead)."""
+    css = re.sub(r"/\*.*?\*/", " ", css, flags=re.S)      # strip comments
+    seen = 0
+    for m in re.finditer(r"([^{}]+)\{", css):
+        prelude = m.group(1).strip()
+        if not prelude or prelude.startswith("@"):
+            continue                          # at-rule prelude (@media/@keyframes/...)
+        seen += 1
+        for sel in prelude.split(","):
+            sel = sel.strip()
+            if not sel or re.fullmatch(r"\d+%|from|to", sel):
+                continue                      # keyframe steps, not selectors
+            if _css_selector_is_scoped(sel, namespaces):
+                continue
+            sugg = f".{namespaces[0]}-..." if namespaces else ".<ns>-..."
+            findings.append(Finding(
+                name_sev, "global-css", rel_path, line,
+                f"injected CSS selector '{sel}' is not scoped to this pack -- it "
+                f"restyles matching elements across the WHOLE page, every other "
+                f"pack's UI included. Scope it to a namespaced class/id "
+                f"(e.g. '{sugg}'), or keep styling inline / in a shadow root."))
+    return seen
+
+
+# Member-expression forms that unambiguously reference a ComfyUI NODE identity
+# (not a widget/input/field .name), used by the foreign-node-hook rule.
+def _is_node_identity_member(mem, node) -> bool:
+    prop = mem.child_by_field_name("property")
+    if prop is None:
+        return False
+    pname = _text(prop)
+    if pname == "comfyClass":
+        return True                           # nodeType.comfyClass -- always a node
+    obj = mem.child_by_field_name("object")
+    return pname == "name" and obj is not None and _text(obj) in ("nodeData", "nodeType")
+
+
 def lint_source(text: str, rel_path: str, namespaces: List[str],
-                namespaces_declared: bool) -> List[Finding]:
+                namespaces_declared: bool,
+                node_ids: Optional[Set[str]] = None) -> List[Finding]:
     """Lint one .js source string. Returns findings.
 
     namespaces_declared: when False (pack did not declare its JS namespaces),
     the name-prefix rules are downgraded to warnings -- we cannot hard-error on
     a prefix we only guessed.
+    node_ids: the pack's own ComfyUI node ids. When provided, the foreign-node-
+    hook rule fires on registrations that target a node not in this set. None or
+    empty -> the rule is skipped (we can't tell own from foreign).
     """
     parser = _parser()
     tree = parser.parse(text.encode("utf-8"))
@@ -224,6 +283,8 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
     # global-object identifiers active in THIS file (aliases only count when the
     # file doesn't shadow them with a local binding).
     global_objs = _GLOBAL_OBJECTS | (_GLOBAL_OBJECT_ALIASES - bound)
+    css_injected_line: Optional[int] = None   # first <style>/insertRule/createElement('style')
+    css_rules_scanned = 0                      # >0 => we actually inspected selectors
 
     for node in _walk(tree.root_node):
         line = node.start_point[0] + 1
@@ -444,6 +505,71 @@ def lint_source(text: str, rel_path: str, namespaces: List[str],
                         f"your patch composes with theirs. There is currently no "
                         f"safe way to do this from a pack."))
 
+        # --- injected CSS: a <style> literal, insertRule(), createElement('style'),
+        # or new CSSStyleSheet() delivers PAGE-GLOBAL css into the shared realm ---
+        _lit = _string_literal_value(node) if node.type in ("string", "template_string") else None
+        if _lit and "<style" in _lit.lower():
+            css_injected_line = css_injected_line or line
+            for m in re.finditer(r"<style[^>]*>(.*?)</style>", _lit, flags=re.S | re.I):
+                css_rules_scanned += _scan_css_text(m.group(1), rel_path, line,
+                                                    namespaces, name_sev, findings)
+        if node.type == "call_expression":
+            _c = _callee_str(node)
+            if _c.endswith(".insertRule"):
+                css_injected_line = css_injected_line or line
+                _a = node.child_by_field_name("arguments")
+                _f = next((x for x in _a.children if x.type not in ("(", ")", ",")), None) if _a else None
+                _rule = _string_literal_value(_f) if _f is not None else None
+                if _rule is not None:
+                    css_rules_scanned += _scan_css_text(_rule, rel_path, line,
+                                                        namespaces, name_sev, findings)
+            elif _c.endswith("createElement") or _c == "createElement":
+                _a = node.child_by_field_name("arguments")
+                _f = next((x for x in _a.children if x.type not in ("(", ")", ",")), None) if _a else None
+                if _f is not None and (_string_literal_value(_f) or "").lower() == "style":
+                    css_injected_line = css_injected_line or line
+        if node.type == "new_expression":
+            _ctor = node.child_by_field_name("constructor")
+            if _ctor is not None and _text(_ctor) == "CSSStyleSheet":
+                css_injected_line = css_injected_line or line
+
+        # --- foreign-node hooking: registering UI for a node this pack does not
+        # ship (the squat). Needs node_ids to tell own from foreign. ---
+        if node_ids:
+            if node.type == "binary_expression":
+                _op = node.child_by_field_name("operator")
+                if _op is not None and _text(_op) in ("===", "!==", "==", "!="):
+                    _l, _r = node.child_by_field_name("left"), node.child_by_field_name("right")
+                    for _a, _b in ((_l, _r), (_r, _l)):
+                        _v = _string_literal_value(_a)
+                        if _v is not None and _b is not None and _b.type == "member_expression" \
+                                and _is_node_identity_member(_b, node) and _v not in node_ids:
+                            findings.append(Finding(
+                                "error", "foreign-node-hook", rel_path, line,
+                                f"hooks node '{_v}', which this pack does not ship -- it is "
+                                f"either dead (the node was removed/renamed) or it squats "
+                                f"another pack's node. Only hook nodes your pack registers."))
+                            break
+            elif node.type == "pair":
+                _key = node.child_by_field_name("key")
+                _kn = _text(_key).strip("\"'") if _key is not None else ""
+                if _kn in ("nodeName", "comfyClass"):
+                    _v = _string_literal_value(node.child_by_field_name("value"))
+                    if _v is not None and _v not in node_ids:
+                        findings.append(Finding(
+                            "error", "foreign-node-hook", rel_path, line,
+                            f"targets node '{_v}' (via {_kn}), which this pack does not "
+                            f"ship -- it is either dead (removed/renamed) or squats another "
+                            f"pack's node. Only hook nodes your pack registers."))
+
+    # A stylesheet was injected but its CSS wasn't a static literal we could read.
+    if css_injected_line is not None and css_rules_scanned == 0:
+        findings.append(Finding(
+            "warn", "unscoped-css-injection", rel_path, css_injected_line,
+            "injects a stylesheet into the main realm but its CSS is not a static "
+            "literal, so selectors can't be verified -- ensure every selector is "
+            "namespaced to this pack (or keep styling inline / in a shadow root)."))
+
     return findings
 
 
@@ -461,11 +587,14 @@ def _relative_imports(text: str) -> List[str]:
 
 
 def lint_web_dir(web_dir: Path, namespaces: List[str],
-                 namespaces_declared: bool) -> List[Finding]:
+                 namespaces_declared: bool,
+                 node_ids: Optional[Set[str]] = None) -> List[Finding]:
     """Lint every auto-imported .js under web_dir, PLUS any .mjs reachable by a
     relative import from those .js. ComfyUI's glob is **/*.js, so a bare .mjs
     never enters the main realm on its own -- but a .js that `import`s one pulls
-    it in, so a leaking file cannot hide behind the .mjs extension."""
+    it in, so a leaking file cannot hide behind the .mjs extension.
+
+    node_ids: the pack's own node ids, forwarded to the foreign-node-hook rule."""
     findings: List[Finding] = []
     web_dir = Path(web_dir)
 
@@ -487,7 +616,7 @@ def lint_web_dir(web_dir: Path, namespaces: List[str],
             continue
         scanned.add(js.resolve())
         findings.extend(lint_source(text, js.relative_to(web_dir).as_posix(),
-                                    namespaces, namespaces_declared))
+                                    namespaces, namespaces_declared, node_ids))
         _follow(js, text)
 
     # BFS through .mjs -> .mjs imports as well.
@@ -503,7 +632,7 @@ def lint_web_dir(web_dir: Path, namespaces: List[str],
             rel = mjs.relative_to(web_dir).as_posix()
         except ValueError:
             rel = mjs.name
-        findings.extend(lint_source(text, rel, namespaces, namespaces_declared))
+        findings.extend(lint_source(text, rel, namespaces, namespaces_declared, node_ids))
         _follow(mjs, text)
 
     return findings

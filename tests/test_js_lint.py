@@ -276,3 +276,73 @@ def test_display_namespace_falls_back_to_project_name_minus_comfyui(tmp_path):
 
 def test_display_namespace_none_without_identity(tmp_path):
     assert _display_namespace(tmp_path) is None  # no pyproject at all
+
+
+# --- injected CSS: page-global selectors ---
+
+def test_global_css_selectors_are_flagged():
+    # a bare type selector and the universal restyle the whole page
+    assert _rules(lint_source(
+        "const s = `<style>select { background:red }</style>`;", "x.js", ["gp"], True)) == [
+        ("error", "global-css")]
+    assert _rules(lint_source(
+        'el.innerHTML = "<style>* { margin:0 }</style>";', "x.js", ["gp"], True)) == [
+        ("error", "global-css")]
+    assert _rules(lint_source(
+        'sheet.insertRule("button { color:red }", 0);', "x.js", ["gp"], True)) == [
+        ("error", "global-css")]
+
+
+def test_css_scoped_to_pack_namespace_is_allowed():
+    assert lint_source(
+        "const s = `<style>.gp-panel select { color:#ccc }</style>`;", "x.js", ["gp"], True) == []
+    assert lint_source('sheet.insertRule(".gp-x { color:red }", 0);', "x.js", ["gp"], True) == []
+
+
+def test_inline_styles_are_not_css_injection():
+    # setting element.style is scoped to that element -> never flagged
+    assert lint_source('el.style.cssText = "color:red"; el.style.margin = "0";',
+                       "x.js", ["gp"], True) == []
+
+
+def test_css_injection_with_dynamic_content_warns():
+    # a <style> whose CSS isn't a static literal -> can't verify -> advisory warn
+    assert _rules(lint_source(
+        'const s = document.createElement("style"); s.textContent = cssVar;',
+        "x.js", ["gp"], True)) == [("warn", "unscoped-css-injection")]
+
+
+# --- foreign-node hooking (the squat) ---
+
+NODE_IDS = {"GeomPackPreviewMeshVTK", "GeomPackPreviewMeshVTKBatch"}
+
+
+def test_foreign_node_hook_by_comparison():
+    assert _rules(lint_source(
+        'if (nodeData.name === "SomeOtherPackNode") hook();',
+        "x.js", ["gp"], True, NODE_IDS)) == [("error", "foreign-node-hook")]
+    assert _rules(lint_source(
+        'if (nodeType.comfyClass === "UniRigThing") x();',
+        "x.js", ["gp"], True, NODE_IDS)) == [("error", "foreign-node-hook")]
+
+
+def test_foreign_node_hook_by_config_property():
+    assert _rules(lint_source(
+        'const NODES = [{ nodeName: "BVHViewer" }];',
+        "x.js", ["gp"], True, NODE_IDS)) == [("error", "foreign-node-hook")]
+
+
+def test_own_node_hook_is_allowed():
+    assert lint_source('if (nodeData.name === "GeomPackPreviewMeshVTK") hook();',
+                       "x.js", ["gp"], True, NODE_IDS) == []
+
+
+def test_non_node_dot_name_is_not_flagged():
+    # a widget/input .name (object is not nodeData/nodeType) must NOT be flagged
+    assert lint_source('if (w.name === "index") doThing();', "x.js", ["gp"], True, NODE_IDS) == []
+    assert lint_source('if (input.name === "folder_path") go();', "x.js", ["gp"], True, NODE_IDS) == []
+
+
+def test_foreign_node_rule_skipped_without_node_ids():
+    # no node ids known -> can't tell own from foreign -> rule does not fire
+    assert lint_source('if (nodeData.name === "Whatever") x();', "x.js", ["gp"], True, None) == []

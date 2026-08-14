@@ -97,6 +97,26 @@ def _resolve_web_dir(pack_dir: Path) -> Optional[Path]:
     return None
 
 
+def _collect_node_ids(pack_dir: Path) -> set:
+    """The pack's own ComfyUI node ids, so the foreign-node-hook rule can tell
+    a widget hooking its OWN node from one squatting another pack's node.
+
+    Reads both the V3 form (`node_id="X"` in define_schema) and the legacy
+    `NODE_CLASS_MAPPINGS` dict keys / index assignments, across the pack's .py.
+    """
+    ids: set = set()
+    for py in pack_dir.rglob("*.py"):
+        try:
+            txt = py.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        ids.update(re.findall(r"""node_id\s*=\s*["']([^"']+)["']""", txt))
+        for block in re.findall(r"NODE_CLASS_MAPPINGS\s*(?::[^=\n]+)?=\s*\{([^}]*)\}", txt, flags=re.S):
+            ids.update(re.findall(r"""["']([A-Za-z0-9_.\-]+)["']\s*:""", block))
+        ids.update(re.findall(r"""NODE_CLASS_MAPPINGS\s*\[\s*["']([^"']+)["']\s*\]""", txt))
+    return ids
+
+
 def run(ctx: LevelContext) -> LevelContext:
     """Run the JAVASCRIPT collision lint. Raises TestError on any error finding."""
     from ...reporting.js_lint import lint_web_dir
@@ -133,10 +153,11 @@ def run(ctx: LevelContext) -> LevelContext:
                 f"treating name rules as advisory. Add a [tool.comfy] DisplayName "
                 f"to enforce them.")
 
+    node_ids = _collect_node_ids(pack_dir)
     ctx.log(f"[javascript] scanning {web_dir.relative_to(pack_dir)}/ "
             f"({len(list(web_dir.rglob('*.js')))} .js files) "
-            f"namespaces={namespaces}")
-    findings = lint_web_dir(web_dir, namespaces, declared_flag)
+            f"namespaces={namespaces} node_ids={len(node_ids)}")
+    findings = lint_web_dir(web_dir, namespaces, declared_flag, node_ids or None)
     errors = [f for f in findings if f.level == "error"]
     warns = [f for f in findings if f.level == "warn"]
 
