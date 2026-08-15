@@ -337,12 +337,20 @@ def run(ctx: LevelContext) -> LevelContext:
         except Exception as e:
             print(f"[commit_hash debug] exception: {e!r}", flush=True)
 
+    from ...common.config import build_provenance
+    provenance = build_provenance(
+        ctx.config, install_mode="attach" if ctx.server_url else "fresh")
+
     results_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "platform": ctx.platform_name,
         "hardware": hardware,
         "comfyui_version": ctx.comfyui_version,
+        # SHA of the PACK under test (kept under the legacy name the dashboard
+        # reads); ComfyUI's own SHA is provenance.comfyui_commit.
         "commit_hash": commit_hash,
+        "comfyui_commit": ctx.comfyui_commit,
+        "provenance": provenance,
         # GHA run that produced this result. Dashboard's Goto-mode reads it
         # to deep-link cells back to the run. Set by dispatch-test.yml's
         # job-level env (github.* expansion).

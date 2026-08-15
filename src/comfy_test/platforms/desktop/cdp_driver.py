@@ -3903,6 +3903,35 @@ def _comfyui_version():
     except Exception:
         return None
 
+def _build_provenance():
+    """Run provenance for the Desktop lane.
+
+    Standalone (this script is injected and runs inside the app's own Python),
+    so it mirrors common.config.build_provenance rather than importing it. The
+    Desktop app bundles its own interpreter and torch, so we report what is
+    actually running instead of comfy-test's pins.
+    """
+    try:
+        import torch as _t
+        _torch_ver = getattr(_t, "__version__", None)
+    except Exception:
+        _torch_ver = None
+    try:
+        from importlib.metadata import version as _pkg_version
+        _ct_ver = _pkg_version("comfy-test")
+    except Exception:
+        _ct_ver = None
+    import sys as _sys
+    return {
+        "comfy_test_version": _ct_ver,
+        "python_version": f"{_sys.version_info.major}.{_sys.version_info.minor}",
+        "torch_version": _torch_ver,      # observed, not pinned by us
+        "torch_triple": None,
+        "install_mode": "desktop",        # installed via the app's Manager
+        "levels": ["execution"],
+    }
+
+
 _passed = sum(1 for w in _workflow_results if w.get("status") == "pass")
 # Anything that is not a pass counts as failed -- 'timeout' and 'rejected'
 # included. Counting only status=='fail' reported success=true with a
@@ -3918,6 +3947,12 @@ _results_data = {
     # GHA run URL for Goto-mode in the dashboard. Set by dispatch-test.yml's
     # job-level env (github.* expansion).
     "run_url":     os.environ.get("COMFY_TEST_RUN_URL") or None,
+    # What was actually tested. Desktop runs outside the orchestrator (no
+    # TestConfig): the app ships its own bundled Python and torch, so the
+    # interpreter is reported from the running process and the torch pin is
+    # not ours to claim. install_mode is "desktop" -- the pack is installed
+    # through the app's own Manager, not by comfy-test.
+    "provenance":  _build_provenance(),
     "success":     _failed == 0 and _passed > 0,
     "summary":     {"total": len(_workflow_results), "passed": _passed, "failed": _failed},
     "workflows":   _workflow_results,

@@ -1,6 +1,8 @@
 """Configuration dataclasses for installation tests."""
 
+import os
 import random
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -449,3 +451,58 @@ class TestConfig:
         if p is None:
             raise ValueError(f"Unknown platform: {platform}")
         return getattr(self, p.config_key)
+
+
+def build_provenance(config=None, install_mode: str = "fresh") -> dict:
+    """What was ACTUALLY tested -- the fields that make a result reproducible.
+
+    Without these a red cell is uninterpretable and un-rerunnable: the
+    interpreter is drawn at random per run (`_random_python_version`), ComfyUI
+    is an unpinned shallow HEAD clone, hosted CPU lanes attach to a prebuilt
+    cached env while CUDA/local lanes build their own, and comfy-test itself
+    floats on `pip install --upgrade`.
+
+    Args:
+        config: TestConfig, when available (None on the desktop CDP path,
+            which runs outside the orchestrator).
+        install_mode: "attach" when the lane prebuilt the env and handed us a
+            live server (INSTALL was a no-op, so a green result does NOT mean
+            "installs clean"), "fresh" when comfy-test built the venv itself.
+    """
+    try:
+        from importlib.metadata import version as _pkg_version
+        comfy_test_version = _pkg_version("comfy-test")
+    except Exception:
+        comfy_test_version = None
+
+    python_version = getattr(config, "python_version", None) if config else None
+    if python_version is None:
+        python_version = os.environ.get("COMFY_TEST_PYTHON_VERSION") or (
+            f"{sys.version_info.major}.{sys.version_info.minor}")
+
+    torch_version = getattr(config, "torch_version", None) if config else None
+    torch_triple = None
+    # Only claim a triple when a version was actually requested -- resolving
+    # None yields the DEFAULT pin, and reporting that for a run we did not pin
+    # (e.g. the Desktop app's bundled torch) would be a lie.
+    if torch_version:
+        try:
+            triple = resolve_torch_triple(torch_version)
+            if triple:
+                torch_triple = {"torch": triple[0], "torchvision": triple[1],
+                                "torchaudio": triple[2]}
+        except Exception:
+            pass
+
+    levels = None
+    if config is not None and getattr(config, "levels", None):
+        levels = [getattr(lvl, "value", str(lvl)) for lvl in config.levels]
+
+    return {
+        "comfy_test_version": comfy_test_version,
+        "python_version": python_version,
+        "torch_version": torch_version,
+        "torch_triple": torch_triple,
+        "install_mode": install_mode,
+        "levels": levels,
+    }

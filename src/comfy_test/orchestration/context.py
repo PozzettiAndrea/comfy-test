@@ -59,6 +59,10 @@ class LevelContext:
     # pyproject.toml at INSTALL, refined from the live server's /system_stats at
     # REGISTRATION. Written into results.json for provenance.
     comfyui_version: Optional[str] = None
+    # ComfyUI's checked-out commit SHA. The pyproject version only moves on
+    # releases while we clone HEAD, so this is the field that actually
+    # identifies what was tested. None for the portable bundle (no .git).
+    comfyui_commit: Optional[str] = None
     env_vars: Optional[dict[str, str]] = None
 
     def with_updates(self, **kwargs) -> "LevelContext":

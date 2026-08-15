@@ -257,12 +257,19 @@ def run(ctx: LevelContext) -> LevelContext:
         except Exception:
             pass
 
+    from ...common.config import build_provenance
+
     results_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "platform": ctx.platform_name,
         "hardware": hardware,
         "comfyui_version": ctx.comfyui_version,
+        # SHA of the PACK under test; ComfyUI's own SHA is comfyui_commit.
         "commit_hash": commit_hash,
+        "comfyui_commit": ctx.comfyui_commit,
+        # What was actually tested -- see build_provenance().
+        "provenance": build_provenance(
+            ctx.config, install_mode="attach" if ctx.server_url else "fresh"),
         # GHA run URL for Goto-mode in the dashboard (see execution.py).
         "run_url": os.environ.get("COMFY_TEST_RUN_URL") or None,
         "success": all(r["status"] == "pass" for r in results if r["status"] != "skipped"),

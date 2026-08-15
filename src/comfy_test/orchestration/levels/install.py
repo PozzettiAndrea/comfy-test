@@ -134,8 +134,10 @@ def run(ctx: LevelContext) -> LevelContext:
     # Provenance: ComfyUI version from the cloned/extracted tree's pyproject
     # (REGISTRATION refines this from the live server's /system_stats).
     comfyui_version = _read_comfyui_version(paths.comfyui_dir)
+    comfyui_commit = _read_comfyui_commit(paths.comfyui_dir)
     if comfyui_version:
-        ctx.log(f"ComfyUI under test: {comfyui_version}")
+        ctx.log(f"ComfyUI under test: {comfyui_version}"
+                + (f" ({comfyui_commit[:12]})" if comfyui_commit else ""))
 
     return ctx.with_updates(
         platform=platform,
@@ -143,6 +145,7 @@ def run(ctx: LevelContext) -> LevelContext:
         cuda_packages=tuple(cuda_packages),
         env_vars=env_vars,
         comfyui_version=comfyui_version,
+        comfyui_commit=comfyui_commit,
     )
 
 
@@ -155,6 +158,24 @@ def _read_comfyui_version(comfyui_dir: Path) -> str | None:
             return tomllib.load(f).get("project", {}).get("version") or None
     except Exception:
         return None
+
+
+def _read_comfyui_commit(comfyui_dir: Path) -> str | None:
+    """ComfyUI's checked-out commit SHA.
+
+    The pyproject version only moves on releases, so many different HEADs
+    share one version string -- and comfy-test clones HEAD by default
+    (comfyui_version = "latest"). The SHA is the only field that identifies
+    what was actually tested. None for the portable bundle (no .git)."""
+    try:
+        import subprocess
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=comfyui_dir,
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            return r.stdout.strip() or None
+    except Exception:
+        pass
+    return None
 
 
 def _setup_full(
