@@ -140,64 +140,11 @@ jobs:
           cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -80 || true
           exit 1
 
-      # --- Install node via ComfyUI Manager CLI ---
-      # comfyui_manager imports `from comfy.cli_args import args` at module
-      # load. The `comfy` source package isn't in the venv — it lives in the
-      # bundled app at .../Resources/ComfyUI/. The desktop app puts that on
-      # PYTHONPATH at launch; running cm_cli standalone has to do the same.
-      - name: Install custom node via Manager
-        if: false  # disabled while we iterate on the wizard click-through demo
-        run: |
-          export PYTHONPATH="${{ github.workspace }}/ComfyUI.app/Contents/Resources/ComfyUI:$PYTHONPATH"
-          VENV="$HOME/Documents/ComfyUI/.venv/bin/python"
-          echo "Using Python: $VENV  PYTHONPATH=$PYTHONPATH"
-          $VENV --version
-          $VENV -m comfyui_manager.cm_cli install \
-            "https://github.com/${{ inputs.node_repo }}.git"
-
-      # --- Restart app for node to load ---
-      - name: Restart app
-        if: false
-        run: |
-          pkill -f "ComfyUI" || true
-          sleep 5
-          open "${{ github.workspace }}/ComfyUI.app"
-          echo "Waiting for server after restart..."
-          for i in $(seq 1 180); do
-            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
-              echo "Server ready after restart (${i}s)"
-              break
-            fi
-            sleep 1
-          done
-          curl -sf http://127.0.0.1:8000/system_stats || {
-            echo "Server failed to start after restart"
-            cat "$HOME/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -50
-            exit 1
-          }
-
-      # --- Install comfy-test and run ---
-      - name: Install comfy-test
-        if: false
-        run: |
-          # macOS ships BSD grep without -P; use bash parameter expansion.
-          VERSION="${GITHUB_WORKFLOW_REF##*@refs/tags/v}"
-          if [ "$VERSION" = "$GITHUB_WORKFLOW_REF" ]; then VERSION=""; fi
-          if [ -n "$VERSION" ]; then
-            pip3 install --upgrade "comfy-test==$VERSION"
-          else
-            pip3 install --upgrade comfy-test
-          fi
-
-      - name: Run tests
-        if: false
-        working-directory: ${{ github.workspace }}
-        run: |
-          # Clone node source for workflow files
-          git clone --depth 1 -b ${{ inputs.node_branch }} \
-            "https://github.com/${{ inputs.node_repo }}.git" node_source
-          cd node_source
-          python3 -m comfy_test run --server-url http://127.0.0.1:8000 --level execution
+      # NOTE: the ComfyUI-Manager install route was removed (2026-08).
+      # Manager could not install these packs, so the pack is cloned and
+      # installed by cdp_driver.py during 'First boot' above (git clone +
+      # pip + install.py, driven inside the app), which then runs the
+      # workflows. See ADR: Desktop is tested as the Electron app.
 
       # --- Cleanup ---
       - name: Finalize "system" card from latest CDP frame

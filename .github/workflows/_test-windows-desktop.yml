@@ -184,56 +184,12 @@ jobs:
           cat "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -80 || true
           exit 1
 
-      # --- Install node via ComfyUI Manager CLI ---
-      # See macOS workflow for the rationale: cm_cli imports from `comfy`,
-      # which is the bundled-app source dir, not a site-packages module.
-      - name: Install custom node via Manager
-        if: false  # disabled while we iterate on the wizard click-through demo
-        shell: bash
-        run: |
-          export PYTHONPATH="$LOCALAPPDATA/Programs/ComfyUI/resources/ComfyUI:$PYTHONPATH"
-          VENV="$USERPROFILE/Documents/ComfyUI/.venv/Scripts/python.exe"
-          echo "Using Python: $VENV  PYTHONPATH=$PYTHONPATH"
-          "$VENV" --version
-          "$VENV" -m comfyui_manager.cm_cli install \
-            "https://github.com/${{ inputs.node_repo }}.git"
+      # NOTE: the ComfyUI-Manager install route was removed (2026-08).
+      # Manager could not install these packs, so the pack is cloned and
+      # installed by cdp_driver.py during first boot (git clone + pip +
+      # install.py, driven inside the app), which then runs the workflows.
+      # See ADR: Desktop is tested as the Electron app.
 
-      # --- Restart app for node to load ---
-      - name: Restart app
-        if: false
-        shell: bash
-        run: |
-          taskkill //F //IM ComfyUI.exe 2>/dev/null || true
-          sleep 5
-          APP="$LOCALAPPDATA/Programs/ComfyUI/ComfyUI.exe"
-          "$APP" &
-          echo "Waiting for server after restart..."
-          for i in $(seq 1 180); do
-            if curl -s http://127.0.0.1:8000/system_stats > /dev/null 2>&1; then
-              echo "Server ready after restart (${i}s)"
-              break
-            fi
-            sleep 1
-          done
-          curl -sf http://127.0.0.1:8000/system_stats || {
-            echo "Server failed to start after restart"
-            cat "$USERPROFILE/Documents/ComfyUI/user/comfyui.log" 2>/dev/null | tail -50
-            exit 1
-          }
-
-      # --- Install comfy-test and run ---
-      - name: Install comfy-test
-        if: false
-        run: pip install comfy-test
-
-      - name: Run tests
-        if: false
-        shell: bash
-        run: |
-          git clone --depth 1 -b ${{ inputs.node_branch }} \
-            "https://github.com/${{ inputs.node_repo }}.git" node_source
-          cd node_source
-          python -m comfy_test run --server-url http://127.0.0.1:8000
 
       # --- Cleanup ---
       - name: Stop desktop screenshot loop + finalize "system" card
