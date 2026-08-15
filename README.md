@@ -46,14 +46,15 @@ comfy-test runs up to 10 test levels in sequence:
 | 2 | **COVERAGE** | Every registered node is used by at least one bundled workflow (opt-in: fails on unused nodes) |
 | 3 | **INSTALL** | Clone ComfyUI, create environment, install node + dependencies |
 | 4 | **REGISTRATION** | Start server, verify nodes appear in `/object_info` |
-| 5 | **INSTANTIATION** | Test each node's constructor |
-| 6 | **STATIC_CAPTURE** | Screenshot workflows (no execution) |
-| 7 | **VALIDATION** | 4-level workflow validation (schema, graph, introspection, partial execution) |
-| 8 | **EXECUTION_LIGHT** | Run workflows end-to-end, one screenshot each (no video; for weak runners — use instead of EXECUTION) |
-| 9 | **EXECUTION** | Run workflows end-to-end, capture outputs + per-frame video |
-| 10 | **CUSTOM** | Your own hook (`[test] custom = "tests/my_check.py"` exposing `run(ctx)`); runs last against the live server |
+| 5 | **JAVASCRIPT** | Frontend JS isolation lint (opt-in: no shared-realm writes, namespaced ids) |
+| 6 | **INSTANTIATION** | Test each node's constructor |
+| 7 | **STATIC_CAPTURE** | Screenshot workflows (no execution) |
+| 8 | **VALIDATION** | 3-level workflow validation (schema, graph, introspection) |
+| 9 | **EXECUTION_LIGHT** | Run workflows end-to-end, one screenshot each (no video; for weak runners — use instead of EXECUTION) |
+| 10 | **EXECUTION** | Run workflows end-to-end, capture outputs + per-frame video |
+| 11 | **CUSTOM** | Your own hook (`[test] custom = "tests/my_check.py"` exposing `run(ctx)`); runs last against the live server |
 
-The default set is levels 1, 3-7, 9 (`coverage` and `execution_light` are opt-in; `levels = "all"` runs
+The default set is levels 1, 3-4, 6-8, 10 (`coverage`, `javascript` and `custom` are opt-in; `levels = "all"` runs
 everything). Each level depends on previous levels. You can run up to a specific level with `--level`:
 
 ```bash
@@ -73,7 +74,7 @@ The VALIDATION level runs comprehensive checks before execution:
 
 ### Detecting CUDA Nodes
 
-To mark nodes as requiring CUDA (excluded from partial execution), use `comfy-env.toml`:
+To mark nodes as requiring CUDA (skipped on CPU lanes), use `comfy-env.toml`:
 
 ```toml
 [cuda]
@@ -106,7 +107,7 @@ platforms = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 # ComfyUI version to test against
 comfyui_version = "latest"  # or a tag like "v0.2.0" or commit hash
 
-# Python version (default: random from 3.11, 3.12, 3.13)
+# Python version (default: random from 3.10, 3.11, 3.12, 3.13)
 python_version = "3.11"
 
 # Test levels to run. Default: syntax, install, registration, instantiation,
@@ -159,9 +160,6 @@ Workflows are auto-discovered from the `workflows/` folder:
 ```bash
 # Install
 pip install comfy-test
-
-# Initialize config and GitHub workflow
-comfy-test init
 
 # Run tests locally
 comfy-test run --platform linux
