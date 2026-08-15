@@ -3,7 +3,7 @@
 Testing infrastructure for ComfyUI custom nodes.
 
 
-Test your nodes install and work correctly across **Linux**, **macOS**, **Windows**, and **Windows Portable**. No pytest code needed.
+Test your nodes install and work correctly across **Linux**, **macOS**, **macOS Desktop**, **Windows**, **Windows Portable**, and **Windows Desktop** -- on **CPU** and **CUDA**. No pytest code needed.
 
 ## Quick Start
 
