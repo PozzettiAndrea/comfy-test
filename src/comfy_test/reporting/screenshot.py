@@ -1,7 +1,6 @@
 """Workflow screenshot capture using headless browser."""
 
 import hashlib
-import io
 import json
 import os
 import subprocess
@@ -336,7 +335,8 @@ def ensure_dependencies(
         # Try uv first, then pip. Use --break-system-packages since comfy-test is a
         # CI tool and needs to install deps into whatever Python is running it.
         python = sys.executable
-        packages = ["playwright", "pillow", "greenlet"]
+        # imageio-ffmpeg ships the static ffmpeg the --video path encodes with.
+        packages = ["playwright", "pillow", "greenlet", "imageio-ffmpeg"]
 
         result = subprocess.run(
             ["uv", "pip", "install", "--python", python, "--break-system-packages"] + packages,
@@ -1651,33 +1651,32 @@ class WorkflowScreenshot:
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         frame_paths: List[Path] = []
-        frame_metadata = []
-        last_hash = None
-        frame_num = 0
 
-        def _save_frame_if_new(screenshot_bytes: bytes, timestamp: float, log_snap: str) -> bool:
-            """Hash screenshot, save as JPEG if different from last frame."""
-            nonlocal last_hash, frame_num
-            h = hashlib.md5(screenshot_bytes).hexdigest()
-            if h == last_hash:
-                return False
-            last_hash = h
-            jpg_path = output_dir / f"frame_{frame_num:03d}.jpg"
-            img = Image.open(io.BytesIO(screenshot_bytes))
-            # PNG screenshots open as RGBA; JPEG requires RGB.
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img.save(jpg_path, "JPEG", quality=webp_quality)
-            img.close()
-            frame_paths.append(jpg_path)
-            frame_metadata.append({
-                "file": jpg_path.name,
-                "time": timestamp,
-                "log": log_snap,
-            })
-            frame_num += 1
-            self._log(f"  Frame {frame_num} saved ({jpg_path.name}, t={timestamp:.1f}s)")
-            return True
+        # Fixed-cadence PNG capture -> timeline-accurate mp4, mirroring the
+        # desktop CDP driver. This is the only capture path (the old
+        # change-triggered, hash-deduped JPEG slideshow was removed).
+        VIDEO_FPS = 5
+        _video_interval = 1.0 / VIDEO_FPS
+        video_frame_num = 0
+        _last_video_capture = 0.0
+        # (png_path, t_elapsed) per captured frame -> timeline-accurate encode.
+        video_frames: List = []
+
+        def _save_video_frame(t_elapsed: float) -> bool:
+            """Snap a PNG frame at fixed cadence (no freeze, no dedup).
+
+            Records the frame's elapsed time so the encoder can reproduce real
+            timing (a frame captured before "run" holds until the next one).
+            """
+            nonlocal video_frame_num
+            video_frame_num += 1
+            png_path = output_dir / f"frame_{video_frame_num:06d}.png"
+            if self._safe_screenshot(str(png_path)):
+                video_frames.append((png_path, t_elapsed))
+                frame_paths.append(png_path)  # for the caller's frame count
+                return True
+            video_frame_num -= 1  # don't leave a hole in the frame_%06d sequence
+            return False
 
         # Quick rAF freeze/unfreeze for periodic captures (no sleep).
         # IMPORTANT: iframe callbacks must be SAVED, not discarded -- otherwise
@@ -1712,14 +1711,15 @@ class WorkflowScreenshot:
 
         try:
             capture_start = time.time()
+            # Expose the video's t=0 wall-clock so the caller can align the
+            # resource-monitor timeline to it (the monitor starts earlier, before
+            # the browser navigates to ComfyUI).
+            self._last_capture_start = capture_start
 
-            # Take initial frame (before execution)
-            try:
-                shot = self._page.screenshot(type="png", animations="disabled", scale="css")
-                log_snapshot = "\n".join(log_lines) if log_lines else ""
-                _save_frame_if_new(shot, 0.0, log_snapshot)
-            except Exception:
-                pass
+            # Anchor the mp4 to the pre-run graph (frame at t=0). The timeline
+            # encode holds it across the validate/queue window so the video
+            # doesn't skip the first seconds.
+            _save_video_frame(0.0)
 
             # Validate workflow using browser's graphToPrompt() conversion
             self._log("  Validating workflow...")
@@ -1732,11 +1732,8 @@ class WorkflowScreenshot:
             self._log("  Queuing workflow for execution...")
             self._page.evaluate("window.app.queuePrompt(0)")
 
-            # Capture loop -- screenshot on node events + periodic every 2s
+            # Capture loop -- fixed-cadence PNG frames while execution runs.
             last_executed_count = 0
-            last_screenshot_time = time.time()
-            PERIODIC_INTERVAL = 2.0
-
             loop_iter = 0
             ws_disconnected_since: Optional[float] = None  # timestamp of first WS disconnect
             WS_DEAD_TIMEOUT = 30  # seconds of sustained WS disconnect before aborting
@@ -1755,7 +1752,6 @@ class WorkflowScreenshot:
                 t_eval = time.time() - t0
 
                 elapsed = time.time() - capture_start
-                log_snapshot = "\n".join(log_lines) if log_lines else ""
 
                 # Detect server crash via WebSocket disconnect.
                 # readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED, -1=missing
@@ -1783,49 +1779,13 @@ class WorkflowScreenshot:
                         f"{_resource_snapshot()}"
                     )
 
-                # Screenshot on node completion (with freeze to avoid GPU stalls)
+                # Fixed-cadence PNG capture (no freeze, no dedup), encoded to an
+                # mp4 after execution. Mirrors the desktop driver.
+                if time.time() - _last_video_capture >= _video_interval:
+                    _save_video_frame(time.time() - capture_start)
+                    _last_video_capture = time.time()
                 if state["executedCount"] > last_executed_count:
-                    self._log(f"  Node executed ({state['executedCount']} total), capturing...")
-                    self._page.wait_for_timeout(150)  # let UI render
-                    elapsed = time.time() - capture_start
-                    try:
-                        t1 = time.time()
-                        self._page.evaluate(_QUICK_FREEZE_JS)
-                        t_freeze = time.time() - t1
-                        t1 = time.time()
-                        shot = self._page.screenshot(type="png", animations="disabled", scale="css")
-                        t_shot = time.time() - t1
-                        if not state["complete"]:
-                            t1 = time.time()
-                            self._page.evaluate(_QUICK_UNFREEZE_JS)
-                            t_unfreeze = time.time() - t1
-                        else:
-                            t_unfreeze = 0
-                        saved = _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
-                        self._log(f"  [capture-node] freeze={t_freeze*1000:.0f}ms shot={t_shot*1000:.0f}ms unfreeze={t_unfreeze*1000:.0f}ms saved={saved}")
-                    except Exception as e:
-                        self._log(f"  [capture-node] exception: {e}")
                     last_executed_count = state["executedCount"]
-                    last_screenshot_time = time.time()
-
-                # Periodic capture (with freeze to suppress animation noise)
-                elif time.time() - last_screenshot_time >= PERIODIC_INTERVAL:
-                    try:
-                        t1 = time.time()
-                        self._page.evaluate(_QUICK_FREEZE_JS)
-                        t_freeze = time.time() - t1
-                        t1 = time.time()
-                        shot = self._page.screenshot(type="png", animations="disabled", scale="css")
-                        t_shot = time.time() - t1
-                        t1 = time.time()
-                        self._page.evaluate(_QUICK_UNFREEZE_JS)
-                        t_unfreeze = time.time() - t1
-                        saved = _save_frame_if_new(shot, round(elapsed, 2), log_snapshot)
-                        if saved:
-                            self._log(f"  [capture-periodic] freeze={t_freeze*1000:.0f}ms shot={t_shot*1000:.0f}ms unfreeze={t_unfreeze*1000:.0f}ms saved=True")
-                    except Exception as e:
-                        self._log(f"  [capture-periodic] exception: {e}")
-                    last_screenshot_time = time.time()
 
                 if state["complete"]:
                     self._log(f"  Execution complete (t={elapsed:.1f}s)")
@@ -2047,19 +2007,14 @@ class WorkflowScreenshot:
                     self._embed_workflow(tmp_path, final_screenshot_path, workflow)
                     self._log(f"  Saved high-quality screenshot: {final_screenshot_path.name}")
 
-                    # Also save as final frame in video folder
-                    final_frame_path = output_dir / f"frame_{frame_num:03d}.jpg"
+                    # Append the hi-q final shot as the last frame of the PNG
+                    # sequence so the mp4 ends on the result.
+                    video_frame_num += 1
+                    final_frame_path = output_dir / f"frame_{video_frame_num:06d}.png"
                     img = Image.open(final_screenshot_path)
-                    if img.mode != "RGB":
-                        img = img.convert("RGB")
-                    img.save(final_frame_path, "JPEG", quality=webp_quality)
+                    img.save(final_frame_path, "PNG")
                     img.close()
-                    frame_paths.append(final_frame_path)
-                    frame_metadata.append({
-                        "file": final_frame_path.name,
-                        "time": time.time() - capture_start,
-                        "log": "Final screenshot",
-                    })
+                    video_frames.append((final_frame_path, time.time() - capture_start))
                 finally:
                     if tmp_path.exists():
                         tmp_path.unlink()
@@ -2068,9 +2023,44 @@ class WorkflowScreenshot:
 
             # Save metadata.json
             metadata = {
-                "frames": frame_metadata,
+                "frames": [],
                 "total_time": total_time,
             }
+            if video_frames:
+                # Encode the captured PNG frames into an mp4 whose timeline
+                # matches real capture timing (pre-run frame held across the
+                # validate/queue window), then drop the loose frames -- the mp4
+                # is the artifact the report plays.
+                from .video_encode import encode_mp4_timeline
+                mp4_path = output_dir / "driver.mp4"
+                if encode_mp4_timeline(video_frames, mp4_path, log=self._log):
+                    # Key MUST be "mp4" -- report.html's lightbox JS plays a
+                    # native <video controls> from videoData[wf].mp4 (real seek
+                    # bar); any other key falls through to the empty frame scrubber.
+                    metadata["mp4"] = mp4_path.name
+                    span = video_frames[-1][1] - video_frames[0][1]
+                    self._log(f"  Encoded {mp4_path.name} "
+                              f"({len(video_frames)} frames over {span:.1f}s, timeline)")
+                    for _pf in output_dir.glob("frame_*.png"):
+                        try:
+                            _pf.unlink()
+                        except OSError:
+                            pass
+                else:
+                    self._log("  [video] mp4 encode failed -- keeping PNG frames")
+            # Span of the media the report shows (the mp4). The caller clamps the
+            # resource graph to this window so the two share a start AND an end --
+            # the monitor runs wider (before navigation, and through the post-run
+            # 3D waits + final-screenshot delay + teardown).
+            if video_frames and metadata.get("mp4"):
+                # Clamp to the REAL encoded duration (VFR output can be shorter
+                # than the frame span), falling back to the span if probe fails.
+                from .video_encode import probe_duration
+                probed = probe_duration(output_dir / metadata["mp4"], log=self._log)
+                self._last_media_span = probed if probed else round(
+                    video_frames[-1][1] - video_frames[0][1], 2)
+            else:
+                self._last_media_span = total_time
             (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding='utf-8')
 
             # Fail after screenshots if nodes had validation errors (silently skipped by ComfyUI)

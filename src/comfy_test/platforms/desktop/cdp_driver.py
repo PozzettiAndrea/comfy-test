@@ -3975,6 +3975,11 @@ if not _have_frames:
         'workflow results above are unaffected.')
 
 # imageio-ffmpeg ships a static ffmpeg binary so we don't need a system install.
+# NOTE: the canonical frame->mp4 encode now lives in
+# comfy_test.reporting.video_encode (shared with the server/portable --video
+# path). This driver keeps its own inline copy on purpose: it runs in the
+# Electron app's context where the comfy_test package is not import-guaranteed.
+# Keep the ffmpeg args below in sync with video_encode.encode_mp4.
 try:
     import imageio_ffmpeg
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()

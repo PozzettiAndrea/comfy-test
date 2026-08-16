@@ -701,93 +701,6 @@
         .resource-legend .ram { background: #3fb950; }
         .resource-legend .gpu { background: #d29922; }
 
-        /* Video Player */
-        .video-player {
-            display: none;
-            margin-top: 1rem;
-            background: #162033;
-            border: 1px solid #243656;
-            border-radius: 8px;
-            padding: 1rem;
-        }
-
-        .video-player.active {
-            display: block;
-        }
-
-        .video-controls {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            margin-top: 0.5rem;
-        }
-
-        .video-play-btn {
-            background: #58a6ff;
-            color: #fff;
-            border: none;
-            padding: 0.4rem 1rem;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.8rem;
-            font-weight: 500;
-        }
-
-        .video-play-btn:hover {
-            background: #79b8ff;
-        }
-
-        .video-frame-counter {
-            color: #8ba3c1;
-            font-size: 0.8rem;
-        }
-
-        .video-slider-container {
-            padding: 15px 0;
-        }
-
-        /* noUiSlider customization */
-        #video-slider {
-            height: 6px;
-            background: #1c2d44;
-            border: none;
-            box-shadow: none;
-        }
-
-        #video-slider .noUi-connect {
-            background: #58a6ff;
-        }
-
-        #video-slider .noUi-handle {
-            width: 16px;
-            height: 16px;
-            background: #58a6ff;
-            border: none;
-            border-radius: 50%;
-            box-shadow: none;
-            top: -5px;
-            right: -8px;
-            cursor: pointer;
-        }
-
-        #video-slider .noUi-handle:before,
-        #video-slider .noUi-handle:after {
-            display: none;
-        }
-
-        /* Pips (tick marks) */
-        .noUi-pips {
-            color: #4a6282;
-        }
-
-        .noUi-marker {
-            background: #243656;
-            width: 2px;
-        }
-
-        .noUi-marker-large {
-            height: 12px;
-        }
 
         .noUi-value {
             display: none;
@@ -951,8 +864,6 @@
             }
         }
     </style>
-    <link href="https://cdn.jsdelivr.net/npm/nouislider@15/dist/nouislider.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/nouislider@15/dist/nouislider.min.js"></script>
 </head>
 <body>
     <header>
@@ -1001,14 +912,6 @@
         <div class="lightbox-content">
             <img id="lightbox-img" src="" alt="">
             <video id="lightbox-video" controls preload="metadata" style="display:none; max-width:90vw; max-height:80vh; background:#000;"></video>
-            <div class="video-player" id="video-player">
-                <div class="video-slider-container">
-                    <div id="video-slider"></div>
-                </div>
-                <div class="video-controls">
-                    <span class="video-frame-counter" id="video-frame-counter">0.0s / 0.0s</span>
-                </div>
-            </div>
             <div class="resource-graph" id="resource-graph">
                 <div class="resource-graph-title">Resource Usage</div>
                 <canvas id="resource-canvas"></canvas>
@@ -1054,11 +957,7 @@
 
         const inIframe = window !== window.top;
         let currentWorkflow = null;
-        let playInterval = null;
         let originalLogContent = '';
-        let currentFrameIndex = 0;
-        let currentFrames = [];
-        let currentTotalTime = 0;
 
         function openLightboxByName(name) {
             const w = workflowData[name];
@@ -1094,28 +993,19 @@
             }
 
             const data = videoData[title];
-            const videoPlayer = document.getElementById('video-player');
             const lightboxImg = document.getElementById('lightbox-img');
             const lightboxVideo = document.getElementById('lightbox-video');
 
-            // Reset both modes; the branch below activates one.
-            videoPlayer.classList.remove('active');
+            // Reset, then show the mp4 if present, else the static screenshot.
             lightboxVideo.style.display = 'none';
             lightboxVideo.removeAttribute('src');
             lightboxImg.style.display = '';
 
             if (data && data.mp4) {
-                // Playable mp4 (desktop runs). Show <video>, hide the
-                // frame-slideshow img + slider.
+                // Playable mp4: native <video controls> (real seek bar); hide img.
                 lightboxVideo.src = 'videos/' + encodeURIComponent(title) + '/' + data.mp4;
                 lightboxVideo.style.display = '';
                 lightboxImg.style.display = 'none';
-            } else if (data && data.frames && data.frames.length > 1) {
-                currentFrames = data.frames;
-                currentTotalTime = data.total_time || data.frames[data.frames.length - 1].time;
-                setupVideoSlider(data.frames, currentTotalTime);
-                updateVideoFrameByIndex(title, data.frames.length - 1);
-                videoPlayer.classList.add('active');
             }
 
             loadResourceGraph(title);
@@ -1136,98 +1026,6 @@
             // Notify parent frames for deep linking
             if (inIframe) {
                 window.parent.postMessage({ type: 'comfytest-open', name: title }, '*');
-            }
-        }
-
-        function buildSliderRange(frames, totalTime) {
-            const range = { 'min': frames[0].time };
-            frames.forEach((frame, idx) => {
-                if (idx > 0 && idx < frames.length - 1) {
-                    const pct = (frame.time / totalTime * 100).toFixed(1) + '%';
-                    range[pct] = frame.time;
-                }
-            });
-            range['max'] = frames[frames.length - 1].time;
-            return range;
-        }
-
-        function setupVideoSlider(frames, totalTime) {
-            const sliderEl = document.getElementById('video-slider');
-
-            if (sliderEl.noUiSlider) {
-                sliderEl.noUiSlider.destroy();
-            }
-
-            const range = buildSliderRange(frames, totalTime);
-
-            noUiSlider.create(sliderEl, {
-                start: frames[frames.length - 1].time,
-                snap: true,
-                range: range,
-                pips: {
-                    mode: 'range',
-                    density: 100
-                }
-            });
-
-            sliderEl.noUiSlider.on('update', function(values) {
-                const time = parseFloat(values[0]);
-                const frameIdx = frames.findIndex(f => Math.abs(f.time - time) < 0.01);
-                if (frameIdx >= 0 && frameIdx !== currentFrameIndex) {
-                    currentFrameIndex = frameIdx;
-                    showFrame(currentWorkflow, frameIdx);
-                }
-            });
-        }
-
-        function showFrame(workflowName, frameIndex) {
-            const data = videoData[workflowName];
-            if (!data || !data.frames) return;
-
-            const frame = data.frames[frameIndex];
-            const img = document.getElementById('lightbox-img');
-
-            const isLastFrame = frameIndex === data.frames.length - 1;
-            if (isLastFrame && workflowData[workflowName] && workflowData[workflowName].src) {
-                img.src = workflowData[workflowName].src;
-            } else {
-                img.src = 'videos/' + workflowName + '/' + frame.file;
-            }
-
-            const counter = document.getElementById('video-frame-counter');
-            const totalTime = data.total_time || data.frames[data.frames.length - 1].time;
-            counter.textContent = frame.time.toFixed(1) + 's / ' + totalTime.toFixed(1) + 's';
-
-            const logEl = document.getElementById('lightbox-log');
-            if (frame.log) {
-                logEl.textContent = frame.log;
-                logEl.scrollTop = logEl.scrollHeight;
-            }
-        }
-
-        function updateVideoFrameByIndex(workflowName, frameIndex) {
-            currentFrameIndex = frameIndex;
-            showFrame(workflowName, frameIndex);
-
-            const sliderEl = document.getElementById('video-slider');
-            if (sliderEl.noUiSlider && currentFrames[frameIndex]) {
-                sliderEl.noUiSlider.set(currentFrames[frameIndex].time);
-            }
-        }
-
-        function toggleVideoPlay() {
-            const btn = document.getElementById('video-play-btn');
-            if (playInterval) {
-                clearInterval(playInterval);
-                playInterval = null;
-                btn.innerHTML = '&#9654; Play';
-            } else {
-                btn.innerHTML = '&#9632; Stop';
-                playInterval = setInterval(() => {
-                    if (!currentFrames.length) return;
-                    currentFrameIndex = (currentFrameIndex + 1) % currentFrames.length;
-                    updateVideoFrameByIndex(currentWorkflow, currentFrameIndex);
-                }, 500);
             }
         }
 
@@ -1466,11 +1264,8 @@
         });
 
         function closeLightbox() {
-            if (playInterval) {
-                clearInterval(playInterval);
-                playInterval = null;
-                document.getElementById('video-play-btn').innerHTML = '&#9654; Play';
-            }
+            const lv = document.getElementById('lightbox-video');
+            if (lv) lv.pause();  // stop mp4 playback on close
             if (document.fullscreenElement) document.exitFullscreen();
             closeImgOverlay();
             document.getElementById('resource-graph').classList.remove('active');

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -17,6 +18,33 @@ from .paths import are_paths_configured, run_setup_wizard, get_workspace_dir, ge
 def _safe_str(s) -> str:
     """Sanitize string for Windows cp1252 console encoding."""
     return str(s).encode('ascii', errors='replace').decode('ascii')
+
+
+def _detect_branch(node_dir: Path) -> str:
+    """Best-effort git branch of the node repo, for the output namespace.
+
+    The output tree is `{run}/{branch}/{platform}` and the branch level is
+    never dropped (ADR-0016). When `--branch` is not given we default to the
+    checked-out branch here: detached HEAD -> short SHA; not a git repo (or git
+    missing) -> `local`. The result is flattened to a single path segment so a
+    `feature/x` branch cannot add a level and break the shape.
+    """
+    def _git(*args) -> str:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(node_dir), *args],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    name = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if name == "HEAD":  # detached
+        name = _git("rev-parse", "--short", "HEAD") or "detached"
+    if not name:
+        return "local"
+    return name.replace("/", "-").replace("\\", "-").replace(" ", "-")
 
 
 def get_current_platform() -> str:
@@ -173,7 +201,10 @@ def cmd_run(args) -> int:
         else:
             config = discover_config()
 
-        timestamp = datetime.now().strftime("%H%M")
+        # Date + HH:MM (no seconds, by request). The date kills the cross-day
+        # collision (a plain HH:MM reused a folder from a previous day); dropping
+        # seconds keeps it readable, at the cost of a rare same-minute clash.
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         short_name = node_dir.name.removeprefix("ComfyUI-")
 
         if attach_mode:
@@ -206,7 +237,9 @@ def cmd_run(args) -> int:
 
         # Build output path: logs_dir/NodeName-XXXX/branch/platform-<backend>
         run_id = f"{short_name}-{timestamp}"
-        branch = getattr(args, 'branch', None)
+        # Branch level is never dropped (ADR-0016): --branch overrides, else we
+        # detect the node repo's checked-out branch (fallback `local`).
+        branch = getattr(args, 'branch', None) or _detect_branch(node_dir)
         cuda = args.cuda or os.environ.get("COMFY_TEST_CUDA") == "1"
         # `cuda` is the "accelerator active?" bool. It also names the on-disk
         # platform bucket (`<platform>-cuda` vs `<platform>-cpu`). ROCm is
@@ -221,15 +254,18 @@ def cmd_run(args) -> int:
         torch_version_override = getattr(args, "torch_version", None)
         if torch_version_override:
             config.torch_version = torch_version_override
+        # Propagate --comfyui-version (CLI > config TOML > "latest" default).
+        comfyui_version_override = getattr(args, "comfyui_version", None)
+        if comfyui_version_override:
+            config.comfyui_version = comfyui_version_override
         # External naming uses hyphens (gh-pages URLs, CI workflow inputs, artifact
         # names). The internal `platform` string is `windows_portable` for valid Python
         # identifier purposes; normalize the on-disk dir name to hyphens so e.g.
         # findstr/grep expressions in CI publish steps match without renaming.
         platform_dir = f"{platform.replace('_', '-')}-{backend}"
-        if branch:
-            output_dir = logs_dir / run_id / branch / platform_dir
-        else:
-            output_dir = logs_dir / run_id / platform_dir
+        # Always {run}/{branch}/{platform} -- consumers (publish, dashboard,
+        # `cds show`) assume the three-level shape unconditionally (ADR-0016).
+        output_dir = logs_dir / run_id / branch / platform_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"[comfy-test] Output: {output_dir}")
@@ -425,6 +461,14 @@ def add_run_parser(subparsers):
              "'torch/torchvision/torchaudio'. Default comes from TestConfig "
              "(comfy-test.toml) -> common.config.DEFAULT_TORCH_VERSION. "
              "Also reads $COMFY_TEST_TORCH_VERSION as an override.",
+    )
+    run_parser.add_argument(
+        "--comfyui-version",
+        default=None,
+        metavar="VERSION",
+        help="ComfyUI version to test against: 'latest' (the default), a git "
+             "tag (e.g. v0.3.30), or a commit SHA. Overrides comfyui_version "
+             "in comfy-test.toml [test].",
     )
     run_parser.add_argument(
         "--vram-debug",

@@ -236,6 +236,8 @@ def run(ctx: LevelContext) -> LevelContext:
             try:
                 workflow_video_dir = videos_dir / workflow_file.stem
                 final_screenshot_path = screenshots_dir / f"{workflow_file.stem}_executed.png"
+                ws._last_capture_start = None  # reset; set inside on success
+                ws._last_media_span = None     # video/scrubber duration, set inside
                 frames = ws.capture_execution_frames(
                     _resolve_workflow_path(ctx, workflow_file),
                     output_dir=workflow_video_dir,
@@ -272,12 +274,25 @@ def run(ctx: LevelContext) -> LevelContext:
                 if resource_metrics.get("timeline"):
                     csv_path = logs_dir / f"{workflow_file.stem}_resources.csv"
                     total_ram = resource_metrics.get("total_ram_gb", 16)
+                    # Align the timeline to the video's t=0. The monitor starts
+                    # before the browser navigates to ComfyUI, so its clock leads
+                    # the video by the navigation time; shift by that offset and
+                    # drop the pre-navigation samples so the graph and the video
+                    # share one clock.
+                    cap_start = getattr(ws, "_last_capture_start", None)
+                    media_span = getattr(ws, "_last_media_span", None)
+                    offset = (cap_start - resource_monitor._start_time) if cap_start else 0.0
                     with open(csv_path, 'w', encoding='utf-8') as f:
                         f.write(f"# total_ram_gb={total_ram}\n")
                         f.write("t,ram_gb,vram_gb\n")
                         for sample in resource_metrics["timeline"]:
+                            t = round(sample['t'] - offset, 1)
+                            if t < 0:
+                                continue  # sampled before the video's first frame
+                            if media_span is not None and t > media_span + 0.5:
+                                continue  # sampled after the video ended
                             vram_val = sample['vram'] if sample['vram'] is not None else ''
-                            f.write(f"{sample['t']},{sample['ram']},{vram_val}\n")
+                            f.write(f"{t},{sample['ram']},{vram_val}\n")
                     resource_metrics.pop("timeline", None)
 
                 results.append({

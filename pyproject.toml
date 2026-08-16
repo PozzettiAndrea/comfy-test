@@ -31,7 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "mypy"]
-screenshot = ["playwright>=1.40.0", "Pillow>=10.0.0"]
+screenshot = ["playwright>=1.40.0", "Pillow>=10.0.0", "imageio-ffmpeg>=0.4.0"]
 
 [project.urls]
 Homepage = "https://github.com/PozzettiAndrea/comfy-test"
