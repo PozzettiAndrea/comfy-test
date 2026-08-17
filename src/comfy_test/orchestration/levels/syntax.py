@@ -41,8 +41,19 @@ FORBIDDEN_PATTERNS = [
 ]
 
 # Patterns that print a warning but do not fail the test.
+#
+# The bar for FORBIDDEN is "this is wrong on the platform the node claims to
+# support". The bar here is lower: it works, but a ComfyUI-aware equivalent
+# exists and does more. Erroring on these would train people to ignore the
+# level, which costs more than the findings are worth.
 WARNING_PATTERNS = [
     (re.compile(r'torch\.load\s*\('), 'torch.load() ? use comfy.utils.load_torch_file()'),
+    # soft_empty_cache dispatches across MPS/XPU/NPU/MLU/CUDA and adds
+    # synchronize() + ipc_collect(); torch.cuda.empty_cache() is a no-op
+    # anywhere but CUDA, so on a Mac it frees nothing. Correct on CUDA, which is
+    # why this warns rather than fails.
+    (re.compile(r'torch\.cuda\.empty_cache\s*\('),
+     'torch.cuda.empty_cache() ? use comfy.model_management.soft_empty_cache() (no-op off CUDA)'),
 ]
 
 

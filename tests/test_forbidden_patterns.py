@@ -7,11 +7,18 @@ false positive a node author can only silence by renaming their imports, so it
 gets a test.
 """
 
-from comfy_test.orchestration.levels.syntax import FORBIDDEN_PATTERNS
+from comfy_test.orchestration.levels.syntax import (
+    FORBIDDEN_PATTERNS,
+    WARNING_PATTERNS,
+)
 
 
 def _hits(line):
     return [desc for pat, desc in FORBIDDEN_PATTERNS if pat.search(line)]
+
+
+def _warns(line):
+    return [desc for pat, desc in WARNING_PATTERNS if pat.search(line)]
 
 
 FLAGGED = [
@@ -59,3 +66,20 @@ def test_device_and_autocast_still_flagged():
         "with torch.amp.autocast('cuda'):",
     ]:
         assert _hits(line), f"should have been flagged: {line!r}"
+
+
+def test_empty_cache_warns_but_does_not_fail():
+    """torch.cuda.empty_cache() is correct on CUDA and a no-op everywhere else.
+
+    Worth surfacing -- soft_empty_cache also covers MPS/XPU/NPU/MLU and adds
+    synchronize() + ipc_collect() -- but not worth failing a build over, so it
+    belongs in WARNING_PATTERNS and must stay out of FORBIDDEN_PATTERNS.
+    """
+    line = "        torch.cuda.empty_cache()"
+    assert _warns(line), "should warn"
+    assert not _hits(line), "must not fail the build"
+
+
+def test_soft_empty_cache_is_not_flagged():
+    assert not _warns("comfy.model_management.soft_empty_cache()")
+    assert not _hits("comfy.model_management.soft_empty_cache()")
