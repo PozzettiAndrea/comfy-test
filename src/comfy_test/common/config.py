@@ -112,48 +112,77 @@ class TestLevel(str, Enum):
     CUSTOM = "custom"  # node-supplied hook ([test] custom = "..."); runs last
 
     @classmethod
-    def get_dependencies(cls, level: "TestLevel") -> List["TestLevel"]:
-        """Get levels that must run before this level.
+    def requires(cls, level: "TestLevel") -> List[str]:
+        """Resources this level consumes (see LEVEL_REQUIRES / the resource model)."""
+        return LEVEL_REQUIRES.get(level, [])
 
-        Returns:
-            List of prerequisite levels (not including the level itself)
+    @classmethod
+    def get_dependencies(cls, level: "TestLevel") -> List["TestLevel"]:
+        """Direct prerequisite levels, derived from the resources this level
+        requires (each resource is built by a level). Callers wanting the full,
+        transitive set should use resolve_dependencies().
         """
-        deps = {
-            cls.SYNTAX: [],
-            cls.COVERAGE: [],
-            cls.INSTALL: [],
-            cls.REGISTRATION: [cls.INSTALL],
-            # JS lint reads the pack's served web/ dir, which for copy-dance
-            # packs is only generated when the server boots (prestartup at
-            # registration); vendored packs have it after install.
-            cls.JAVASCRIPT: [cls.INSTALL, cls.REGISTRATION],
-            cls.INSTANTIATION: [cls.INSTALL],
-            cls.STATIC_CAPTURE: [cls.INSTALL],
-            cls.VALIDATION: [cls.INSTALL],
-            cls.EXECUTION_LIGHT: [cls.INSTALL],
-            cls.EXECUTION: [cls.INSTALL],
-            # Custom hook needs a live server + api, so it pulls in registration.
-            cls.CUSTOM: [cls.INSTALL, cls.REGISTRATION],
-        }
-        return deps.get(level, [])
+        return [RESOURCE_PROVIDERS[r] for r in cls.requires(level)
+                if RESOURCE_PROVIDERS.get(r) is not None]
 
     @classmethod
     def resolve_dependencies(cls, levels: List["TestLevel"]) -> List["TestLevel"]:
-        """Add any missing dependencies to a list of levels.
+        """Given the checks the user asked for, pull in whatever PROVIDES the
+        resources they need -- transitively -- and return them in execution order.
 
-        Args:
-            levels: Levels the user wants to run
-
-        Returns:
-            Levels with dependencies added, in execution order
+        A check declares `requires = [resources]`; it never names a level. So the
+        engine (not the check author) decides that e.g. needing `api` means the
+        server -- and therefore the env -- must be built first. This is what lets
+        a user pick a check without knowing its prerequisites.
         """
-        all_levels = set(levels)
-        for level in levels:
-            for dep in cls.get_dependencies(level):
-                all_levels.add(dep)
-
+        needed = set(levels)
+        frontier = list(levels)
+        while frontier:
+            lvl = frontier.pop()
+            for res in cls.requires(lvl):
+                provider = RESOURCE_PROVIDERS.get(res)
+                if provider is not None and provider not in needed:
+                    needed.add(provider)
+                    frontier.append(provider)  # resolve the provider's needs too
         # Return in execution order (the enum is declared in that order).
-        return [l for l in cls if l in all_levels]
+        return [l for l in cls if l in needed]
+
+
+# --- Resource model: checks require resources, not levels --------------------
+# A "resource" is a live capability with a lifecycle, threaded through the
+# LevelContext. A check declares which resources it needs; the engine ensures
+# whatever PROVIDES each resource has run first (see resolve_dependencies).
+#
+#   env    -- built venv + cloned ComfyUI + installed node   (ctx.paths / platform)
+#   server -- a running ComfyUI process                       (ctx.server)
+#   api    -- an HTTP client bound to that server             (ctx.api)
+#
+# The server is SESSION-scoped: built once by its provider and reused by every
+# check that needs it. We deliberately do not start it twice (a per-check "fresh
+# server" scope is a future knob, added only when a check actually needs it).
+#
+# RESOURCE_PROVIDERS: which level builds each resource.
+RESOURCE_PROVIDERS: Dict[str, TestLevel] = {
+    "env": TestLevel.INSTALL,          # INSTALL builds the env
+    "server": TestLevel.REGISTRATION,  # REGISTRATION boots the server ...
+    "api": TestLevel.REGISTRATION,     # ... and its API client comes up with it
+}
+
+# LEVEL_REQUIRES: which resources each level consumes. This is the ONLY place a
+# level's prerequisites are declared -- add a new check by listing what it needs.
+LEVEL_REQUIRES: Dict[TestLevel, List[str]] = {
+    TestLevel.SYNTAX: [],                     # static source check, needs nothing
+    TestLevel.COVERAGE: [],                   # static workflow/registry check
+    TestLevel.INSTALL: [],                    # provider of `env`
+    TestLevel.REGISTRATION: ["env"],          # provider of `server` + `api`
+    TestLevel.JAVASCRIPT: ["server"],         # reads web/ generated at server boot
+    TestLevel.INSTANTIATION: ["env"],         # spawns its own subprocess from the env
+    TestLevel.STATIC_CAPTURE: ["server"],     # browses the live server
+    TestLevel.VALIDATION: ["api"],            # POSTs /validate
+    TestLevel.EXECUTION_LIGHT: ["server"],
+    TestLevel.EXECUTION: ["server"],
+    TestLevel.CUSTOM: ["server", "api"],      # node hook gets the live server + api
+}
 
 
 # Canonical level sets -- the single source of truth. Nothing else may hand-copy
