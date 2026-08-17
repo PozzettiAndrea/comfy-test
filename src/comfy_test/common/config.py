@@ -86,6 +86,7 @@ class TestLevel(str, Enum):
 
     - syntax: Check project structure (pyproject.toml vs requirements.txt)
     - coverage: Check every registered node is used by a workflow (static, no install)
+    - warnings: Opt-in antipattern report (static, no install, never fails)
     - install: Setup ComfyUI, install node, install deps
     - registration: Start server, check nodes in object_info (requires install)
     - instantiation: Call each node's constructor (requires install)
@@ -101,6 +102,7 @@ class TestLevel(str, Enum):
     """
     SYNTAX = "syntax"
     COVERAGE = "coverage"
+    WARNINGS = "warnings"  # opt-in antipattern report; report-only, never fails
     INSTALL = "install"
     REGISTRATION = "registration"
     JAVASCRIPT = "javascript"  # after registration: the pack's web/ is generated at server boot
@@ -173,6 +175,7 @@ RESOURCE_PROVIDERS: Dict[str, TestLevel] = {
 LEVEL_REQUIRES: Dict[TestLevel, List[str]] = {
     TestLevel.SYNTAX: [],                     # static source check, needs nothing
     TestLevel.COVERAGE: [],                   # static workflow/registry check
+    TestLevel.WARNINGS: [],                   # static source check, needs nothing
     TestLevel.INSTALL: [],                    # provider of `env`
     TestLevel.REGISTRATION: ["env"],          # provider of `server` + `api`
     TestLevel.JAVASCRIPT: ["server"],         # reads web/ generated at server boot
@@ -193,6 +196,9 @@ ALL_LEVELS = list(TestLevel)  # every level, in execution order (== enum order)
 #   - coverage: opt-in -- it RAISES if a registered node isn't used by any
 #     workflow, so it can't be a silent default (would fail existing nodes).
 #   - execution_light: redundant with execution (same run, minus per-frame video).
+#   - warnings: opt-in -- judgement calls, not conclusive failures. Run it when
+#     you want the report; leaving it on by default would make its findings
+#     background noise.
 DEFAULT_LEVELS = [
     TestLevel.SYNTAX,
     TestLevel.INSTALL,

@@ -14,6 +14,7 @@ from .results import TestResult
 from .levels import (
     run_syntax,
     run_coverage,
+    run_warnings,
     run_install,
     run_registration,
     run_javascript,
@@ -30,6 +31,7 @@ from .levels import (
 LEVEL_RUNNERS = {
     TestLevel.SYNTAX: run_syntax,
     TestLevel.COVERAGE: run_coverage,
+    TestLevel.WARNINGS: run_warnings,
     TestLevel.INSTALL: run_install,
     TestLevel.REGISTRATION: run_registration,
     TestLevel.JAVASCRIPT: run_javascript,
