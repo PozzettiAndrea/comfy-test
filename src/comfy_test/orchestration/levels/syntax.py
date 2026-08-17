@@ -8,6 +8,10 @@ from ...common.errors import TestError
 from ..context import LevelContext
 
 
+# Matches `nn.` or `torch.nn.` as a whole module reference, and nothing else.
+# The lookbehind is what stops `somelib.nn.` and `<anything>nn.` matching.
+_NN = r'(?<![\w.])(?:torch\.)?nn\.'
+
 # Patterns that break ComfyUI-native compatibility.
 # Each entry: (compiled regex, human-readable description)
 FORBIDDEN_PATTERNS = [
@@ -20,12 +24,20 @@ FORBIDDEN_PATTERNS = [
     (re.compile(r'torch\.cuda\.amp\.autocast'), 'torch.cuda.amp.autocast -- use comfy.ops operations= for dtype management'),
     (re.compile(r'torch\.amp\.autocast'), 'torch.amp.autocast -- use comfy.ops operations= for dtype management'),
     # Raw nn layers -- use operations.Linear, operations.Conv2d, etc.
-    (re.compile(r'nn\.Linear\s*\('), 'nn.Linear() -- use operations.Linear() for VRAM management and dtype casting'),
-    (re.compile(r'nn\.Conv[123]d\s*\('), 'nn.Conv*d() -- use operations.Conv*d() for VRAM management and dtype casting'),
-    (re.compile(r'nn\.ConvTranspose[12]d\s*\('), 'nn.ConvTranspose*d() -- use operations.ConvTranspose*d()'),
-    (re.compile(r'nn\.LayerNorm\s*\('), 'nn.LayerNorm() -- use operations.LayerNorm()'),
-    (re.compile(r'nn\.GroupNorm\s*\('), 'nn.GroupNorm() -- use operations.GroupNorm()'),
-    (re.compile(r'nn\.Embedding\s*\('), 'nn.Embedding() -- use operations.Embedding()'),
+    #
+    # `_NN` anchors on the module rather than matching a bare `nn.` anywhere in
+    # the line. Unanchored, these flagged three things that are not torch.nn:
+    #   torchsparse.nn.Conv3d(...)   a different library, no comfy.ops equivalent
+    #   spnn.Conv3d(...)             any alias ENDING in "nn"
+    #   cudnn.Conv2d(...), mynn.Linear(...)
+    # The lookbehind rejects a preceding word char or dot, so `torch.nn.` and a
+    # bare `nn.` still match and nothing else does.
+    (re.compile(_NN + r'Linear\s*\('), 'nn.Linear() -- use operations.Linear() for VRAM management and dtype casting'),
+    (re.compile(_NN + r'Conv[123]d\s*\('), 'nn.Conv*d() -- use operations.Conv*d() for VRAM management and dtype casting'),
+    (re.compile(_NN + r'ConvTranspose[12]d\s*\('), 'nn.ConvTranspose*d() -- use operations.ConvTranspose*d()'),
+    (re.compile(_NN + r'LayerNorm\s*\('), 'nn.LayerNorm() -- use operations.LayerNorm()'),
+    (re.compile(_NN + r'GroupNorm\s*\('), 'nn.GroupNorm() -- use operations.GroupNorm()'),
+    (re.compile(_NN + r'Embedding\s*\('), 'nn.Embedding() -- use operations.Embedding()'),
 ]
 
 # Patterns that print a warning but do not fail the test.
