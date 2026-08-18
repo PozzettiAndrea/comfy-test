@@ -6,6 +6,7 @@ Each level is a function that takes a LevelContext and returns an updated LevelC
 from .syntax import run as run_syntax
 from .coverage import run as run_coverage
 from .warnings import run as run_warnings
+from .hazards import run as run_hazards
 from .install import run as run_install
 from .registration import run as run_registration
 from .javascript import run as run_javascript
@@ -19,6 +20,7 @@ from .custom import run as run_custom
 __all__ = [
     "run_syntax",
     "run_warnings",
+    "run_hazards",
     "run_coverage",
     "run_install",
     "run_registration",

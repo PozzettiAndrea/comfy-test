@@ -86,7 +86,9 @@ class TestLevel(str, Enum):
 
     - syntax: Check project structure (pyproject.toml vs requirements.txt)
     - coverage: Check every registered node is used by a workflow (static, no install)
-    - warnings: Opt-in antipattern report (static, no install, never fails)
+    - warnings: Opt-in antipattern report on pack layout (static, no install, never fails)
+    - hazards: Opt-in report on how the pack behaves inside ComfyUI's process
+      (static, no install, never fails). Findings are grouped by confidence band.
     - install: Setup ComfyUI, install node, install deps
     - registration: Start server, check nodes in object_info (requires install)
     - instantiation: Call each node's constructor (requires install)
@@ -103,6 +105,7 @@ class TestLevel(str, Enum):
     SYNTAX = "syntax"
     COVERAGE = "coverage"
     WARNINGS = "warnings"  # opt-in antipattern report; report-only, never fails
+    HAZARDS = "hazards"    # opt-in runtime-behaviour report; report-only, never fails
     INSTALL = "install"
     REGISTRATION = "registration"
     JAVASCRIPT = "javascript"  # after registration: the pack's web/ is generated at server boot
@@ -176,6 +179,7 @@ LEVEL_REQUIRES: Dict[TestLevel, List[str]] = {
     TestLevel.SYNTAX: [],                     # static source check, needs nothing
     TestLevel.COVERAGE: [],                   # static workflow/registry check
     TestLevel.WARNINGS: [],                   # static source check, needs nothing
+    TestLevel.HAZARDS: [],                    # static source check, needs nothing
     TestLevel.INSTALL: [],                    # provider of `env`
     TestLevel.REGISTRATION: ["env"],          # provider of `server` + `api`
     TestLevel.JAVASCRIPT: ["server"],         # reads web/ generated at server boot
