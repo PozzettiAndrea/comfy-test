@@ -276,7 +276,27 @@ def _comfy_env_cached_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
     if not candidates:
         return set(), []
 
+    import hashlib
     import pickle
+
+    # comfy-env keys the cache on the .py mtimes of the scanned package, as
+    # "v<N>:<hash>". Recompute the hash and require it to match, or an edit that
+    # changes which nodes register is invisible here and coverage reports the
+    # previous run's node list. Only the suffix is compared: the version prefix
+    # is comfy-env's own cache-format counter and not ours to track.
+    valid_hashes = set()
+    for config in configs:
+        pkg_dir = config.parent
+        try:
+            py_files = sorted(pkg_dir.rglob("*.py"))
+        except OSError:
+            continue
+        if not py_files:
+            continue
+        mtimes = "|".join(
+            f"{f.relative_to(pkg_dir)}:{f.stat().st_mtime_ns}" for f in py_files
+        )
+        valid_hashes.add(hashlib.sha256(mtimes.encode()).hexdigest()[:16])
 
     names: Set[str] = set()
     warnings: List[str] = []
@@ -291,7 +311,17 @@ def _comfy_env_cached_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
                 f"({e.__class__.__name__}); falling back to the static scan"
             )
             continue
-        payload = blob.get("payload") if isinstance(blob, dict) else None
+        if not isinstance(blob, dict):
+            continue
+        key = blob.get("cache_key")
+        if not (isinstance(key, str) and any(key.endswith(":" + h) for h in valid_hashes)):
+            warnings.append(
+                f"comfy-env metadata cache at {cache_file} is stale (the pack's "
+                f".py files changed since it was written); ignoring it -- start "
+                f"ComfyUI once to refresh it"
+            )
+            continue
+        payload = blob.get("payload")
         if isinstance(payload, dict) and isinstance(payload.get("nodes"), dict):
             names |= set(payload["nodes"])
     return names, warnings
