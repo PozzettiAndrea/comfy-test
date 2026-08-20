@@ -197,6 +197,106 @@ def _dict_comp_class_name_keys(
     return keys
 
 
+
+def _isolated_config_paths(pack_dir: Path) -> List[Path]:
+    """comfy-env.toml files that mark this pack as isolated.
+
+    Mirrors comfy-env's own discovery rule: ``nodes/comfy-env.toml`` and
+    ``nodes/<subdir>/comfy-env.toml``, one level only -- deliberately not a
+    recursive glob.
+    """
+    nodes_dir = pack_dir / "nodes"
+    if not nodes_dir.is_dir():
+        return []
+    found: List[Path] = []
+    root = nodes_dir / "comfy-env.toml"
+    if root.is_file():
+        found.append(root)
+    for child in sorted(nodes_dir.iterdir()):
+        if child.is_dir() and not child.name.startswith((".", "_")):
+            cfg = child / "comfy-env.toml"
+            if cfg.is_file():
+                found.append(cfg)
+    return found
+
+
+def _env_name_prefix(pack_dir: Path) -> str:
+    """Slug comfy-env builds its env name from, e.g. ComfyUI-3D-Pack-enved -> 3d-pack-enved."""
+    name = pack_dir.name
+    for prefix in ("ComfyUI-", "comfyui-", "ComfyUI_", "comfyui_"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name.lower().replace("_", "-")
+
+
+def _comfy_env_cached_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
+    """Node type names from comfy-env's metadata cache, for isolated packs.
+
+    An isolated pack's node classes never exist in the host process -- comfy-env
+    runs a metadata scan inside the pack's own environment and hands ComfyUI
+    proxy classes built at runtime. So there is frequently no literal
+    NODE_CLASS_MAPPINGS anywhere for the AST scan to read, and whether one
+    happens to exist is an accident of how the pack spells its registration.
+
+    comfy-env already resolved this exactly: that scan is cached as
+    ``.metadata_cache.pkl`` next to the env's interpreter, holding
+    ``{"nodes": {...}, "display": {...}}``. Read it rather than re-deriving it.
+
+    This is a best-effort side door, never a requirement: comfy-env is not
+    imported (comfy-test must work for packs that have never heard of it), the
+    env is located by globbing the two layouts comfy-env writes, and any miss
+    or ambiguity returns empty so the caller falls back to the AST scan.
+    """
+    configs = _isolated_config_paths(pack_dir)
+    if not configs:
+        return set(), []
+
+    # <comfyui>/.ce/.pixi/envs/<env>/ and ~/.ce/envs/<env>/.pixi/envs/<sub>/
+    roots: List[Path] = []
+    for parent in pack_dir.resolve().parents:
+        if parent.name == "custom_nodes" and parent.parent:
+            roots.append(parent.parent / ".ce" / ".pixi" / "envs")
+            break
+    roots.append(Path.home() / ".ce" / "envs")
+
+    prefix = _env_name_prefix(pack_dir)
+    candidates: List[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            if not entry.name.startswith(prefix + "-"):
+                continue
+            candidates.extend(sorted(entry.rglob(".metadata_cache.pkl")))
+            direct = entry / ".metadata_cache.pkl"
+            if direct.is_file() and direct not in candidates:
+                candidates.append(direct)
+
+    if not candidates:
+        return set(), []
+
+    import pickle
+
+    names: Set[str] = set()
+    warnings: List[str] = []
+    for cache_file in candidates:
+        try:
+            # Written by comfy-env into the user's own env dir, and read by
+            # comfy-env itself on every ComfyUI start; no wider trust implied.
+            blob = pickle.loads(cache_file.read_bytes())
+        except Exception as e:
+            warnings.append(
+                f"comfy-env metadata cache at {cache_file} could not be read "
+                f"({e.__class__.__name__}); falling back to the static scan"
+            )
+            continue
+        payload = blob.get("payload") if isinstance(blob, dict) else None
+        if isinstance(payload, dict) and isinstance(payload.get("nodes"), dict):
+            names |= set(payload["nodes"])
+    return names, warnings
+
+
 def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
     """Statically collect every registered node type name in a pack.
 
@@ -258,6 +358,22 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
                             found |= _dict_literal_str_keys(arg, rel, warnings)
                         elif isinstance(arg, ast.DictComp):
                             found |= _dict_comp_class_name_keys(arg, rel, warnings)
+
+    if not found:
+        # Nothing statically visible. For an isolated pack that is expected
+        # rather than exceptional -- comfy-env builds the mapping at runtime from
+        # a scan inside the pack's own env -- so consult the cache it already
+        # wrote before declaring the pack nodeless. Ordinary packs are
+        # unaffected: no comfy-env.toml, no cache, same behaviour as before.
+        cached, cache_warnings = _comfy_env_cached_nodes(pack_dir)
+        warnings.extend(cache_warnings)
+        if cached:
+            warnings.append(
+                f"no literal NODE_CLASS_MAPPINGS found; using the {len(cached)} "
+                f"node(s) recorded in comfy-env's metadata cache for this "
+                f"isolated pack"
+            )
+            return cached, warnings
 
     return found, warnings
 
