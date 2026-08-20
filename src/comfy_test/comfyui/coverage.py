@@ -49,6 +49,7 @@ could auto-derive values when a schema's options list is a static literal.
 """
 
 import ast
+import os
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,6 +231,110 @@ def _env_name_prefix(pack_dir: Path) -> str:
     return name.lower().replace("_", "-")
 
 
+
+
+def _candidate_env_dirs(pack_dir: Path) -> List[Path]:
+    """Environment directories comfy-env may have built for this pack.
+
+    Both layouts it writes are searched -- <comfyui>/.ce/.pixi/envs/<name> and
+    ~/.ce/envs/<name> -- matched on the slug comfy-env derives its env name
+    from. comfy-env is never imported; a wrong or empty guess just means the
+    caller falls back.
+    """
+    roots: List[Path] = []
+    for parent in pack_dir.resolve().parents:
+        if parent.name == "custom_nodes" and parent.parent:
+            roots.append(parent.parent / ".ce" / ".pixi" / "envs")
+            break
+    roots.append(Path.home() / ".ce" / "envs")
+
+    prefix = _env_name_prefix(pack_dir)
+    found: List[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            if not entry.name.startswith(prefix + "-"):
+                continue
+            found.append(entry)
+            inner = entry / ".pixi" / "envs"
+            if inner.is_dir():
+                found.extend(sorted(d for d in inner.iterdir() if d.is_dir()))
+    return found
+
+
+def _scan_isolated_nodes(pack_dir: Path, configs: List[Path]) -> Tuple[Set[str], List[str]]:
+    """Import the pack inside its own environment and read the real mapping.
+
+    The authoritative answer, used when comfy-env's cache is missing or stale.
+    Costs one interpreter start (tens of seconds for a heavy pack) and only
+    happens when the pack's .py files have actually changed.
+
+    comfy-env is not involved: this locates the env's interpreter, puts the
+    ComfyUI checkout and the pack root on sys.path exactly as comfy-env's own
+    scan does, imports the nodes package and prints its NODE_CLASS_MAPPINGS
+    keys. Any failure returns empty and the caller falls through.
+    """
+    import json
+    import subprocess
+
+    comfyui_base = None
+    for parent in pack_dir.resolve().parents:
+        if parent.name == "custom_nodes" and parent.parent:
+            comfyui_base = parent.parent
+            break
+    if comfyui_base is None:
+        return set(), []
+
+    pythons: List[Path] = []
+    for env_dir in _candidate_env_dirs(pack_dir):
+        for rel in ("bin/python", "python.exe", "Scripts/python.exe"):
+            candidate = env_dir / rel
+            if candidate.is_file():
+                pythons.append(candidate)
+    if not pythons:
+        return set(), []
+
+    names: Set[str] = set()
+    warnings: List[str] = []
+    for config in configs:
+        package = ".".join(config.parent.relative_to(pack_dir).parts)
+        script = (
+            "import json,sys,importlib\n"
+            f"sys.path.insert(0, {str(pack_dir)!r})\n"
+            f"sys.path.insert(1, {str(comfyui_base)!r})\n"
+            f"m = importlib.import_module({package!r})\n"
+            "print('@@' + json.dumps(sorted(getattr(m, 'NODE_CLASS_MAPPINGS', {}))))\n"
+        )
+        for python in pythons:
+            try:
+                proc = subprocess.run(
+                    [str(python), "-c", script],
+                    capture_output=True, text=True, timeout=600,
+                    cwd=str(pack_dir),
+                    env={**os.environ, "COMFYUI_BASE": str(comfyui_base)},
+                )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                warnings.append(f"isolated node scan failed ({e.__class__.__name__})")
+                continue
+            line = next(
+                (l for l in reversed(proc.stdout.splitlines()) if l.startswith("@@")),
+                None,
+            )
+            if line:
+                try:
+                    names |= set(json.loads(line[2:]))
+                    break
+                except ValueError:
+                    pass
+            else:
+                tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
+                warnings.append(
+                    f"isolated node scan for {package!r} produced no mapping: {tail[0][:160]}"
+                )
+    return names, warnings
+
+
 def _comfy_env_cached_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
     """Node type names from comfy-env's metadata cache, for isolated packs.
 
@@ -252,26 +357,11 @@ def _comfy_env_cached_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
     if not configs:
         return set(), []
 
-    # <comfyui>/.ce/.pixi/envs/<env>/ and ~/.ce/envs/<env>/.pixi/envs/<sub>/
-    roots: List[Path] = []
-    for parent in pack_dir.resolve().parents:
-        if parent.name == "custom_nodes" and parent.parent:
-            roots.append(parent.parent / ".ce" / ".pixi" / "envs")
-            break
-    roots.append(Path.home() / ".ce" / "envs")
-
-    prefix = _env_name_prefix(pack_dir)
     candidates: List[Path] = []
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for entry in sorted(root.iterdir()):
-            if not entry.name.startswith(prefix + "-"):
-                continue
-            candidates.extend(sorted(entry.rglob(".metadata_cache.pkl")))
-            direct = entry / ".metadata_cache.pkl"
-            if direct.is_file() and direct not in candidates:
-                candidates.append(direct)
+    for env_dir in _candidate_env_dirs(pack_dir):
+        cache = env_dir / ".metadata_cache.pkl"
+        if cache.is_file() and cache not in candidates:
+            candidates.append(cache)
 
     if not candidates:
         return set(), []
@@ -404,6 +494,21 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
                 f"isolated pack"
             )
             return cached, warnings
+
+        # Cache missing or stale -- which is the normal state right after any
+        # edit, since it is keyed on .py mtimes. Import the pack in its own
+        # environment and ask it directly rather than making the caller restart
+        # ComfyUI to refresh a cache on our behalf.
+        configs = _isolated_config_paths(pack_dir)
+        if configs:
+            scanned, scan_warnings = _scan_isolated_nodes(pack_dir, configs)
+            warnings.extend(scan_warnings)
+            if scanned:
+                warnings.append(
+                    f"no literal NODE_CLASS_MAPPINGS found; imported this isolated "
+                    f"pack in its own environment and read {len(scanned)} node(s)"
+                )
+                return scanned, warnings
 
     return found, warnings
 
