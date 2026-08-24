@@ -24,7 +24,6 @@ class ComfyUIServer:
         paths: Test paths from platform setup
         config: Test configuration
         port: Port to listen on
-        cuda_mock_packages: List of CUDA packages to mock for import testing
         log_callback: Optional callback for logging
 
     Example:
@@ -39,7 +38,6 @@ class ComfyUIServer:
         paths: "TestPaths",
         config: "TestConfig",
         port: Optional[int] = None,
-        cuda_mock_packages: Optional[List[str]] = None,
         log_callback: Optional[Callable[[str], None]] = None,
         env_vars: Optional[dict] = None,
         novram: bool = False,
@@ -53,7 +51,6 @@ class ComfyUIServer:
             import random
             port = random.randint(41880, 41899)
         self.port = port
-        self.cuda_mock_packages = cuda_mock_packages or []
         self.env_vars = env_vars or {}
         self.novram = novram
         self.vram_debug = vram_debug
@@ -118,12 +115,6 @@ class ComfyUIServer:
         # VRAM debug logging
         if self.vram_debug:
             extra_env["COMFY_VRAM_DEBUG"] = "1"
-
-        # Add CUDA mock injection
-        if self.cuda_mock_packages:
-            extra_env["COMFY_TEST_MOCK_PACKAGES"] = ",".join(self.cuda_mock_packages)
-            extra_env["COMFY_TEST_STRICT_IMPORTS"] = "1"
-            self._log(f"CUDA mock packages: {', '.join(self.cuda_mock_packages)}")
 
         extra_args = []
         if self.novram:
