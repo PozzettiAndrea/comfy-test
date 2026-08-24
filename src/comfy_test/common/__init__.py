@@ -27,7 +27,7 @@ from .errors import (
 )
 from .base_platform import TestPlatform, TestPaths
 from .resource_monitor import ResourceMonitor, ResourceSample
-from .comfy_env import get_node_reqs, get_env_vars, get_cuda_packages
+from .comfy_env import get_node_packs, get_env_vars, get_cuda_packages
 
 __all__ = [
     # Config
@@ -58,7 +58,7 @@ __all__ = [
     "ResourceMonitor",
     "ResourceSample",
     # ComfyEnv
-    "get_node_reqs",
+    "get_node_packs",
     "get_env_vars",
     "get_cuda_packages",
 ]

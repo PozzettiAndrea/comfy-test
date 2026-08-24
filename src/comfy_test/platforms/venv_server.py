@@ -331,7 +331,7 @@ class VenvServerPlatform(TestPlatform):
             shutil.rmtree(paths.work_dir, ignore_errors=True)
 
     def install_node_from_repo(self, paths: TestPaths, repo: str, name: str) -> None:
-        """Clone a node dependency from GitHub, install its requirements + install.py."""
+        """Clone a required node pack from GitHub, install its requirements + install.py."""
         target_dir = paths.custom_nodes_dir / name
         # authenticated_github_url embeds NODE_PAT/GH_TOKEN/GITHUB_TOKEN when set,
         # so private node deps clone the same way public ones do.

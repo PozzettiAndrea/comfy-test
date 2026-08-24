@@ -10,9 +10,9 @@ else:
     import tomli as tomllib
 
 
-def get_node_reqs(node_dir: Path) -> List[Tuple[str, str]]:
+def get_node_packs(node_dir: Path) -> List[Tuple[str, str]]:
     """
-    Read comfy-env-root.toml and return list of node dependencies.
+    Read comfy-env-root.toml and return the list of required node packs.
 
     Args:
         node_dir: Path to the custom node directory
@@ -29,10 +29,10 @@ def get_node_reqs(node_dir: Path) -> List[Tuple[str, str]]:
     except Exception:
         return []
 
-    node_reqs = config.get("node_reqs", {})
+    node_packs = config.get("node_packs", {})
     result = []
 
-    for name, value in node_reqs.items():
+    for name, value in node_packs.items():
         if isinstance(value, str):
             repo = value
         elif isinstance(value, dict):

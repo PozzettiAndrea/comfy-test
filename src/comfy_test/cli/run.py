@@ -99,7 +99,7 @@ def cmd_run(args) -> int:
     2. Create workspace in configured workspace dir
     3. Clone ComfyUI and create venv
     4. Copy node into custom_nodes/
-    5. Install node dependencies
+    5. Install required node packs
     6. Run tests
     7. Output results to configured logs dir
     """

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...common.base_platform import TestPaths
-from ...common.comfy_env import get_cuda_packages, get_env_vars, get_node_reqs
+from ...common.comfy_env import get_cuda_packages, get_env_vars, get_node_packs
 from ...common.errors import TestError
 from ..context import LevelContext
 
@@ -350,10 +350,10 @@ def _install_node_dependencies(
     platform: "TestPlatform",
     paths: TestPaths,
 ) -> None:
-    """Install node dependencies from comfy-env.toml."""
-    node_reqs = get_node_reqs(ctx.node_dir)
-    if node_reqs:
-        ctx.log(f"Installing {len(node_reqs)} node dependency(ies)...")
-        for name, repo in node_reqs:
+    """Install required node packs from comfy-env-root.toml."""
+    node_packs = get_node_packs(ctx.node_dir)
+    if node_packs:
+        ctx.log(f"Installing {len(node_packs)} node pack(s)...")
+        for name, repo in node_packs:
             ctx.log(f"  {name} from {repo}")
             platform.install_node_from_repo(paths, repo, name)
