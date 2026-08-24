@@ -121,9 +121,14 @@ def run(ctx: LevelContext) -> LevelContext:
     """Run the JAVASCRIPT collision lint. Raises TestError on any error finding."""
     from ...reporting.js_lint import lint_web_dir
 
-    pack_dir = ctx.paths.custom_nodes_dir / ctx.node_dir.name
-    if not pack_dir.is_dir():
-        pack_dir = ctx.node_dir  # dev / vendored fallback
+    # Prefer the copy inside the materialized workspace; fall back to the source
+    # tree. `ctx.paths` is None when no INSTALL level ran -- the standalone
+    # `comfy-test lint` path -- and the source tree is the only copy there.
+    pack_dir = ctx.node_dir
+    if ctx.paths is not None:
+        installed = ctx.paths.custom_nodes_dir / ctx.node_dir.name
+        if installed.is_dir():
+            pack_dir = installed
 
     web_dir = _resolve_web_dir(pack_dir)
     if web_dir is None:
