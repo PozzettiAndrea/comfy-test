@@ -76,7 +76,7 @@ def cmd_lint(args) -> int:
         print(f"[comfy-test] Not a directory: {pack_dir}", file=sys.stderr)
         return 2
 
-    checks = ["syntax", "javascript"] if args.check == "all" else [args.check]
+    checks = ["syntax", "javascript", "accel"] if args.check == "all" else [args.check]
     config, config_warning = _load_config(pack_dir)
 
     lines: list[str] = []
@@ -116,8 +116,26 @@ def cmd_lint(args) -> int:
                 **payload,
             }
 
-    js = results.get("javascript", {})
-    warn_count = js.get("summary", {}).get("warnings", 0)
+        if "accel" in checks:
+            from ..orchestration.levels.accel import run as run_accel
+            ok, err = _run_one(run_accel, ctx)
+            sidecar = tmpdir / "accel.json"
+            payload = {}
+            if sidecar.exists():
+                try:
+                    payload = _json.loads(sidecar.read_text(encoding="utf-8"))
+                except ValueError:
+                    payload = {}
+            results["accel"] = {
+                "passed": ok,
+                "error": err.message if err else None,
+                "details": err.details if err else None,
+                **payload,
+            }
+
+    warn_count = sum(
+        results.get(name, {}).get("summary", {}).get("warnings", 0)
+        for name in ("javascript", "accel"))
     failed = [k for k, v in results.items() if not v["passed"]]
 
     if args.json:
@@ -159,12 +177,14 @@ def add_lint_parser(subparsers):
     """Add the lint subcommand parser."""
     parser = subparsers.add_parser(
         "lint",
-        help="Run the static checks (syntax and/or javascript) with no env or server",
+        help="Run the static checks (syntax, javascript, accel) with no env or server",
         description=(
-            "Run the SYNTAX and/or JAVASCRIPT levels directly against a pack "
-            "directory. Pure source analysis: no pixi environment is built and "
-            "no ComfyUI server is started, so this works on a bare checkout and "
-            "finishes in about a second."
+            "Run the SYNTAX, JAVASCRIPT and ACCEL levels directly against a "
+            "pack directory. Pure source analysis: no pixi environment is built "
+            "and no ComfyUI server is started, so this works on a bare checkout "
+            "and finishes in about a second. ACCEL is exact only for packages "
+            "whose env has been installed (it reads the import names recorded "
+            "in env.stamp.json); otherwise it says so rather than passing them."
         ),
     )
     parser.add_argument(
@@ -175,7 +195,7 @@ def add_lint_parser(subparsers):
     )
     parser.add_argument(
         "--check", "-k",
-        choices=["syntax", "javascript", "all"],
+        choices=["syntax", "javascript", "accel", "all"],
         default="all",
         help="Which static check to run (default: all)",
     )
@@ -187,6 +207,6 @@ def add_lint_parser(subparsers):
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Also exit non-zero on JavaScript warnings (for CI)",
+        help="Also exit non-zero on warnings (for CI)",
     )
     parser.set_defaults(func=cmd_lint)
