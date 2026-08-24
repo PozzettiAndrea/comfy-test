@@ -38,8 +38,13 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           major="${version%%.*}"
 
-          # Create the precise semver tag (idempotent)
-          git rev-parse "v$version" >/dev/null 2>&1 || {
+          # Create the precise semver tag (idempotent).
+          # Check the REMOTE, not the local ref: actions/checkout does a shallow
+          # clone with no tags, so `git rev-parse v$version` always misses and
+          # the block below would then push a tag that already exists upstream.
+          # That is why every commit since v0.4.14 that did not bump the version
+          # failed here.
+          git ls-remote --exit-code --tags origin "v$version" >/dev/null 2>&1 || {
             git tag "v$version"
             git push origin "v$version"
           }
