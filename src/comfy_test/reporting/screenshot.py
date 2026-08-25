@@ -77,8 +77,7 @@ except ImportError:
 from ..common.errors import TestError, WorkflowError
 
 if TYPE_CHECKING:
-    from ..common.base_platform import TestPaths, TestPlatform
-    from ..common.config import TestConfig
+    pass
 
 
 class ScreenshotError(TestError):
@@ -604,16 +603,31 @@ class WorkflowScreenshot:
         raise ScreenshotError(f"Screenshot failed after {retries} attempts", str(last_error))
 
     def stop(self) -> None:
-        """Stop the headless browser."""
-        if self._page:
-            self._page.close()
-            self._page = None
-        if self._browser:
-            self._browser.close()
-            self._browser = None
-        if self._playwright:
-            self._playwright.stop()
-            self._playwright = None
+        """Stop the headless browser. Never raises.
+
+        Both execution levels call this from a `finally:` that runs *before*
+        results.json is written. Playwright raises `Target closed` from
+        `page.close()` whenever the browser died during the run -- routine
+        after a long capture -- and that exception would propagate out of the
+        finally, discarding a fully successful run's results and masking any
+        real WorkflowExecutionError still in flight.
+
+        Each step is independent so a failure in one still releases the next:
+        leaking the Chromium process on top of losing the results is strictly
+        worse.
+        """
+        for attr, close in (("_page", lambda o: o.close()),
+                            ("_browser", lambda o: o.close()),
+                            ("_playwright", lambda o: o.stop())):
+            obj = getattr(self, attr, None)
+            if obj is None:
+                continue
+            try:
+                close(obj)
+            except Exception as e:
+                self._log(f"  Teardown: {attr.lstrip('_')} did not close cleanly ({e})")
+            finally:
+                setattr(self, attr, None)
 
     def _configure_server_settings(self) -> None:
         """Set server-side settings for screenshot capture."""
