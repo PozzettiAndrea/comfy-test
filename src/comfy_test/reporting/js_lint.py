@@ -264,21 +264,17 @@ def _is_node_identity_member(mem, node) -> bool:
 
 
 def lint_source(text: str, rel_path: str, namespaces: List[str],
-                namespaces_declared: bool,
                 node_ids: Optional[Set[str]] = None) -> List[Finding]:
     """Lint one .js source string. Returns findings.
 
-    namespaces_declared: when False (pack did not declare its JS namespaces),
-    the name-prefix rules are downgraded to warnings -- we cannot hard-error on
-    a prefix we only guessed.
-    node_ids: the pack's own ComfyUI node ids. When provided, the foreign-node-
-    hook rule fires on registrations that target a node not in this set. None or
-    empty -> the rule is skipped (we can't tell own from foreign).
     """
     parser = _parser()
     tree = parser.parse(text.encode("utf-8"))
     findings: List[Finding] = []
-    name_sev = "error" if namespaces_declared else "warn"
+    # One namespace, always derived from the pack's published identity, so
+    # every name rule is enforceable. (The guessed-prefix "warn" tier was
+    # removed with [test.javascript] namespaces.)
+    name_sev = "error"
     bound = _bound_names(tree.root_node)
     # global-object identifiers active in THIS file (aliases only count when the
     # file doesn't shadow them with a local binding).
@@ -587,7 +583,6 @@ def _relative_imports(text: str) -> List[str]:
 
 
 def lint_web_dir(web_dir: Path, namespaces: List[str],
-                 namespaces_declared: bool,
                  node_ids: Optional[Set[str]] = None) -> List[Finding]:
     """Lint every auto-imported .js under web_dir, PLUS any .mjs reachable by a
     relative import from those .js. ComfyUI's glob is **/*.js, so a bare .mjs
@@ -616,7 +611,7 @@ def lint_web_dir(web_dir: Path, namespaces: List[str],
             continue
         scanned.add(js.resolve())
         findings.extend(lint_source(text, js.relative_to(web_dir).as_posix(),
-                                    namespaces, namespaces_declared, node_ids))
+                                    namespaces, node_ids))
         _follow(js, text)
 
     # BFS through .mjs -> .mjs imports as well.
@@ -632,7 +627,7 @@ def lint_web_dir(web_dir: Path, namespaces: List[str],
             rel = mjs.relative_to(web_dir).as_posix()
         except ValueError:
             rel = mjs.name
-        findings.extend(lint_source(text, rel, namespaces, namespaces_declared, node_ids))
+        findings.extend(lint_source(text, rel, namespaces, node_ids))
         _follow(mjs, text)
 
     return findings

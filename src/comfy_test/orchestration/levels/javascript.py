@@ -53,17 +53,6 @@ def _display_namespace(pack_dir: Path) -> Optional[str]:
     return _normalize_ns(name) or None
 
 
-def _guess_namespace(pack_name: str) -> str:
-    """A best-effort namespace prefix from the pack folder name (last resort
-    when pyproject declares no DisplayName / project name)."""
-    n = pack_name.lower()
-    for prefix in ("comfyui-", "comfyui_"):
-        if n.startswith(prefix):
-            n = n[len(prefix):]
-            break
-    return _normalize_ns(n) or "pack"
-
-
 def _resolve_web_dir(pack_dir: Path) -> Optional[Path]:
     """Find the pack's served frontend dir: pyproject [tool.comfy].web first,
     then the WEB_DIRECTORY attribute in __init__.py, then common names."""
@@ -135,34 +124,39 @@ def run(ctx: LevelContext) -> LevelContext:
         ctx.log("[javascript] pack ships no frontend web dir -- nothing to lint.")
         return ctx
 
-    # Namespace = the pack's DisplayName, lowercased (authoritative, zero-config).
-    # Optional [test.javascript] namespaces are ADDITIONAL allowed prefixes, an
-    # escape hatch for a pack that legitimately ships more than one namespace.
-    extra = list(ctx.config.javascript.namespaces)
+    # ONE pack, ONE namespace, derived from the pack's published identity --
+    # [tool.comfy] DisplayName, else [project] name. There is no config key: a
+    # pack that ships several namespaces (usually vendored JS that kept its old
+    # prefix) must rename its JS, not be grandfathered in. Amends ADR-0014,
+    # which already kept declared namespaces only as an escape hatch.
     display_ns = _display_namespace(pack_dir)
-    if display_ns:
-        namespaces = [display_ns] + [e for e in extra if e != display_ns]
-        declared_flag = True
-        ctx.log(f"[javascript] enforcing DisplayName namespace '{display_ns}' -- "
-                f"every registerExtension name under the web dir must start with "
-                f"'{display_ns}.'"
-                + (f"; also allowing {extra}" if extra else ""))
-    elif extra:
-        namespaces, declared_flag = extra, True
-        ctx.log(f"[javascript] pyproject declares no DisplayName; enforcing "
-                f"[test.javascript] namespaces {extra}.")
-    else:
-        namespaces, declared_flag = [_guess_namespace(ctx.node_dir.name)], False
-        ctx.log(f"[javascript] pyproject declares no DisplayName and no "
-                f"[test.javascript] namespaces; guessing '{namespaces[0]}' and "
-                f"treating name rules as advisory. Add a [tool.comfy] DisplayName "
-                f"to enforce them.")
+    if not display_ns:
+        raise TestError(
+            "Pack has no published identity, so its JS namespace cannot be "
+            "determined",
+            "The javascript level requires one prefix that the pack provably "
+            "owns, because ComfyUI loads every pack's JS into one shared "
+            "browser page.\n\n"
+            "Add either to pyproject.toml:\n"
+            "    [project]\n"
+            '    name = "comfyui-yourpack"\n'
+            "  or:\n"
+            "    [tool.comfy]\n"
+            '    DisplayName = "YourPack"\n\n'
+            "Both are required to publish to the Comfy Registry anyway. "
+            "Nothing is added to comfy-test.toml.",
+        )
+
+    namespaces = [display_ns]
+    ctx.log(f"[javascript] enforcing namespace '{display_ns}' -- every "
+            f"registerExtension name, custom element, CSS selector and storage "
+            f"key under the web dir must sit under '{display_ns}'.")
 
     node_ids = _collect_node_ids(pack_dir)
     ctx.log(f"[javascript] scanning {web_dir.relative_to(pack_dir)}/ "
             f"({len(list(web_dir.rglob('*.js')))} .js files) "
             f"namespaces={namespaces} node_ids={len(node_ids)}")
-    findings = lint_web_dir(web_dir, namespaces, declared_flag, node_ids or None)
+    findings = lint_web_dir(web_dir, namespaces, node_ids or None)
     errors = [f for f in findings if f.level == "error"]
     warns = [f for f in findings if f.level == "warn"]
 
@@ -172,7 +166,6 @@ def run(ctx: LevelContext) -> LevelContext:
         out.write_text(json.dumps({
             "web_dir": str(web_dir.relative_to(pack_dir)),
             "namespaces": namespaces,
-            "namespaces_declared": declared_flag,
             "summary": {"errors": len(errors), "warnings": len(warns)},
             "findings": [f.as_dict() for f in findings],
         }, indent=2), encoding="utf-8")

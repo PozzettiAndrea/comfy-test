@@ -27,9 +27,11 @@ def _safe(s) -> str:
 def _load_config(pack_dir: Path):
     """Best-effort TestConfig for the pack.
 
-    Only ``[test.javascript] namespaces`` matters to these two levels, and a
-    pack without a comfy-test.toml should still be lintable, so a missing or
-    unparseable config degrades to defaults rather than aborting.
+    Neither level reads any config today -- the javascript namespace comes from
+    the pack's pyproject identity, not comfy-test.toml -- but a TestConfig is
+    still needed to build a LevelContext. A pack without a comfy-test.toml must
+    stay lintable, so a missing or unparseable config degrades to defaults
+    rather than aborting.
     """
     from ..common.config import TestConfig
 

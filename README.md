@@ -93,7 +93,7 @@ packages = ["nvdiffrast", "flash-attn"]
 [test.workflows]
 cpu = "all"
 
-[test.platforms]
+[test.lanes]
 # Explicit opt-in allowlist — only listed platforms run.
 platforms = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 ```
@@ -124,8 +124,8 @@ custom = "tests/my_check.py"
 # macos-desktop, windows-desktop, linux-cuda, windows-cuda,
 # windows-portable-cuda, windows-desktop-cuda
 # (bare "linux"/"macos"/"windows"/"windows_portable" mean the cpu variant)
-[test.platforms]
-platforms = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
+[test.lanes]
+lanes = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 
 # Workflow configuration — accelerator is named by backend: cpu / cuda / rocm.
 [test.workflows]
@@ -162,7 +162,7 @@ Workflows are auto-discovered from the `workflows/` folder:
 pip install comfy-test
 
 # Run tests locally
-comfy-test run --platform linux
+COMFY_TEST_LANE=linux comfy-test run
 
 # Run specific level only
 comfy-test run --level registration

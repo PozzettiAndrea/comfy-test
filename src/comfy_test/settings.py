@@ -25,8 +25,8 @@ if SETTINGS_FILE.exists():
 
 # General settings: (env_var, label)
 GENERAL_SETTINGS = [
-    ("COMFY_TEST_RUN_CONSUMER", "Run consumer tests (workflows/)"),
-    ("COMFY_TEST_RUN_DEV", "Run dev tests (workflows/tests/)"),
+    ("COMFY_TEST_RUN_CONSUMER", "Run consumer workflows (example_workflows/ and aliases)"),
+    ("COMFY_TEST_RUN_DEV", "Run dev workflows (the tests/ subfolder of any of them)"),
     ("COMFY_TEST_SHOW_CONSOLE_ERRORS", "Show browser console errors in output"),
     ("COMFY_TEST_SHOW_CONSOLE_WARNINGS", "Show browser console warnings in output"),
     ("COMFY_TEST_VERBOSE", "Verbose output (show all ComfyUI server lines)"),

@@ -8,8 +8,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 
-# Supported Python versions for random selection
+# Python versions comfy-test knows how to build a venv for. This is the
+# *validation* set -- what may be asked for -- not what is picked by default.
 PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13"]
+
+# What a run uses when the config says nothing. A fixed default rather than a
+# draw over PYTHON_VERSIONS: an unpinned random interpreter meant a re-run
+# could go green with no fix, which is the single most confusing behaviour the
+# tool had. Widen deliberately by asking for a list.
+DEFAULT_PYTHON_VERSION = "3.13"
 
 # Pinned torch family. Default tracks the most recent fully-aligned set on
 # PyPI -- torch, torchvision, torchaudio released in lockstep with matching
@@ -67,18 +74,56 @@ def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str
     return (version, tv, ta)
 
 
-def _random_python_version() -> str:
-    """Select a random Python version for testing.
+def resolve_python_version(requested=None) -> str:
+    """Resolve the interpreter a run should use.
 
-    Honors $COMFY_TEST_PYTHON_VERSION if set (the YAML dispatcher pre-picks
-    so the version is visible at the run level). Falls back to random pick
-    over PYTHON_VERSIONS otherwise.
+    Precedence, highest first:
+
+    1. ``$COMFY_TEST_PYTHON_VERSION`` -- an explicit pin. CI sets this so the
+       chosen version is visible at the run level, and a deliberate override
+       wins even over a config list.
+    2. ``requested`` from ``[test] python_version``: a single version pins it,
+       a list draws one at random per run.
+    3. ``DEFAULT_PYTHON_VERSION``.
+
+    Anything outside PYTHON_VERSIONS raises rather than silently falling back,
+    so a typo is a hard error instead of a run against the wrong interpreter.
     """
     import os
     pinned = os.environ.get("COMFY_TEST_PYTHON_VERSION", "").strip()
-    if pinned in PYTHON_VERSIONS:
+    if pinned:
+        if pinned not in PYTHON_VERSIONS:
+            raise ValueError(
+                f"COMFY_TEST_PYTHON_VERSION={pinned!r} is not a supported Python "
+                f"version. Known: {', '.join(PYTHON_VERSIONS)}"
+            )
         return pinned
-    return random.choice(PYTHON_VERSIONS)
+
+    if requested is None:
+        return DEFAULT_PYTHON_VERSION
+
+    if isinstance(requested, str):
+        candidates = [requested]
+    else:
+        candidates = [str(v).strip() for v in requested if str(v).strip()]
+        if not candidates:
+            raise ValueError(
+                "[test] python_version is an empty list -- give at least one "
+                f"version, or omit the key for the default ({DEFAULT_PYTHON_VERSION})."
+            )
+
+    unknown = [v for v in candidates if v not in PYTHON_VERSIONS]
+    if unknown:
+        raise ValueError(
+            f"Unsupported Python version(s) in [test] python_version: "
+            f"{', '.join(unknown)}. Known: {', '.join(PYTHON_VERSIONS)}"
+        )
+    return random.choice(candidates)
+
+
+def _default_python_version() -> str:
+    """Dataclass default: env pin, else DEFAULT_PYTHON_VERSION."""
+    return resolve_python_version(None)
 
 
 class TestLevel(str, Enum):
@@ -322,35 +367,6 @@ class CoverageConfig:
 
 
 @dataclass
-class JavascriptConfig:
-    """Configuration for the JAVASCRIPT level.
-
-    Args:
-        namespaces: The prefixes this pack's frontend JS legitimately owns, for
-            ``app.registerExtension`` names, custom-element names, and any
-            window globals. A pack may own several (GeometryPack ships
-            ``geompack.*``, ``comfy3d.*``, ``unirig.*``). When declared, the
-            name-namespacing rules are ENFORCED as errors::
-
-                [test.javascript]
-                namespaces = ["geompack", "comfy3d"]
-
-            When omitted, a prefix is guessed from the pack folder name and the
-            name rules are downgraded to warnings (we can't hard-error on a
-            guessed prefix). The global-write rule (window.X = ...) is always an
-            error regardless -- it needs no namespace to be wrong.
-    """
-
-    namespaces: List[str] = field(default_factory=list)
-
-    def __post_init__(self):
-        if not isinstance(self.namespaces, list) or not all(
-            isinstance(n, str) for n in self.namespaces
-        ):
-            raise ValueError("[test.javascript] namespaces must be a list of strings")
-
-
-@dataclass
 class PlatformTestConfig:
     """Platform-specific test configuration.
 
@@ -394,7 +410,7 @@ class TestConfig:
 
     name: str
     comfyui_version: str = "latest"
-    python_version: str = field(default_factory=_random_python_version)
+    python_version: str = field(default_factory=_default_python_version)
     torch_version: str = DEFAULT_TORCH_VERSION
     # Extra PyPI indexes passed to uv/pip as --extra-index-url (in addition to the
     # built-in PyTorch wheel index + pypi.org). For private mirrors / Artifactory.
@@ -407,7 +423,6 @@ class TestConfig:
     levels: List[TestLevel] = field(default_factory=lambda: list(TestLevel))
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     coverage: CoverageConfig = field(default_factory=CoverageConfig)
-    javascript: JavascriptConfig = field(default_factory=JavascriptConfig)
     linux: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     linux_cuda: PlatformTestConfig = field(default_factory=PlatformTestConfig)
     macos: PlatformTestConfig = field(default_factory=PlatformTestConfig)
@@ -447,8 +462,6 @@ class TestConfig:
         if isinstance(self.coverage, dict):
             self.coverage = CoverageConfig(**self.coverage)
 
-        if isinstance(self.javascript, dict):
-            self.javascript = JavascriptConfig(**self.javascript)
 
         # Ensure platform configs are PlatformTestConfig
         if isinstance(self.linux, dict):
@@ -485,7 +498,7 @@ class TestConfig:
         Raises:
             ValueError: If platform is not recognized.
         """
-        from ..platforms.registry import resolve
+        from ..lanes.registry import resolve
         p = resolve(platform)
         if p is None:
             raise ValueError(f"Unknown platform: {platform}")
