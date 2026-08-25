@@ -47,6 +47,31 @@ class TestPlatform(ABC):
         # commands as --extra-index-url. Populated by set_extra_pip_indices().
         self._extra_pip_indices: List[str] = []
 
+    def _chapter(self, name: str) -> None:
+        """Mark a jump target in the replay. Degrades to a plain log line."""
+        try:
+            self._log(f"=== {name} ===", stream="chapter")
+        except TypeError:
+            self._log(f"=== {name} ===")
+
+    def _record(self, msg: str, verbose: bool = True) -> None:
+        """Send a subprocess line to the run's event stream.
+
+        `verbose` controls console echo only -- the line is always recorded, so
+        the replay artifact is complete regardless of how the run was invoked.
+
+        Under a TestManager the log callback accepts `echo=`; standalone
+        callers pass a plain print-lambda, which does not. Degrade to echoing
+        rather than requiring every caller to plumb a second callback.
+        """
+        if verbose:
+            self._log(msg)
+            return
+        try:
+            self._log(msg, echo=False)
+        except TypeError:
+            pass  # plain callback: nothing is recording, so nothing to record to
+
     def set_extra_pip_indices(self, config: "TestConfig") -> None:
         """Capture extra PyPI indexes from config so install commands can add them
         as --extra-index-url (alongside the built-in PyTorch + PyPI indexes).
@@ -256,8 +281,11 @@ class TestPlatform(ABC):
         for line in proc.stdout:
             line_text = line.rstrip("\n")
             stdout_lines.append(line_text)
-            if verbose:
-                self._log(f"  {_mask(line_text)}")
+            # ALWAYS record; `verbose` governs whether it also prints to the
+            # console. Previously a non-verbose run discarded subprocess output
+            # entirely, so every local run had an empty install log while CI
+            # (which sets COMFY_ENV_DEBUG) had a full one.
+            self._record(f"  {_mask(line_text)}", verbose=verbose)
 
         proc.wait()
         stderr_thread.join(timeout=5)

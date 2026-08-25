@@ -863,6 +863,30 @@
                 padding: 1rem;
             }
         }
+
+        /* --- install replay ------------------------------------------------ */
+        .install-replay { margin: 24px 0; border: 1px solid var(--border, #2a2a2a);
+                          border-radius: 6px; overflow: hidden; }
+        .install-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+                        background: rgba(255,255,255,0.03); }
+        .install-play { width: 30px; height: 30px; flex: 0 0 auto; cursor: pointer;
+                        border: 1px solid var(--border, #2a2a2a); border-radius: 4px;
+                        background: transparent; color: inherit; font-size: 12px; }
+        .install-scrub { flex: 1 1 auto; }
+        .install-clock { font-family: ui-monospace, monospace; font-size: 12px; opacity: .75;
+                         min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+        .install-speed { background: transparent; color: inherit; font-size: 12px;
+                         border: 1px solid var(--border, #2a2a2a); border-radius: 4px; padding: 2px 4px; }
+        .install-chapters { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+        .install-chapters button { font-size: 11px; padding: 2px 8px; cursor: pointer;
+                                   border: 1px solid var(--border, #2a2a2a); border-radius: 10px;
+                                   background: transparent; color: inherit; opacity: .8; }
+        .install-chapters button:hover { opacity: 1; }
+        .install-log { margin: 0; padding: 12px; max-height: 380px; overflow-y: auto;
+                       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                       font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+                       word-break: break-word; }
+        .install-log .ch { opacity: .95; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -900,6 +924,8 @@
         </div>
 
         $failed_section
+
+        $install_section
 
         $models_section
     </div>
@@ -1407,6 +1433,95 @@
                 summary.insertBefore(wrapper, summary.firstChild);
             }
         }
-    </script>
+    
+    // --- install replay -------------------------------------------------
+    // Replays the run's own event stream. Deliberately text, not video: the
+    // source IS text, so it stays selectable, greppable and kilobytes.
+    // NOTE: string.Template renders this file -- literal $ must be written $$.
+    (function () {
+      const root = document.getElementById('install-replay');
+      if (!root) return;
+      const logEl = document.getElementById('install-log');
+      const playBtn = document.getElementById('install-play');
+      const scrub = document.getElementById('install-scrub');
+      const clock = document.getElementById('install-clock');
+      const speedSel = document.getElementById('install-speed');
+      const chapEl = document.getElementById('install-chapters');
+
+      let events = [], chapters = [], duration = 0, cursor = 0, timer = null;
+
+      const fmt = (t) => {
+        const m = Math.floor(t / 60), sec = Math.floor(t % 60);
+        return m + ':' + String(sec).padStart(2, '0');
+      };
+
+      function renderUpTo(idx) {
+        const slice = events.slice(0, idx);
+        logEl.textContent = '';
+        for (const e of slice) {
+          const line = document.createElement('span');
+          if (e.s === 'chapter') line.className = 'ch';
+          line.textContent = e.m + '\n';
+          logEl.appendChild(line);
+        }
+        logEl.scrollTop = logEl.scrollHeight;   // stick to the tail
+        const t = idx > 0 ? events[idx - 1].t : 0;
+        clock.textContent = fmt(t);
+        if (duration > 0) scrub.value = String(Math.round((t / duration) * 1000));
+      }
+
+      function stop() {
+        if (timer) { clearInterval(timer); timer = null; }
+        playBtn.innerHTML = '&#9654;';
+      }
+
+      function play() {
+        if (cursor >= events.length) { cursor = 0; }
+        const speed = parseFloat(speedSel.value);
+        if (speed === 0) { cursor = events.length; renderUpTo(cursor); return; }
+        playBtn.innerHTML = '&#10073;&#10073;';
+        const t0 = performance.now() - (cursor > 0 ? events[cursor - 1].t * 1000 / speed : 0);
+        timer = setInterval(() => {
+          const elapsed = (performance.now() - t0) / 1000 * speed;
+          while (cursor < events.length && events[cursor].t <= elapsed) cursor++;
+          renderUpTo(cursor);
+          if (cursor >= events.length) stop();
+        }, 50);
+      }
+
+      playBtn.addEventListener('click', () => { timer ? stop() : play(); });
+      speedSel.addEventListener('change', () => { if (timer) { stop(); play(); } });
+      scrub.addEventListener('input', () => {
+        stop();
+        const t = (parseInt(scrub.value, 10) / 1000) * duration;
+        cursor = 0;
+        while (cursor < events.length && events[cursor].t <= t) cursor++;
+        renderUpTo(cursor);
+      });
+
+      fetch(root.dataset.src).then(r => r.ok ? r.text() : Promise.reject(r.status)).then(text => {
+        const lines = text.trim().split('\n');
+        const head = JSON.parse(lines[0]);
+        chapters = head.chapters || [];
+        duration = head.duration || 0;
+        events = lines.slice(1).map(l => JSON.parse(l));
+        for (const c of chapters) {
+          const b = document.createElement('button');
+          b.textContent = c.name;
+          b.addEventListener('click', () => {
+            stop();
+            cursor = 0;
+            while (cursor < events.length && events[cursor].t <= c.t) cursor++;
+            renderUpTo(cursor);
+          });
+          chapEl.appendChild(b);
+        }
+        renderUpTo(events.length);   // land on the finished log; press play to replay
+      }).catch(() => {
+        logEl.textContent = '(install replay unavailable)';
+      });
+    })();
+
+  </script>
 </body>
 </html>

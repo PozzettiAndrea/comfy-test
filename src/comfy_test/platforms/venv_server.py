@@ -249,6 +249,12 @@ class VenvServerPlatform(TestPlatform):
         node_dir = Path(node_dir).resolve()
         target_dir = paths.custom_nodes_dir / node_name
 
+        # Chapter mark: everything from here is what a USER does by hand --
+        # get the pack into custom_nodes/, install its requirements, run its
+        # install.py. Steps before this (uv venv, torch pin, ComfyUI clone) are
+        # CI scaffolding a user never performs, so the replay can link straight
+        # here and be an install guide rather than a build log.
+        self._chapter("install the node pack")
         self._log(f"Copying {node_name} to custom_nodes/...")
         if target_dir.exists():
             if target_dir.is_symlink():
@@ -260,6 +266,7 @@ class VenvServerPlatform(TestPlatform):
         # Install requirements.txt first (install.py may depend on these)
         requirements_file = target_dir / "requirements.txt"
         if requirements_file.exists():
+            self._chapter("pip install -r requirements.txt")
             self._log("Installing node requirements...")
             self._log_requirements_file(requirements_file)
             self._install_reqs(requirements_file, target_dir)
@@ -267,6 +274,7 @@ class VenvServerPlatform(TestPlatform):
         # Run install.py if present
         install_py = target_dir / "install.py"
         if install_py.exists():
+            self._chapter("python install.py")
             self._log("\nRunning install.py...")
             install_env = {
                 "COMFY_ENV_CUDA_VERSION": "12.8",

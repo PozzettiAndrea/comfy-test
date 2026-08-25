@@ -18,16 +18,20 @@ on:
         description: "Job timeout in minutes"
         type: number
         default: 1440
+      lane:
+        description: "Run only this lane (linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, macos-desktop, windows-desktop). Empty = every lane in [test.lanes]."
+        type: string
+        default: ""
       platform:
-        description: "Run only this platform (linux-cpu, macos-cpu, windows-cpu, windows-portable-cpu, macos-desktop, windows-desktop). Empty = all listed."
+        description: "DEPRECATED alias for `lane`; delete once no caller passes it."
         type: string
         default: ""
       node_repo:
-        description: "owner/repo of the node to test (default: caller repo). When set, comfy-test.toml + skip-check + publish target this repo instead of the caller."
+        description: "DISPATCHER USE ONLY. owner/repo of the node to test (default: caller repo). A consumer repo calling this workflow directly should leave this unset. When set, comfy-test.toml + skip-check + publish target this repo instead of the caller."
         type: string
         default: ""
       node_branch:
-        description: "branch of the node to test (default: caller ref_name)"
+        description: "DISPATCHER USE ONLY. branch of the node to test (default: caller ref_name)."
         type: string
         default: ""
 
@@ -82,7 +86,7 @@ jobs:
         id: platforms
         env:
           CONFIG: ${{ inputs.config-file }}
-          FILTER: ${{ inputs.platform }}
+          FILTER: ${{ inputs.lane || inputs.platform }}
         run: |
           python3 - <<'PY'
           import os, sys, tomllib

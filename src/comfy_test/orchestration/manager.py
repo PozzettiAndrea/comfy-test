@@ -1,6 +1,7 @@
 """Test manager for orchestrating installation tests."""
 
 import faulthandler
+import json
 import os
 import shutil
 import time
@@ -82,6 +83,10 @@ class TestManager:
             )
         )
         self._session_log: List[str] = []
+        # Structured replay stream: [{"t": float, "s": stream, "m": line}, ...]
+        self._events: List[dict] = []
+        # [{"t": float, "name": str}, ...] -- jump targets for the replay player
+        self._chapters: List[dict] = []
         self._session_start_time: float = 0
         self._session_log_file: Optional[Path] = None
         self._level_index = 0
@@ -91,18 +96,29 @@ class TestManager:
         """Get the base output directory for logs, screenshots, results."""
         return self.output_dir if self.output_dir else (self.node_dir / "comfy-test-results")
 
-    def _log(self, msg: str) -> None:
-        """Log message with timestamp, write to file immediately."""
+    def _log(self, msg: str, stream: str = "log", echo: bool = True) -> None:
+        """Log message with timestamp, write to file immediately.
+
+        Also appends a structured `(t, stream, msg)` event so the run can be
+        replayed. `session.log` keeps only the formatted `[MM:SS]` string --
+        integer seconds, and a regex away from being usable -- which is why the
+        float elapsed is retained here rather than thrown away.
+        """
         if self._session_start_time:
             elapsed = time.time() - self._session_start_time
             mins, secs = divmod(int(elapsed), 60)
             timestamp = f"[{mins:02d}:{secs:02d}]"
         else:
+            elapsed = 0.0
             timestamp = "[00:00]"
 
         timestamped_msg = f"{timestamp} {msg}"
-        self._original_log(msg)
+        if echo:
+            self._original_log(msg)
         self._session_log.append(timestamped_msg)
+        self._events.append({"t": round(elapsed, 3), "s": stream, "m": msg})
+        if stream == "chapter":
+            self._chapters.append({"t": round(elapsed, 3), "name": msg.strip("= ")})
 
         if self._session_log_file:
             try:
@@ -113,8 +129,36 @@ class TestManager:
             except Exception:
                 pass
 
+    def _mark_chapter(self, name: str) -> None:
+        """Record a jump target for the replay player."""
+        t = (time.time() - self._session_start_time) if self._session_start_time else 0.0
+        self._chapters.append({"t": round(t, 3), "name": name})
+
+    def _write_replay(self) -> None:
+        """Write install.jsonl: the run as a replayable event stream.
+
+        One JSON object per line, so it greps, diffs and tails like a log while
+        still carrying enough timing to replay. Deliberately NOT a video: the
+        source is text, and a viewer needs to select and copy the commands.
+        """
+        if not self._events or not self._session_log_file:
+            return
+        out = self._session_log_file.parent / "install.jsonl"
+        try:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "v": 1,
+                    "chapters": self._chapters,
+                    "duration": self._events[-1]["t"],
+                }) + "\n")
+                for ev in self._events:
+                    f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        except Exception as e:
+            self._original_log(f"Could not write {out.name}: {e}")
+
     def _save_session_log(self) -> None:
-        """Log completion message."""
+        """Finalise the run's log artifacts."""
+        self._write_replay()
         if self._session_log_file and self._session_log_file.exists():
             self._original_log(f"Session log: {self._session_log_file}")
 
@@ -124,6 +168,7 @@ class TestManager:
         level_name = level.value.upper()
         status = "" if in_config else " (implicit)"
         self._log("")
+        self._mark_chapter(level_name)
         self._log(f"[{self._level_index}/{self._total_levels}] {level_name}{status}")
         self._log("-" * 40)
 
@@ -249,6 +294,8 @@ class TestManager:
 
         # Initialize session
         self._session_log = []
+        self._events = []
+        self._chapters = []
         self._session_start_time = time.time()
 
         output_base = self._get_output_base()

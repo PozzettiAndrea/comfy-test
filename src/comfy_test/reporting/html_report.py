@@ -165,6 +165,12 @@ def generate_html_report(
     log_files = {f.stem: f.name
                  for f in logs_dir.glob("*.log")} if logs_dir.exists() else {}
 
+    # The install replay: the run's own event stream, written beside
+    # session.log rather than inside logs/. Fetched by the report at open time
+    # (a sidecar, like <workflow>_resources.csv) so a long install does not
+    # bloat the HTML.
+    install_replay = "install.jsonl" if (output_dir / "install.jsonl").exists() else None
+
     # Discover video metadata
     video_data: Dict[str, Any] = {}
     if videos_dir.exists():
@@ -203,11 +209,41 @@ def generate_html_report(
         except Exception:
             pass
 
-    html_content = _render_report(results, screenshots, log_contents, repo_name, video_data, models_data)
+    html_content = _render_report(results, screenshots, log_contents, repo_name, video_data,
+                                  models_data, install_replay)
 
     output_file = output_dir / "index.html"
     output_file.write_text(html_content, encoding="utf-8")
     return output_file
+
+
+def _render_install_section(replay_file: Optional[str]) -> str:
+    """The install replay panel. Empty string when the run produced no replay.
+
+    Only the sidecar NAME is inlined -- the events are fetched at open time,
+    the same pattern <workflow>_resources.csv uses, so a long install does not
+    bloat the HTML.
+    """
+    if not replay_file:
+        return ""
+    return f'''
+        <div class="install-replay" id="install-replay" data-src="{html.escape(replay_file)}">
+          <div class="install-head">
+            <button class="install-play" id="install-play" aria-label="Play install replay">&#9654;</button>
+            <input class="install-scrub" id="install-scrub" type="range" min="0" max="1000" value="0"
+                   aria-label="Install replay position">
+            <span class="install-clock" id="install-clock">0:00</span>
+            <select class="install-speed" id="install-speed" aria-label="Playback speed">
+              <option value="1">1x</option>
+              <option value="4" selected>4x</option>
+              <option value="16">16x</option>
+              <option value="0">instant</option>
+            </select>
+          </div>
+          <div class="install-chapters" id="install-chapters"></div>
+          <pre class="install-log" id="install-log"></pre>
+        </div>
+    '''
 
 
 def _render_report(
@@ -217,6 +253,7 @@ def _render_report(
     repo_name: str,
     video_data: Optional[Dict[str, Any]] = None,
     models_data: Optional[Dict[str, Any]] = None,
+    install_replay: Optional[str] = None,
 ) -> str:
     """Render the HTML report from results data."""
     video_data = video_data or {}
@@ -276,6 +313,7 @@ def _render_report(
     failed_section = _render_failed_section(failed_workflows, log_contents)
     workflow_cards, workflow_data_js = _render_workflow_cards(workflows, screenshots, log_contents)
     models_section = _render_models_section(models_data)
+    install_section = _render_install_section(install_replay)
 
     # Load and fill template (using string.Template to avoid escaping CSS braces)
     template = Template(_load_template("report.html"))
@@ -294,6 +332,7 @@ def _render_report(
         workflow_data_js=workflow_data_js,
         video_data_js=json.dumps(video_data),
         models_section=models_section,
+        install_section=install_section,
     )
 
 
