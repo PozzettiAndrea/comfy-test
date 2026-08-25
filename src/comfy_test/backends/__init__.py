@@ -22,8 +22,17 @@ _REGISTRY = {
 
 
 def active_backend_name() -> str:
-    """The backend this run targets. `cpu` has no accelerator backend object."""
-    return os.environ.get("COMFY_TEST_BACKEND") or "cuda"
+    """The accelerator backend this run targets: `cpu` or `cuda`.
+
+    `COMFY_TEST_BACKEND` is an override that nothing currently sets; without
+    it this used to return "cuda" unconditionally, so every CPU lane stamped
+    its own results.json as `linux-cuda` / `macos-cuda` / etc.
+    """
+    override = os.environ.get("COMFY_TEST_BACKEND")
+    if override:
+        return override
+    from ..common.accel import accel_name
+    return accel_name()
 
 
 def active_backend():

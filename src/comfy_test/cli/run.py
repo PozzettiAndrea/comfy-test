@@ -8,11 +8,11 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from ..common.config import TestLevel
 from ..common.config_file import discover_config, load_config
 from ..common.errors import TestError, ConfigError
 from . import _nodelink
 from .paths import are_paths_configured, run_setup_wizard, get_workspace_dir, get_logs_dir
+from ..common.accel import is_cuda_run
 
 
 def _safe_str(s) -> str:
@@ -261,7 +261,7 @@ def cmd_run(args) -> int:
         # Branch level is never dropped (ADR-0016): --branch overrides, else we
         # detect the node repo's checked-out branch (fallback `local`).
         branch = getattr(args, 'branch', None) or _detect_branch(node_dir)
-        cuda = args.cuda or os.environ.get("COMFY_TEST_CUDA") == "1"
+        cuda = args.cuda or is_cuda_run()
         # `cuda` is the "accelerator active?" bool. It also names the on-disk
         # platform bucket (`<platform>-cuda` vs `<platform>-cpu`). ROCm is
         # reserved for later (a `COMFY_TEST_ROCM` sibling), not wired today.
@@ -278,7 +278,11 @@ def cmd_run(args) -> int:
         # Propagate --comfyui-version (CLI > config TOML > "latest" default).
         comfyui_version_override = getattr(args, "comfyui_version", None)
         if comfyui_version_override:
-            config.comfyui_version = comfyui_version_override
+            # Same validation the TOML path gets -- an abbreviated SHA must
+            # fail here, not twenty minutes into building a venv.
+            from ..common.config_file import validate_comfyui_version
+            config.comfyui_version = validate_comfyui_version(
+                comfyui_version_override)
         # External naming uses hyphens (gh-pages URLs, CI workflow inputs, artifact
         # names). The internal `platform` string is `windows_portable` for valid Python
         # identifier purposes; normalize the on-disk dir name to hyphens so e.g.
@@ -478,9 +482,9 @@ def add_run_parser(subparsers):
         "--comfyui-version",
         default=None,
         metavar="VERSION",
-        help="ComfyUI version to test against: 'latest' (the default), a git "
-             "tag (e.g. v0.3.30), or a commit SHA. Overrides comfyui_version "
-             "in comfy-test.toml [test].",
+        help="ComfyUI ref to test against: 'latest' (the default), a tag "
+             "(e.g. v0.3.30), a branch, or a full 40-character commit SHA. "
+             "Overrides comfyui_version in comfy-test.toml [test].",
     )
     run_parser.add_argument(
         "--vram-debug",

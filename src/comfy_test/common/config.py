@@ -41,8 +41,8 @@ def _index_variant() -> str:
     complete on PyPI and absent from the CUDA index, and the install would then
     silently fall through to plain PyPI wheels on a CUDA lane.
     """
-    import os
-    if not (os.environ.get("COMFY_TEST_CUDA") or "").strip():
+    from .accel import is_cuda_run
+    if not is_cuda_run():
         return "cpu"
     try:
         from ..backends import active_backend
@@ -403,7 +403,8 @@ class TestConfig:
 
     Args:
         name: Test suite name (usually node package name)
-        comfyui_version: ComfyUI version ("latest", tag, or commit hash)
+        comfyui_version: ComfyUI ref ("latest", a tag, a branch, or a
+            full 40-character commit SHA)
         python_version: Python version for venv (default: random from 3.11-3.13)
         timeout: Global timeout in seconds for setup operations
         levels: List of test levels to run (install, registration, instantiation, validation)
@@ -523,10 +524,12 @@ def build_provenance(config=None, install_mode: str = "fresh") -> dict:
     """What was ACTUALLY tested -- the fields that make a result reproducible.
 
     Without these a red cell is uninterpretable and un-rerunnable: the
-    interpreter is drawn at random per run (`_random_python_version`), ComfyUI
-    is an unpinned shallow HEAD clone, hosted CPU lanes attach to a prebuilt
-    cached env while CUDA/local lanes build their own, and comfy-test itself
-    floats on `pip install --upgrade`.
+    interpreter defaults to a fixed 3.13 but a pack may hand `python_version`
+    a list, which is drawn from at random per run, and the CI lanes pick one
+    with `$RANDOM` before comfy-test is even invoked; ComfyUI is an unpinned
+    shallow HEAD clone; hosted CPU lanes attach to a prebuilt cached env while
+    CUDA/local lanes build their own; and comfy-test itself floats on
+    `pip install --upgrade`.
 
     Args:
         config: TestConfig, when available (None on the desktop CDP path,

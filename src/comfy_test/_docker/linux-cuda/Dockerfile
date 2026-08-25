@@ -44,9 +44,10 @@ ENV UV_INSTALL_DIR=/opt/uv/bin \
     UV_TOOL_BIN_DIR=/tmp/comfytest-tools/bin \
     PATH=/tmp/comfytest-tools/bin:/opt/uv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# uv binary + Python interpreters into /opt/uv. Pre-installing 3.10-3.13
-# so per-test `uv venv --python 3.X` is fast regardless of which version
-# _random_python_version() picks.
+# uv binary + Python interpreters into /opt/uv. Pre-installing 3.10-3.13 so
+# per-test `uv venv --python 3.X` is fast regardless of which version the run
+# resolves to -- a pack may list several and have one drawn per run, and the
+# CI lanes draw with $RANDOM before comfy-test starts.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     uv python install 3.10 3.11 3.12 3.13 && \
     chmod -R a+rX /opt/uv

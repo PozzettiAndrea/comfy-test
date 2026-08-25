@@ -35,7 +35,7 @@ def _copy_tree_long_path(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst)
 
 from ...common.base_platform import TestPlatform, TestPaths
-from ...common.errors import DownloadError, SetupError
+from ...common.errors import SetupError
 from .download import download_portable, get_latest_release_tag, extract_7z, get_cache_dir
 
 if TYPE_CHECKING:
@@ -154,7 +154,8 @@ class WindowsPortablePlatform(TestPlatform):
 
     def is_cuda_mode(self) -> bool:
         """Detect if GPU mode is enabled."""
-        return os.environ.get("COMFY_TEST_CUDA", "0") not in ("0", "", "false", "no")
+        from ...common.accel import is_cuda_run
+        return is_cuda_run()
 
     def _uv_install(self, python: Path, args: list, cwd: Path) -> None:
         """Run uv pip install with local wheels if available."""

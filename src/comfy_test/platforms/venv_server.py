@@ -36,6 +36,33 @@ PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYPI_INDEX = "https://pypi.org/simple"
 
 
+def comfyui_clone_commands(ref: str, dest: str) -> list[list[str]]:
+    """Commands to shallow-fetch ComfyUI at `ref` into `dest`.
+
+    One path for all four cases -- "latest", a tag, a branch, a full commit
+    SHA -- because `git fetch` resolves all of them, while `git clone
+    --branch` resolves only the first three. That asymmetry is why a SHA in
+    `comfyui_version` used to fail with a bare "Remote branch not found".
+
+    Costs the same as the shallow clone it replaces: the server sends one
+    commit either way.
+
+    A SHA must be the full 40 characters. Git resolves an abbreviation
+    locally, against objects it already has -- and a fresh `git init` has
+    none, so the server is asked for a ref literally named "37ac9ff" and
+    correctly reports it does not exist. `validate_comfyui_version` rejects
+    abbreviations up front so the failure is legible.
+    """
+    return [
+        ["git", "init", "-q", dest],
+        ["git", "-C", dest, "remote", "add", "origin", COMFYUI_REPO],
+        ["git", "-C", dest, "fetch", "--depth", "1", "origin",
+         "HEAD" if ref == "latest" else ref],
+        ["git", "-C", dest, "checkout", "-q", "FETCH_HEAD"],
+    ]
+
+
+
 class VenvServerPlatform(TestPlatform):
     """Venv + ComfyUI-server test platform, parameterized per OS by class attrs."""
 
@@ -68,7 +95,8 @@ class VenvServerPlatform(TestPlatform):
 
     def is_cuda_mode(self) -> bool:
         """Detect if the CUDA accelerator is enabled."""
-        return os.environ.get("COMFY_TEST_CUDA", "0") not in ("0", "", "false", "no")
+        from ..common.accel import is_cuda_run
+        return is_cuda_run()
 
     # --- override hooks ------------------------------------------------------
 
@@ -173,11 +201,8 @@ class VenvServerPlatform(TestPlatform):
         if comfyui_dir.exists():
             shutil.rmtree(comfyui_dir)
 
-        clone_args = ["git", "clone", "--depth", "1"]
-        if config.comfyui_version != "latest":
-            clone_args.extend(["--branch", config.comfyui_version])
-        clone_args.extend([COMFYUI_REPO, str(comfyui_dir)])
-        self._run_command(clone_args, cwd=work_dir)
+        for cmd in comfyui_clone_commands(config.comfyui_version, str(comfyui_dir)):
+            self._run_command(cmd, cwd=work_dir)
 
         custom_nodes_dir = comfyui_dir / "custom_nodes"
         custom_nodes_dir.mkdir(exist_ok=True)

@@ -1,9 +1,7 @@
 """Test results and state management for comfy-test orchestration."""
 
 import json
-import os
 import platform
-import subprocess
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, List
@@ -110,8 +108,15 @@ def get_hardware_info() -> dict:
 
 
 def get_workflow_timeout(config_timeout: int) -> int:
-    """Get workflow timeout, using very long timeout for CUDA mode."""
-    if os.environ.get("COMFY_TEST_CUDA"):
-        # CUDA mode: use 24 hours (effectively no timeout)
+    """The per-workflow timeout, relaxed on CUDA lanes.
+
+    This used to be a bare truthiness test on `COMFY_TEST_CUDA`, which every
+    CPU lane sets to the string "0" -- so the 24-hour ceiling applied
+    everywhere and the configured timeout was dead on all six hosted lanes. A
+    hung workflow burned the full job allowance and produced no results.json.
+    """
+    from ..common.accel import is_cuda_run
+    if is_cuda_run():
+        # Self-hosted CUDA lanes have no job ceiling to fall back on.
         return 86400
     return config_timeout

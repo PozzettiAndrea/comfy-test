@@ -36,7 +36,8 @@ def get_ci_env_vars() -> Dict[str, str]:
 
 def is_cuda_mode_enabled() -> bool:
     """Check if GPU mode is enabled via environment variable."""
-    return os.environ.get("COMFY_TEST_CUDA", "0") not in ("0", "", "false", "no")
+    from ..common.accel import is_cuda_run
+    return is_cuda_run()
 
 
 # =============================================================================
