@@ -426,6 +426,13 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
     - ``NODE_CLASS_MAPPINGS = { "Type": Cls, ... }``
     - ``NODE_CLASS_MAPPINGS.update({ "Type": Cls, ... })``
     - ``NODE_CLASS_MAPPINGS["Type"] = Cls``
+    - a V3 class whose body calls ``*.Schema(node_id="Type", ...)``
+
+    The V3 form matters: ComfyUI accepts `NODE_CLASS_MAPPINGS` **or** a
+    `comfy_entrypoint` returning classes whose schema carries the node id
+    (nodes.py:2292-2331). Scanning only the V1 form found nothing in a V3-only
+    pack, and `levels/coverage.py` then failed it with "Found 0 registered
+    nodes" -- accusing a pack that registers perfectly well.
 
     Returns ``(node_type_names, warnings)``.
     """
@@ -443,6 +450,11 @@ def discover_registered_nodes(pack_dir: Path) -> Tuple[Set[str], List[str]]:
             continue
 
         for node in ast.walk(tree):
+            # V3: class Foo(io.ComfyNode) whose schema declares its node_id.
+            if isinstance(node, ast.ClassDef):
+                schema_id = _find_schema_node_id(node)
+                if schema_id:
+                    found.add(schema_id)
             # NODE_CLASS_MAPPINGS = {...}   (and chained / annotated assigns)
             if isinstance(node, ast.Assign):
                 if any(_is_mapping_target(t) for t in node.targets):
