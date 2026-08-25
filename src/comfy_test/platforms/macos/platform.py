@@ -72,7 +72,7 @@ class MacOSPlatform(VenvServerPlatform):
         # No --index-url override: PyTorch publishes no `/whl/*` subindex with
         # macOS wheels, so default PyPI is authoritative and ships the MPS-capable
         # macosx_*_arm64 wheel. Pin the family to a known-good version (default
-        # 2.10.0 from TORCH_TRIPLES) -- 2.12's only osx-arm64 wheel is tagged
+        # the resolved default) -- 2.12's only osx-arm64 wheel is tagged
         # macosx_14_0 (pixi targets macOS 13) and 2.11 has no +cu128; 2.10 ships
         # the full cu128 triple AND a macosx_11_0_arm64 wheel.
         env_torch = os.environ.get("COMFY_TEST_TORCH_VERSION", "").strip()

@@ -114,14 +114,25 @@ jobs:
         shell: powershell
         working-directory: ${{ env.COMFYUI_DIR }}\custom_nodes\${{ env.NODE_NAME }}
         run: |
-          if (Test-Path "requirements.txt") { & $env:PYTHON_EXE -m pip install -r requirements.txt }
-          if (Test-Path "install.py") { & $env:PYTHON_EXE install.py }
+          # Guard inside the braces -- powershell only propagates the last
+          # command's $LASTEXITCODE, so a failing requirements.txt was masked
+          # by a succeeding install.py.
+          if (Test-Path "requirements.txt") {
+            & $env:PYTHON_EXE -m pip install -r requirements.txt
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (Test-Path "install.py") {
+            & $env:PYTHON_EXE install.py
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Install validate endpoint
         shell: powershell
         run: |
+          # No `$true` sentinel: a failed clone means the validation level
+          # silently tests nothing.
           git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$env:COMFYUI_DIR\custom_nodes\ComfyUI-validate-endpoint"
-          $true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # --- Start server ---
       - name: Start ComfyUI server

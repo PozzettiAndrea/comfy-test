@@ -477,10 +477,10 @@ def add_run_parser(subparsers):
         default=None,
         metavar="VERSION",
         help="Override torch_version in TestConfig. Accepts 'X.Y.Z' (auto-derives "
-             "torchvision/torchaudio from common.config.TORCH_TRIPLES), 'latest' "
+             "torchvision/torchaudio derived from PyPI), 'latest' "
              "(opt out of pinning), or a slash-separated triple "
              "'torch/torchvision/torchaudio'. Default comes from TestConfig "
-             "(comfy-test.toml) -> common.config.DEFAULT_TORCH_VERSION. "
+             "(comfy-test.toml) -> newest torch with both companions published. "
              "Also reads $COMFY_TEST_TORCH_VERSION as an override.",
     )
     run_parser.add_argument(

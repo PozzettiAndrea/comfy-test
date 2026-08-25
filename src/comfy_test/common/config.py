@@ -31,40 +31,32 @@ DEFAULT_PYTHON_VERSION = "3.13"
 # derived auxiliary versions, pass a slash-separated triple like
 # "2.13.0/0.28.0/2.13.0".
 
-# Known-good torch / torchvision / torchaudio triples available on PyPI as
-# cp310/cp311/cp312/cp313 manylinux + win + macos wheels. Verify wheel
-# availability on pypi.org (or pytorch.org/whl/cu128) before adding entries.
-TORCH_TRIPLES: dict = {
-    "2.11.0": ("0.26.0", "2.11.0"),
-    "2.10.0": ("0.25.0", "2.10.0"),
-    "2.9.1":  ("0.24.1", "2.9.1"),
-    "2.9.0":  ("0.24.0", "2.9.0"),
-    "2.8.0":  ("0.23.0", "2.8.0"),
-}
+# No table. The triple is derived from what PyPI publishes and cached on disk
+# (see common/torch_triple.py) -- there is nothing here to update when torch
+# ships a new release.
+def _default_torch_version() -> str:
+    """Newest torch with BOTH companions published.
 
-# The newest torch in the table above, computed rather than frozen. A
-# hand-written default is a decision nobody revisits, and it ages silently --
-# every run then pins a torch no user installs. Refreshing TORCH_TRIPLES moves
-# this on its own.
-#
-# Note this is the newest COMPLETE triple, not the newest torch: torchaudio
-# trails torch by a release or two, so the newest torch is routinely not
-# installable as a set.
-DEFAULT_TORCH_VERSION = max(TORCH_TRIPLES, key=lambda v: [int(x) for x in v.split(".")])
+    Not the newest torch: torchaudio trails by a release or two, so the newest
+    torch is routinely not installable as a set.
+    """
+    from .torch_triple import newest_complete
+    return newest_complete()
+
 
 
 def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str]]:
     """Resolve a torch_version specifier to a (torch, torchvision, torchaudio) triple.
 
     Accepts:
-      None or ""    -> use DEFAULT_TORCH_VERSION
+      None or ""    -> newest torch with both companions published
       "latest"      -> None (opt out of pinning; let uv resolve freely)
-      "X.Y.Z"       -> auto-derive from TORCH_TRIPLES; raises if unknown
+      "X.Y.Z"       -> companions derived from PyPI; raises if incomplete
       "T/V/A"       -> slash-separated explicit triple (escape hatch for
-                       versions not in TORCH_TRIPLES yet)
+                       an unpublished or offline case)
     """
     if version is None or version == "":
-        version = DEFAULT_TORCH_VERSION
+        version = _default_torch_version()
     if version == "latest":
         return None
     if "/" in version:
@@ -75,7 +67,7 @@ def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str
             )
         return (parts[0], parts[1], parts[2])
     from .torch_triple import resolve as _resolve_triple
-    return _resolve_triple(version, TORCH_TRIPLES)
+    return _resolve_triple(version)
 
 
 def resolve_python_version(requested=None) -> str:
@@ -415,7 +407,8 @@ class TestConfig:
     name: str
     comfyui_version: str = "latest"
     python_version: str = field(default_factory=_default_python_version)
-    torch_version: str = DEFAULT_TORCH_VERSION
+    # "" means "resolve at use", so importing config does no network I/O.
+    torch_version: str = ""
     # Extra PyPI indexes passed to uv/pip as --extra-index-url (in addition to the
     # built-in PyTorch wheel index + pypi.org). For private mirrors / Artifactory.
     extra_pip_indices: List[str] = field(default_factory=list)
@@ -536,17 +529,20 @@ def build_provenance(config=None, install_mode: str = "fresh") -> dict:
         python_version = os.environ.get("COMFY_TEST_PYTHON_VERSION") or (
             f"{sys.version_info.major}.{sys.version_info.minor}")
 
+    # `config is None` means nobody pinned anything -- the Desktop path runs
+    # outside the orchestrator and uses the app's bundled torch, so claiming a
+    # triple there would be a lie. With a config, an EMPTY torch_version still
+    # means "the default pin", so it must be resolved and reported as the
+    # concrete version rather than left blank.
     torch_version = getattr(config, "torch_version", None) if config else None
     torch_triple = None
-    # Only claim a triple when a version was actually requested -- resolving
-    # None yields the DEFAULT pin, and reporting that for a run we did not pin
-    # (e.g. the Desktop app's bundled torch) would be a lie.
-    if torch_version:
+    if config is not None:
         try:
-            triple = resolve_torch_triple(torch_version)
+            triple = resolve_torch_triple(torch_version or None)
             if triple:
                 torch_triple = {"torch": triple[0], "torchvision": triple[1],
                                 "torchaudio": triple[2]}
+                torch_version = triple[0]
         except Exception:
             pass
 

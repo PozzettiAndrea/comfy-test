@@ -75,34 +75,21 @@ def run(ctx: LevelContext) -> LevelContext:
         TestError: If checks fail
     """
     ctx.log(f"\n[DEBUG] server={ctx.server}, api={ctx.api}")
-    _check_project_structure(ctx)
+    # A dependency file is a PUBLISHING requirement, not a nodehood one:
+    # ComfyUI loads a pack from its __init__.py alone (nodes.py load_custom_node),
+    # so a pack with no dependencies is legal and must not fail here. The
+    # Registry check belongs in `comfy-test publish`, which is where publishing
+    # is actually attempted.
+    if (ctx.node_dir / "pyproject.toml").exists():
+        ctx.log("Found pyproject.toml (modern format)")
+    elif (ctx.node_dir / "requirements.txt").exists():
+        ctx.log("Found requirements.txt (legacy format)")
+    else:
+        ctx.log("Note: no pyproject.toml or requirements.txt. Legal for a pack "
+                "with no dependencies; required to publish to the Comfy Registry.")
     _check_unicode_characters(ctx)
     _check_forbidden_patterns(ctx)
     return ctx
-
-
-def _check_project_structure(ctx: LevelContext) -> None:
-    """Check project has dependency file (pyproject.toml or requirements.txt).
-
-    Raises:
-        TestError: If neither file exists
-    """
-    pyproject = ctx.node_dir / "pyproject.toml"
-    requirements = ctx.node_dir / "requirements.txt"
-
-    has_pyproject = pyproject.exists()
-    has_requirements = requirements.exists()
-
-    if has_pyproject:
-        ctx.log("Found pyproject.toml (modern format)")
-    if has_requirements:
-        ctx.log("Found requirements.txt (legacy format)")
-
-    if not has_pyproject and not has_requirements:
-        raise TestError(
-            "No dependency file found",
-            "Expected pyproject.toml or requirements.txt in node directory"
-        )
 
 
 def _check_unicode_characters(ctx: LevelContext) -> None:

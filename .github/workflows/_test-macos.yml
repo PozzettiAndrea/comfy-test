@@ -136,11 +136,18 @@ jobs:
       - name: Install node dependencies
         working-directory: ${{ env.COMFYUI_DIR }}/custom_nodes/${{ env.NODE_NAME }}
         run: |
-          [ -f requirements.txt ] && $VENV/bin/uv pip install -r requirements.txt || true
-          [ -f install.py ] && $VENV/bin/python install.py || true
+          # `[ -f x ] && cmd` returns 1 when the file is ABSENT, which fails the
+          # step under `bash -e` -- that is the only thing `|| true` was for.
+          # It also swallowed genuine pip/install.py failures, so a pack that
+          # cannot install still went green. if/fi covers the absent case
+          # without hiding the failure case.
+          if [ -f requirements.txt ]; then $VENV/bin/uv pip install -r requirements.txt; fi
+          if [ -f install.py ]; then $VENV/bin/python install.py; fi
 
       - name: Install validate endpoint
-        run: git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint" || true
+        # Not `|| true`: the validation level POSTs to this pack's /validate
+        # endpoint, so a failed clone means validation silently tests nothing.
+        run: git clone --depth 1 https://github.com/PozzettiAndrea/ComfyUI-validate-endpoint.git "$COMFYUI_DIR/custom_nodes/ComfyUI-validate-endpoint"
 
       # --- Start server ---
       - name: Start ComfyUI server
