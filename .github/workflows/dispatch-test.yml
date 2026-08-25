@@ -35,9 +35,13 @@ on:
         description: "node branch"
         type: string
         default: dev
-      platform:
+      lane:
         description: "linux-cpu | linux-cuda | windows-cpu | windows-cuda | windows-portable-cpu | windows-portable-cuda | macos-cpu | windows-desktop | windows-desktop-cuda | macos-desktop"
-        required: true
+        required: false
+        type: string
+      platform:
+        description: "DEPRECATED alias for `lane`. Callers pinned to an older tag still send this; delete once comfy-gpu-ci has bumped its pin."
+        required: false
         type: string
     secrets:
       NODE_PAT:
@@ -49,7 +53,7 @@ jobs:
   # =========================================================================
   cpu:
     if: ${{ !contains(inputs.platform, 'cuda') && !contains(inputs.platform, 'desktop') }}
-    name: ${{ inputs.platform }}
+    name: ${{ inputs.lane || inputs.platform }}
     runs-on: >-
       ${{ (startsWith(inputs.platform, 'linux') && 'ubuntu-latest')
           || (startsWith(inputs.platform, 'macos') && 'macos-latest')
@@ -286,7 +290,7 @@ jobs:
               throw 'test step is somehow running as Administrator'
           }
           `$comfyArgs = @('run', 'https://github.com/${{ inputs.node_repo }}.git', '--branch', '${{ inputs.branch }}')
-          if ('${{ inputs.platform }}' -like '*portable*') { `$comfyArgs += '--portable' }
+          if ('${{ inputs.lane || inputs.platform }}' -like '*portable*') { `$comfyArgs += '--portable' }
           Write-Host "[ci] invoking: $exe `$(`$comfyArgs -join ' ')"
           & '$exe' @comfyArgs
           # Intentionally NOT `exit $LASTEXITCODE` here -- that exits the whole
@@ -308,7 +312,7 @@ jobs:
           NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           PORTABLE_FLAG=""
-          if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
+          if [[ "${{ inputs.lane || inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
           comfy-test run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" \
             $PORTABLE_FLAG
@@ -316,7 +320,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ inputs.platform }}
+          name: results-${{ inputs.lane || inputs.platform }}
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
           include-hidden-files: true
@@ -326,7 +330,7 @@ jobs:
   # =========================================================================
   cuda:
     if: ${{ contains(inputs.platform, 'cuda') && !contains(inputs.platform, 'desktop') }}
-    name: ${{ inputs.platform }}
+    name: ${{ inputs.lane || inputs.platform }}
     runs-on: >-
       ${{ contains(inputs.platform, 'linux')
           && fromJson('["self-hosted","linux","cuda"]')
@@ -406,7 +410,7 @@ jobs:
           NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           PORTABLE_FLAG=""
-          if [[ "${{ inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
+          if [[ "${{ inputs.lane || inputs.platform }}" == *portable* ]]; then PORTABLE_FLAG="--portable"; fi
           sudo -E comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" \
             --branch "${{ inputs.branch }}" --cuda $PORTABLE_FLAG
 
@@ -419,7 +423,7 @@ jobs:
           NODE_PAT: ${{ secrets.NODE_PAT }}
         run: |
           set "PORTABLE_FLAG="
-          if /I "${{ inputs.platform }}"=="windows-portable-cuda" set "PORTABLE_FLAG=--portable"
+          if /I "${{ inputs.lane || inputs.platform }}"=="windows-portable-cuda" set "PORTABLE_FLAG=--portable"
           comfy-test docker run "https://github.com/${{ inputs.node_repo }}.git" --branch "${{ inputs.branch }}" --cuda %PORTABLE_FLAG%
 
       # Stage docker results into COMFY_TEST_LOGS_DIR so the artifact upload
@@ -457,7 +461,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ inputs.platform }}
+          name: results-${{ inputs.lane || inputs.platform }}
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
 
@@ -471,7 +475,7 @@ jobs:
   # =========================================================================
   desktop:
     if: ${{ contains(inputs.platform, 'desktop') && inputs.platform != 'windows-desktop-cuda' }}
-    name: ${{ inputs.platform }}
+    name: ${{ inputs.lane || inputs.platform }}
     runs-on: >-
       ${{ startsWith(inputs.platform, 'macos') && 'macos-latest' || 'windows-latest' }}
     timeout-minutes: 300
@@ -719,7 +723,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ inputs.platform }}
+          name: results-${{ inputs.lane || inputs.platform }}
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
 
@@ -736,7 +740,7 @@ jobs:
   # =========================================================================
   desktop_cuda:
     if: ${{ inputs.platform == 'windows-desktop-cuda' }}
-    name: ${{ inputs.platform }}
+    name: ${{ inputs.lane || inputs.platform }}
     # Self-hosted runner registered INSIDE the baseline VM (under the
     # autologon user, NOT SYSTEM). The "vm" label is set by the runner
     # registration in the VM (see `comfy-test vm build`'s in-VM checklist).
@@ -767,7 +771,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ inputs.platform }}
+          name: results-${{ inputs.lane || inputs.platform }}
           path: ${{ env.COMFY_TEST_LOGS_DIR }}/
           if-no-files-found: ignore
 
@@ -804,7 +808,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: results-${{ inputs.platform }}
+          name: results-${{ inputs.lane || inputs.platform }}
           path: ./results
 
       - name: Publish to gh-pages
@@ -820,10 +824,10 @@ jobs:
           echo "https://x-access-token:${NODE_PAT}@github.com" > ~/.git-credentials
           NODE_BASE="${{ inputs.node_repo }}"; SHORT_NAME="${NODE_BASE##*/}"; SHORT_NAME="${SHORT_NAME#ComfyUI-}"
           RESULTS=$(find ./results \
-            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/results.json" \
+            -path "*/${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.lane || inputs.platform }}/results.json" \
             2>/dev/null | head -1)
           if [ -z "$RESULTS" ]; then
-            echo "No results.json under ./results matching ${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.platform }}/. Listing artifact for debug:"
+            echo "No results.json under ./results matching ${SHORT_NAME}-*/${{ inputs.branch }}/${{ inputs.lane || inputs.platform }}/. Listing artifact for debug:"
             find ./results -maxdepth 6 -type f 2>/dev/null | head -50
             exit 0
           fi

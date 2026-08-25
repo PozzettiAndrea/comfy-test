@@ -906,7 +906,7 @@
 
     <div class="lightbox" id="lightbox">
         <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
-        <button class="lightbox-fullscreen" id="lightbox-fullscreen-btn" onclick="toggleTrueFullscreen()" title="Fullscreen (F) -- arrow keys walk workflows/platforms">&#x26F6;</button>
+        <button class="lightbox-fullscreen" id="lightbox-fullscreen-btn" onclick="toggleTrueFullscreen()" title="Fullscreen (F) -- arrow keys walk workflows/lanes">&#x26F6;</button>
         <button class="lightbox-nav lightbox-nav-left" onclick="navigateLightbox(-1)">&#8249;</button>
         <button class="lightbox-nav lightbox-nav-right" onclick="navigateLightbox(1)">&#8250;</button>
         <div class="lightbox-content">
@@ -1313,7 +1313,7 @@
                 if (key === 'ArrowRight') { navigateLightbox(1); }
                 if ((key === 'ArrowUp' || key === 'ArrowDown') && inIframe) {
                     window.parent.postMessage({
-                        type: 'comfytest-platform-shift',
+                        type: 'comfytest-lane-shift',
                         delta: key === 'ArrowUp' ? -1 : 1,
                         workflow: currentWorkflow,
                         fullscreen: overlay.classList.contains('active'),
@@ -1374,7 +1374,7 @@
             if (e.data.type === 'comfytest-open' && e.data.name) {
                 openLightboxByName(e.data.name);
                 if (e.data.fullscreen) {
-                    // Resume directly in fullscreen after a platform hop, instead
+                    // Resume directly in fullscreen after a lane hop, instead
                     // of landing on the plain lightbox.
                     const overlay = document.getElementById('img-overlay');
                     document.getElementById('img-overlay-content').src = document.getElementById('lightbox-img').src;

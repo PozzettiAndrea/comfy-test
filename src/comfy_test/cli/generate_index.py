@@ -10,7 +10,7 @@ over `reporting.html_report`, not logic of its own.
 from pathlib import Path
 
 from comfy_test.reporting.html_report import (
-    PLATFORMS,
+    LANES,
     generate_html_report,
     generate_root_index,
     generate_branch_root_index,
@@ -34,18 +34,18 @@ def cmd_generate_index(args) -> int:
         branch_dir = root / args.branch
         if branch_dir.exists():
             # Per-platform: render the report for any subdir whose name matches
-            # a known PLATFORMS id and contains a results.json (covers desktop
+            # a known LANES id and contains a results.json (covers desktop
             # runs whose output is just dropped into the tree by the workflow).
-            platform_ids = {p["id"] for p in PLATFORMS}
+            lane_ids = {p["id"] for p in LANES}
             for sub in sorted(branch_dir.iterdir()):
-                if not sub.is_dir() or sub.name not in platform_ids:
+                if not sub.is_dir() or sub.name not in lane_ids:
                     continue
                 if not (sub / "results.json").exists():
                     print(f"Skipping {sub.name}: no results.json")
                     continue
                 try:
                     per_index = generate_html_report(
-                        sub, repo_name=args.repo_name, current_platform=sub.name)
+                        sub, repo_name=args.repo_name)
                     print(f"Generated: {per_index}")
                 except Exception as e:
                     print(f"Failed to render {sub.name}: {e}")

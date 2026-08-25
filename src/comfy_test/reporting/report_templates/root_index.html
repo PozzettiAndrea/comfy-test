@@ -24,16 +24,16 @@
 </head>
 <body>
   <div class="tab-bar">
-    <span class="tab-bar-label">Platform</span>
+    <span class="tab-bar-label">Lane</span>
     <div id="tabs" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
   </div>
   <iframe id="frame" src="about:blank" allow="fullscreen" allowfullscreen></iframe>
   <script>
-    const platforms = $platforms_json;
+    const lanes = $lanes_json;
     const tabs = document.getElementById('tabs');
     const frame = document.getElementById('frame');
     let activeTab = null;
-    const platformWorkflows = {};  // id -> Set of workflow names (only set for platforms with results.json)
+    const laneWorkflows = {};  // id -> Set of workflow names (only set for lanes with results.json)
 
     async function fetchStatus(id) {
       // Returns 'passed' | 'failed' | 'available' | 'unavailable'.
@@ -41,7 +41,7 @@
         const r = await fetch(id + '/results.json', { cache: 'no-cache' });
         if (r.ok) {
           const data = await r.json();
-          platformWorkflows[id] = new Set((data.workflows || []).map(w => w.name));
+          laneWorkflows[id] = new Set((data.workflows || []).map(w => w.name));
           if (typeof data.success === 'boolean') return data.success ? 'passed' : 'failed';
         }
       } catch {}
@@ -52,7 +52,7 @@
     }
 
     async function init() {
-      for (const p of platforms) {
+      for (const p of lanes) {
         const status = await fetchStatus(p.id);
         const interactive = status !== 'unavailable';
         const btn = document.createElement('button');
@@ -77,9 +77,9 @@
           activeTab = p.id;
           history.replaceState(null, '', '#' + p.id);
           // Bubble up to the outer branch_index so it can sync the
-          // address bar to #<branch>/<platform>.
+          // address bar to #<branch>/<lane>.
           if (window !== window.top) {
-            window.parent.postMessage({ type: 'comfytest-platform-changed', platform: p.id }, '*');
+            window.parent.postMessage({ type: 'comfytest-lane-changed', lane: p.id }, '*');
           }
         };
         tabs.appendChild(btn);
@@ -92,11 +92,11 @@
     }
 
     // The outer branch_index parses #<branch>/<rest> and forwards
-    // <rest> to us. If <rest> is a platform id, click that tab; else
+    // <rest> to us. If <rest> is a lane id, click that tab; else
     // it's a workflow name and the inner report iframe will handle it.
-    function selectPlatform(platform) {
+    function selectLane(lane) {
       const buttons = Array.from(document.querySelectorAll('.tab'));
-      const idx = platforms.findIndex(p => p.id === platform);
+      const idx = lanes.findIndex(p => p.id === lane);
       if (idx < 0) return false;
       const btn = buttons[idx];
       if (btn && !btn.classList.contains('unavailable')) {
@@ -131,16 +131,16 @@
     });
 
     // Forward messages between report iframe and parent (branch_index).
-    // Special cases for `comfytest-platform-select` from the parent:
+    // Special cases for `comfytest-lane-select` from the parent:
     // click the tab; if there's a `workflow` field, queue a follow-up
-    // `comfytest-open` to fire once the new platform iframe is ready.
+    // `comfytest-open` to fire once the new lane iframe is ready.
     window.addEventListener('message', function(e) {
       if (e.data && e.data.type && e.data.type.startsWith('comfytest-')) {
-        if (e.source === frame.contentWindow && e.data.type === 'comfytest-platform-shift') {
-          // Up/Down from the report lightbox: hop to the prev/next platform
+        if (e.source === frame.contentWindow && e.data.type === 'comfytest-lane-shift') {
+          // Up/Down from the report lightbox: hop to the prev/next lane
           // that has the same workflow. No wrap-around.
           const { delta, workflow, fullscreen, zoomed, trueFullscreen } = e.data;
-          const order = platforms.map(p => p.id);
+          const order = lanes.map(p => p.id);
           const cur = order.indexOf(activeTab);
           if (cur < 0) return;
           const allTabs = document.querySelectorAll('.tab');
@@ -150,7 +150,7 @@
             const target = order[idx];
             const tabBtn = allTabs[idx];
             if (tabBtn.classList.contains('unavailable')) continue;
-            if (workflow && platformWorkflows[target] && !platformWorkflows[target].has(workflow)) continue;
+            if (workflow && laneWorkflows[target] && !laneWorkflows[target].has(workflow)) continue;
             if (workflow) pendingMessage = { type: 'comfytest-open', name: workflow, fullscreen, zoomed, trueFullscreen };
             tabBtn.click();
             break;
@@ -158,15 +158,15 @@
         } else if (e.source === frame.contentWindow) {
           // From report iframe -> forward to parent
           if (window !== window.top) window.parent.postMessage(e.data, '*');
-        } else if (e.data.type === 'comfytest-platform-select') {
-          const ok = selectPlatform(e.data.platform);
+        } else if (e.data.type === 'comfytest-lane-select') {
+          const ok = selectLane(e.data.lane);
           if (ok && e.data.workflow) {
-            // Queue the workflow open until after the new platform's
+            // Queue the workflow open until after the new lane's
             // report iframe fires its load event.
             pendingMessage = { type: 'comfytest-open', name: e.data.workflow };
           } else if (!ok) {
-            // Not a known platform — treat as workflow open instead.
-            const fallback = { type: 'comfytest-open', name: e.data.platform };
+            // Not a known lane — treat as workflow open instead.
+            const fallback = { type: 'comfytest-open', name: e.data.lane };
             if (frameReady) frame.contentWindow.postMessage(fallback, '*');
             else pendingMessage = fallback;
           }

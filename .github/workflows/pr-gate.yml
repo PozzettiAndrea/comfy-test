@@ -204,18 +204,23 @@ jobs:
           comfy-test generate-index gh-pages --branch main --repo-name "${{ github.repository }}"
 
       # --- Screenshot gallery for README ---
-      - name: Find screenshot platform
+      - name: Find screenshot lane
         id: find-platform
         run: |
-          for dir in windows-portable-cpu windows-portable-cuda windows-cpu windows-cuda linux-cuda linux-cpu; do
+          # Preference order, then ANY remaining lane that published a report.
+          # The old hardcoded list named 6 of 10 lanes, so a macOS- or
+          # desktop-only pack silently never regenerated its README gallery.
+          preferred="windows-portable-cpu windows-portable-cuda windows-cpu windows-cuda linux-cuda linux-cpu"
+          rest=$(ls -1 gh-pages/main 2>/dev/null || true)
+          for dir in $preferred $rest; do
             if [ -f "gh-pages/main/$dir/index.html" ]; then
               echo "platform=$dir" >> "$GITHUB_OUTPUT"
-              echo "Found screenshot platform: $dir"
+              echo "Found screenshot lane: $dir"
               exit 0
             fi
           done
           echo "platform=" >> "$GITHUB_OUTPUT"
-          echo "No screenshot platform found, skipping"
+          echo "No screenshot lane found, skipping"
 
       - name: Screenshot gallery
         if: steps.find-platform.outputs.platform != ''

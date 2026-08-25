@@ -11,7 +11,7 @@ Skips gracefully if pyyaml isn't installed.
 
 from pathlib import Path
 
-import comfy_test.platforms as P
+import comfy_test.lanes as P
 
 WF = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "test-matrix.yml"
 
@@ -26,7 +26,7 @@ def test_hosted_platforms_match_registry():
     outputs = doc["jobs"]["setup"]["outputs"]
     wf_hosted = {k[len("run-"):] for k in outputs
                  if k.startswith("run-") and k != "run-publish"}
-    reg_hosted = {p.config_key.replace("_", "-") for p in P.PLATFORMS if p.hosted}
+    reg_hosted = {p.config_key.replace("_", "-") for p in P.LANES if p.hosted}
     assert wf_hosted == reg_hosted, (
         f"test-matrix.yml hosted platforms {sorted(wf_hosted)} != "
         f"registry hosted {sorted(reg_hosted)}")

@@ -3940,7 +3940,7 @@ _passed = sum(1 for w in _workflow_results if w.get("status") == "pass")
 _failed = sum(1 for w in _workflow_results if w.get("status") != "pass")
 _results_data = {
     "timestamp":   _dt.now(_tz.utc).isoformat(),
-    "platform":    os.environ.get("COMFY_TEST_DESKTOP_PLATFORM", "unknown_desktop"),
+    "lane":        os.environ.get("COMFY_TEST_DESKTOP_LANE", "unknown_desktop"),
     "hardware":    _hardware_info(),
     "comfyui_version": _comfyui_version(),
     "commit_hash": os.environ.get("COMFY_TEST_NODE_SHA") or None,

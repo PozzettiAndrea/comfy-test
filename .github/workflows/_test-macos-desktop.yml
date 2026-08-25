@@ -218,8 +218,7 @@ jobs:
           from pathlib import Path
           from comfy_test.reporting.html_report import generate_html_report
           generate_html_report(Path(os.environ['COMFY_TEST_LOGS_DIR']),
-                               repo_name=os.environ.get('NODE_REPO', os.environ.get('NODE_NAME', '')),
-                               current_platform='macos-desktop')
+                               repo_name=os.environ.get('NODE_REPO', os.environ.get('NODE_NAME', '')))
           " || echo "index.html generation failed (non-fatal)"
 
       - uses: actions/upload-artifact@v4

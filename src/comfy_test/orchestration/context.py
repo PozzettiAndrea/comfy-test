@@ -34,6 +34,10 @@ class LevelContext:
     # Required fields (set at start)
     config: "TestConfig"
     node_dir: Path
+    # OS + install method: "linux" | "windows" | "macos" | "windows_portable".
+    # This is `platform` in the sys.platform sense -- it is the key
+    # levels/install.py:get_platform() dispatches the per-OS class on. It is
+    # NOT a lane id: it carries no accelerator.
     platform_name: str
     log: LogCallback
     output_base: Path
@@ -45,6 +49,10 @@ class LevelContext:
     # When set, INSTALL derives paths instead of building, and REGISTRATION
     # attaches instead of starting a server.
     server_url: Optional[str] = None
+    # Lane id this run belongs to (`linux-cuda`, `windows-portable-cpu`).
+    # platform_name + accelerator. Recorded in results.json; set by the caller
+    # because the desktop path mints its id differently.
+    lane_id: Optional[str] = None
     novram: bool = False  # Pass --novram to ComfyUI
     vram_debug: bool = False  # Enable VRAM debug logging
 
@@ -72,3 +80,16 @@ class LevelContext:
             >>> new_ctx = ctx.with_updates(platform=platform, paths=paths)
         """
         return replace(self, **kwargs)
+
+
+def resolve_lane_id(ctx) -> str:
+    """The lane id for a run: explicit if set, else platform_name + accelerator.
+
+    `platform_name` is the OS/install-method half (`windows_portable`); the
+    lane adds the accelerator (`windows-portable-cuda`). Hyphenated, matching
+    the on-disk directory and the registry id.
+    """
+    if ctx.lane_id:
+        return ctx.lane_id
+    from ..backends import active_backend_name
+    return f"{ctx.platform_name.replace('_', '-')}-{active_backend_name()}"

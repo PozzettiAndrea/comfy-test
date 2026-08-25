@@ -37,38 +37,41 @@
     let pendingTest = null;
 
     function parseHash() {
-      // `#<branch>` | `#<branch>/<platform>` | `#<branch>/<platform>/<workflow>`
-      const raw = decodeURIComponent(location.hash.slice(1));
-      const parts = raw.split('/');
+      // `#<branch>` | `#<branch>/<lane>` | `#<branch>/<lane>/<workflow>`
+      // Split FIRST, decode each segment after. Decoding the whole hash before
+      // splitting turned a workflow name containing "/" into extra segments,
+      // so `#dev/linux-cpu/a%2Fb` parsed as 4 parts and the workflow was lost.
+      const parts = location.hash.slice(1).split('/');
+      const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { return v; } };
       return {
-        branch: parts[0] || '',
-        platform: parts[1] || null,
-        workflow: parts[2] || null,
+        branch: parts[0] ? dec(parts[0]) : '',
+        lane: parts[1] ? dec(parts[1]) : null,
+        workflow: parts.length > 2 ? dec(parts.slice(2).join('/')) : null,
       };
     }
 
-    let lastPlatform = null;
-    let pendingPlatform = null;
+    let lastLane = null;
+    let pendingLane = null;
     let pendingWorkflow = null;
 
     function init() {
-      const { branch: hashBranch, platform: hashPlatform, workflow: hashWorkflow } = parseHash();
-      pendingPlatform = hashPlatform;
+      const { branch: hashBranch, lane: hashLane, workflow: hashWorkflow } = parseHash();
+      pendingLane = hashLane;
       pendingWorkflow = hashWorkflow;
 
       // When the inner iframe finishes loading, forward the pending
-      // platform (if any) so root_index can click that tab. The
+      // lane (if any) so root_index can click that tab. The
       // workflow piece flows on once the report iframe is ready —
       // root_index handles that step.
       frame.addEventListener('load', function() {
-        if (pendingPlatform) {
+        if (pendingLane) {
           setTimeout(function() {
             frame.contentWindow.postMessage({
-              type: 'comfytest-platform-select',
-              platform: pendingPlatform,
+              type: 'comfytest-lane-select',
+              lane: pendingLane,
               workflow: pendingWorkflow,
             }, '*');
-            pendingPlatform = null;
+            pendingLane = null;
             pendingWorkflow = null;
           }, 500);
         }
@@ -101,19 +104,19 @@
       }
     };
 
-    // Listen for test open/close + platform changes from inner iframes
-    // and reflect them in the URL hash as <branch>/<platform>/<workflow>.
+    // Listen for test open/close + lane changes from inner iframes
+    // and reflect them in the URL hash as <branch>/<lane>/<workflow>.
     window.addEventListener('message', function(e) {
       if (!e.data || !e.data.type || !activeTab) return;
-      if (e.data.type === 'comfytest-platform-changed') {
-        lastPlatform = e.data.platform;
-        history.replaceState(null, '', '#' + activeTab + '/' + e.data.platform);
+      if (e.data.type === 'comfytest-lane-changed') {
+        lastLane = e.data.lane;
+        history.replaceState(null, '', '#' + activeTab + '/' + e.data.lane);
       } else if (e.data.type === 'comfytest-open') {
         const wf = '/' + encodeURIComponent(e.data.name);
-        const plat = lastPlatform ? '/' + lastPlatform : '';
+        const plat = lastLane ? '/' + lastLane : '';
         history.replaceState(null, '', '#' + activeTab + plat + wf);
       } else if (e.data.type === 'comfytest-close') {
-        const plat = lastPlatform ? '/' + lastPlatform : '';
+        const plat = lastLane ? '/' + lastLane : '';
         history.replaceState(null, '', '#' + activeTab + plat);
       }
     });

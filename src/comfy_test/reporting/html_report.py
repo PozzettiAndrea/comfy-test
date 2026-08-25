@@ -1,7 +1,7 @@
 """HTML report generator for test results.
 
 This module generates an index.html file from test results that can be:
-- Served locally via `ct show` for development preview
+- Published to gh-pages; see `comfy-test publish` for development preview
 - Published to gh-pages for public visibility
 """
 
@@ -20,9 +20,9 @@ import subprocess
 
 # Platform definitions for the multi-platform index -- derived from the single
 # source of truth in comfy_test.platforms (id + label per platform).
-from ..platforms.registry import gallery_platforms
+from ..lanes.registry import gallery_lanes
 
-PLATFORMS = gallery_platforms()
+LANES = gallery_lanes()
 
 
 def _load_template(name: str) -> str:
@@ -139,14 +139,12 @@ def _get_system_info() -> dict:
 def generate_html_report(
     output_dir: Path,
     repo_name: Optional[str] = None,
-    current_platform: Optional[str] = None
 ) -> Path:
     """Generate index.html from results.json and screenshots.
 
     Args:
         output_dir: Directory containing results.json, screenshots/, logs/, videos/
         repo_name: Optional repository name for the header
-        current_platform: Optional platform ID if this is a multi-platform subdir
 
     Returns:
         Path to the generated index.html file
@@ -195,13 +193,6 @@ def generate_html_report(
         repo_name = output_dir.parent.name
         if repo_name in (".", ".comfy-test"):
             repo_name = output_dir.parent.parent.name
-
-    # Auto-detect platform from directory name if not provided
-    if current_platform is None:
-        dir_name = output_dir.name
-        platform_ids = [p['id'] for p in PLATFORMS]
-        if dir_name in platform_ids:
-            current_platform = dir_name
 
     # Load models report if available
     models_data = None
@@ -478,7 +469,7 @@ def generate_root_index(output_dir: Path, repo_name: Optional[str] = None) -> Pa
     template = Template(_load_template("root_index.html"))
     html_content = template.safe_substitute(
         title=html.escape(title),
-        platforms_json=json.dumps(PLATFORMS),
+        lanes_json=json.dumps(LANES),
     )
 
     index_file = output_dir / 'index.html'
@@ -502,7 +493,7 @@ def generate_branch_root_index(output_dir: Path, repo_name: Optional[str] = None
     branches = []
     for subdir in sorted(output_dir.iterdir()):
         if subdir.is_dir() and (subdir / 'index.html').exists():
-            if subdir.name not in [p['id'] for p in PLATFORMS]:
+            if subdir.name not in [p['id'] for p in LANES]:
                 branches.append(subdir.name)
 
     # Ensure 'main' is first if it exists
@@ -522,10 +513,62 @@ def generate_branch_root_index(output_dir: Path, repo_name: Optional[str] = None
     return index_file
 
 
-def has_platform_subdirs(output_dir: Path) -> bool:
-    """Check if output_dir has platform subdirectories with results."""
-    for p in PLATFORMS:
-        platform_dir = output_dir / p['id']
-        if (platform_dir / 'index.html').exists():
-            return True
-    return False
+def _branch_dirs(root: Path) -> list:
+    """Immediate subdirectories of the gh-pages root that are branches.
+
+    A branch is "any directory that is not a lane". Deliberately negative:
+    branch names are arbitrary (`dev`, `feat/foo`), lane ids are the closed
+    set, so the registry can only be used to EXCLUDE.
+    """
+    lane_ids = {lane["id"] for lane in LANES}
+    return [d for d in sorted(root.iterdir())
+            if d.is_dir() and not d.name.startswith(".") and d.name not in lane_ids]
+
+
+def _lane_dirs(branch_dir: Path) -> list:
+    """Lane directories inside one branch, selected by RESULTS, not by registry.
+
+    Anything holding a results.json is re-renderable and must be re-rendered.
+    Filtering by registry membership instead would permanently strand any
+    directory whose name is no longer a known lane id -- a stale island of
+    pre-rename HTML that the full re-render is supposed to eliminate. Publish
+    (`cli/publish.py`) writes directory names verbatim, so such dirs can exist.
+    """
+    return [d for d in sorted(branch_dir.iterdir())
+            if d.is_dir() and (d / "results.json").exists()]
+
+
+def regenerate_tree(root: Path, repo_name: Optional[str] = None,
+                    log=None) -> dict:
+    """Re-render EVERY page on a gh-pages tree from the results already there.
+
+    The dashboard is three nested frames published at three different times:
+    a run touches one lane, so without this the tree accumulates pages built
+    by different comfy-test versions that must still talk to each other over
+    postMessage. Every published lane dir keeps its results.json, so the whole
+    tree is always re-renderable from what is already on disk -- no artifacts
+    needed.
+
+    This also fixes a drift that predates any rename: the lane list is baked
+    into each branch page at render time, so a newly added lane appears only
+    in branches that happen to be republished.
+
+    Returns {"lanes": n, "branches": n} for logging.
+    """
+    _log = log or (lambda _m: None)
+    counts = {"lanes": 0, "branches": 0}
+
+    for branch_dir in _branch_dirs(root):
+        for lane_dir in _lane_dirs(branch_dir):
+            try:
+                generate_html_report(lane_dir, repo_name=repo_name)
+                counts["lanes"] += 1
+            except Exception as e:
+                _log(f"  re-render failed for {branch_dir.name}/{lane_dir.name}: {e}")
+        generate_root_index(branch_dir, repo_name)
+        counts["branches"] += 1
+
+    generate_branch_root_index(root, repo_name)
+    _log(f"Re-rendered {counts['lanes']} lane report(s) across "
+         f"{counts['branches']} branch(es)")
+    return counts

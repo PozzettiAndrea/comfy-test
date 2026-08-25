@@ -1,38 +1,20 @@
-"""Platform implementations for comfy-test.
+"""Per-OS behaviour implementations for comfy-test.
 
-This module contains OS-specific platform implementations:
-- linux/: Linux platform
-- windows/: Windows native platform
-- windows_portable/: Windows Portable (embedded Python)
-- macos/: macOS platform
+This is `platform` in the `sys.platform` sense -- how to build a venv, where
+the interpreter lives, how to launch a server on this operating system:
 
-Each platform provides CI and local execution modes.
+- linux/, windows/, windows_portable/, macos/
+
+The *lane* taxonomy (the ten (os x backend x install_method) combinations a
+pack can be tested against) lives in `comfy_test.lanes`, not here.
 """
 
-from .registry import (
-    Platform,
-    PLATFORMS,
-    BY_ID,
-    resolve,
-    allowed_tokens,
-    gallery_platforms,
-    matrix,
-)
 from .linux.platform import LinuxPlatform
 from .windows.platform import WindowsPlatform
 from .windows_portable.platform import WindowsPortablePlatform
 from .macos.platform import MacOSPlatform
 
 __all__ = [
-    # Platform registry (single source of truth for the platform taxonomy)
-    "Platform",
-    "PLATFORMS",
-    "BY_ID",
-    "resolve",
-    "allowed_tokens",
-    "gallery_platforms",
-    "matrix",
-    # OS-specific implementations
     "LinuxPlatform",
     "WindowsPlatform",
     "WindowsPortablePlatform",

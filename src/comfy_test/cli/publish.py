@@ -53,19 +53,18 @@ def _git_remote_url(repo: str) -> str:
     return authenticated_github_url(repo)
 
 
-def _publish_platforms(
-    platforms: list[tuple[str, str, Path]],  # [(branch, platform, results_dir), ...]
+def _publish_lanes(
+    lanes: list[tuple[str, str, Path]],  # [(branch, lane, results_dir), ...]
     repo: str,
     generate_html_report,
-    generate_root_index,
-    generate_branch_root_index,
+    regenerate_tree,
 ) -> int:
-    """Publish one or more platform results to gh-pages in a single push."""
+    """Publish one or more lane results to gh-pages in a single push."""
 
-    # Generate HTML reports for each platform
-    for branch, platform, results_dir in platforms:
-        print(f"Generating HTML report for {branch}/{platform}...")
-        generate_html_report(results_dir, repo_name=repo, current_platform=platform)
+    # Generate HTML reports for each lane
+    for branch, lane, results_dir in lanes:
+        print(f"Generating HTML report for {branch}/{lane}...")
+        generate_html_report(results_dir, repo_name=repo)
 
     remote_url = _git_remote_url(repo)
     git_env = _git_env()
@@ -104,11 +103,11 @@ def _publish_platforms(
                 print(f"git clone failed: {stderr}", file=sys.stderr)
                 return 1
 
-        # Replace each platform directory
+        # Replace each lane directory
         branches_touched = set()
         labels = []
-        for branch, platform, results_dir in platforms:
-            dest = gh_pages_dir / branch / platform
+        for branch, lane, results_dir in lanes:
+            dest = gh_pages_dir / branch / lane
             if dest.exists():
                 shutil.rmtree(dest)
             dest.mkdir(parents=True)
@@ -122,19 +121,19 @@ def _publish_platforms(
                     shutil.copy2(item, dest / item.name)
 
             branches_touched.add(branch)
-            labels.append(f"{branch}/{platform}")
-            print(f"  Updated {branch}/{platform}")
+            labels.append(f"{branch}/{lane}")
+            print(f"  Updated {branch}/{lane}")
 
         # Ensure .nojekyll exists
         (gh_pages_dir / ".nojekyll").touch()
 
-        # Regenerate index pages for touched branches
-        for branch in branches_touched:
-            branch_dir = gh_pages_dir / branch
-            if branch_dir.exists():
-                generate_root_index(branch_dir, repo_name=repo)
-
-        generate_branch_root_index(gh_pages_dir, repo_name=repo)
+        # Re-render the WHOLE tree, not just the branches this run touched.
+        # The three frame levels are published at different times, so a partial
+        # regeneration leaves pages from different comfy-test versions talking
+        # to each other over postMessage -- silently degrading deep links and
+        # lane switching. Every lane dir keeps its results.json, so the whole
+        # tree is re-renderable from what is already on disk.
+        regenerate_tree(gh_pages_dir, repo_name=repo, log=print)
 
         # Commit and push
         subprocess.run(["git", "add", "-A"], cwd=gh_pages_dir, check=True)
@@ -189,15 +188,14 @@ def cmd_publish(args) -> int:
     """Publish results to gh-pages.
 
     Accepts either:
-      - A platform results dir:  logs/SAM3-2346/dev/macos-cpu
-      - A parent log dir:        logs/SAM3-2346  (finds all platforms inside)
+      - A lane results dir:  logs/SAM3-2346/dev/macos-cpu
+      - A parent log dir:        logs/SAM3-2346  (finds all lanes inside)
 
     If --repo is not provided, detects from git remote origin.
     """
     from ..reporting.html_report import (
         generate_html_report,
-        generate_root_index,
-        generate_branch_root_index,
+        regenerate_tree,
     )
 
     results_dir = Path(args.results_dir).expanduser().resolve()
@@ -214,32 +212,32 @@ def cmd_publish(args) -> int:
             return 1
         print(f"Detected repo: {repo}")
 
-    # Find platform result dirs
+    # Find lane result dirs
     if (results_dir / "results.json").exists():
-        # Direct platform dir
-        platform = results_dir.name
+        # Direct lane dir
+        lane = results_dir.name
         branch = results_dir.parent.name
-        if not platform or not branch:
-            print(f"Cannot infer branch/platform from path: {results_dir}", file=sys.stderr)
+        if not lane or not branch:
+            print(f"Cannot infer branch/lane from path: {results_dir}", file=sys.stderr)
             return 1
-        platforms = [(branch, platform, results_dir)]
+        lanes = [(branch, lane, results_dir)]
     else:
         # Parent dir -- search for results inside
         result_dirs = _find_result_dirs(results_dir)
         if not result_dirs:
             print(f"No results.json found in {results_dir}", file=sys.stderr)
             return 1
-        platforms = []
+        lanes = []
         for rd in result_dirs:
-            platform = rd.name
+            lane = rd.name
             branch = rd.parent.name
-            platforms.append((branch, platform, rd))
-        print(f"Found {len(platforms)} platform(s): {', '.join(f'{b}/{p}' for b, p, _ in platforms)}")
+            lanes.append((branch, lane, rd))
+        print(f"Found {len(lanes)} lane(s): {', '.join(f'{b}/{p}' for b, p, _ in lanes)}")
 
     print(f"Publishing to {repo} gh-pages...")
-    return _publish_platforms(
-        platforms, repo,
-        generate_html_report, generate_root_index, generate_branch_root_index,
+    return _publish_lanes(
+        lanes, repo,
+        generate_html_report, regenerate_tree,
     )
 
 
@@ -251,8 +249,8 @@ def add_publish_parser(subparsers):
     )
     publish_parser.add_argument(
         "results_dir",
-        help="Results directory -- either a platform dir (logs/SAM3/dev/macos-cpu) "
-             "or parent dir (logs/SAM3, finds all platforms inside)",
+        help="Results directory -- either a lane dir (logs/SAM3/dev/macos-cpu) "
+             "or parent dir (logs/SAM3, finds all lanes inside)",
     )
     publish_parser.add_argument(
         "--repo", "-r",

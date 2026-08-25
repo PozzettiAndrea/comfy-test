@@ -29,6 +29,30 @@ from pathlib import Path
 from typing import Optional
 
 
+
+# Desktop-mode token -> lane id. The ONE mapping; derived spellings come off it
+# rather than being restated. Previously this map existed three times in two
+# spellings (hyphenated for dirs, underscored for the env var), none of them
+# checked against the registry.
+_DESKTOP_MODE_LANES = {
+    "mac": "macos-desktop",
+    "windows": "windows-desktop",
+    "windows_cuda": "windows-desktop-cuda",
+}
+
+
+def desktop_lane_id(desktop_mode: str) -> str:
+    """Lane id for a desktop mode, validated against the lane registry."""
+    lane = _DESKTOP_MODE_LANES.get(desktop_mode, desktop_mode)
+    from comfy_test.lanes import BY_ID
+    if lane not in BY_ID:
+        raise ValueError(
+            f"desktop mode {desktop_mode!r} maps to {lane!r}, which is not a "
+            f"lane id. Known: {', '.join(sorted(BY_ID))}"
+        )
+    return lane
+
+
 def _download(url: str, dest: Path) -> None:
     """Download via curl. urllib's default User-Agent gets 403'd by the
     download.comfy.org -> dl.todesktop.com CDN; curl with -L --retry 3
@@ -249,11 +273,7 @@ def resolve_logs_dir_for_sandbox(node_name: str, node_branch: str,
         return Path(_exact)
     short = node_name.removeprefix("ComfyUI-")
     run_id = f"{short}-{datetime.now().strftime('%H%M')}"
-    platform_dir = {
-        "mac":          "macos-desktop",
-        "windows":      "windows-desktop",
-        "windows_cuda": "windows-desktop-cuda",
-    }.get(desktop_mode, desktop_mode)
+    platform_dir = desktop_lane_id(desktop_mode)
     # Honor COMFY_TEST_LOGS_DIR when set (CI YML points it at
     # ${{ github.workspace }}/comfy-test-logs so the artifact upload step
     # finds the run dir). Fall back to ~/comfy-test-logs for local use.
@@ -1078,12 +1098,10 @@ def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str,
     ignored -- --desktop and --desktop --dev share the same platform id;
     branch separation happens at the run-dir level (branch subdir).
     """
-    platform_id = {"mac": "macos-desktop",
-                   "windows": "windows-desktop",
-                   "windows_cuda": "windows-desktop-cuda"}[desktop_mode]
+    platform_id = desktop_lane_id(desktop_mode)
     try:
         from comfy_test.reporting.html_report import generate_html_report
-        generate_html_report(logs_dir, repo_name=node_repo, current_platform=platform_id)
+        generate_html_report(logs_dir, repo_name=node_repo)
         print(f"[desktop] wrote {logs_dir / 'index.html'}")
     except Exception as e:
         print(f"[desktop] index.html generation skipped: {e}", file=sys.stderr)
@@ -1609,11 +1627,8 @@ def run_desktop(args, desktop_mode: str) -> int:
         # cdp_driver writes these into results.json so the dashboard can
         # render the cell colored by pass/fail and match the cpu schema.
         "COMFY_TEST_NODE_SHA": node_sha or "",
-        "COMFY_TEST_DESKTOP_PLATFORM": {
-            "mac":         "macos_desktop",
-            "windows":     "windows_desktop",
-            "windows_cuda": "windows_desktop_cuda",
-        }.get(desktop_mode, "unknown_desktop"),
+        # underscored spelling is the config_key form results.json records
+        "COMFY_TEST_DESKTOP_LANE": desktop_lane_id(desktop_mode),
         # cdp_driver's post-Apply-Changes relaunch picks the executable from
         # these. Without them it falls back to the CI-installed path.
         "COMFY_DESKTOP_APP_EXE": str(app_path),
@@ -1713,7 +1728,10 @@ def _print_workflow_summary(results_json: Path, tag: str = "desktop") -> None:
     failed = int(s.get("failed", 0))
     other = max(0, total - passed - failed)
     icons = {"pass": "+", "fail": "x", "error": "x", "skip": "-"}
-    print(f"\n[{tag}] === Workflow summary ({data.get('platform', '?')}) ===",
+    # "platform" is the pre-rename key; already-published results.json files
+    # on gh-pages still carry it and are never rewritten.
+    _lane = data.get("lane") or data.get("platform") or "?"
+    print(f"\n[{tag}] === Workflow summary ({_lane}) ===",
           flush=True)
     for w in data.get("workflows") or []:
         name = w.get("name", "?")

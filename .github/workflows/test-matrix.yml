@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: test
     outputs:
-      # CPU + desktop platforms (opt-in allowlist from [test.platforms] platforms=[...])
+      # CPU + desktop lanes (opt-in allowlist from [test.lanes] lanes=[...])
       run-linux: ${{ steps.platforms.outputs.linux }}
       run-macos: ${{ steps.platforms.outputs.macos }}
       run-windows: ${{ steps.platforms.outputs.windows }}
@@ -93,9 +93,12 @@ jobs:
           except Exception as e:
               print(f"::error::cannot read {cfg}: {e}"); sys.exit(1)
           test = data.get("test", {})
-          allow = (test.get("platforms") or {}).get("platforms")
+          allow = (test.get("lanes") or {}).get("lanes")
           if not isinstance(allow, list):
-              print('::error::[test.platforms] must be an allowlist: platforms = ["linux-cpu", ...]')
+              if "platforms" in test:
+                  print('::error::[test.platforms] was renamed to [test.lanes]: lanes = ["linux-cpu", ...]')
+              else:
+                  print('::error::[test.lanes] must be an allowlist: lanes = ["linux-cpu", ...]')
               sys.exit(1)
           # `platform` input filters to one target; otherwise use the allowlist.
           # Tokens accepted in hyphen or underscore spelling (matches the registry).
@@ -109,7 +112,7 @@ jobs:
           def on(*toks):
               return "true" if sel & set(toks) else "false"
           # The 6 GitHub-hosted platforms (== registry.matrix()['hosted'];
-          # kept in sync by tests/test_platforms_matrix_yaml.py).
+          # kept in sync by tests/test_lanes_matrix_yaml.py).
           rows = {
               "linux": on("linux-cpu", "linux"),
               "macos": on("macos-cpu", "macos"),

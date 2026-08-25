@@ -1,15 +1,15 @@
-"""Canonical registry of the platforms comfy-test knows about.
+"""Canonical registry of the lanes comfy-test knows about.
 
-Single source of truth for the supported-platform taxonomy. Everything else
+Single source of truth for the supported-lane taxonomy. Everything else
 derives from here:
-  - common/config_file.py    -> valid `[test.platforms] platforms = [...]` tokens
-  - common/config.py         -> get_platform_config() lookup
-  - reporting/html_report.py -> the results-gallery PLATFORMS (id/label)
-  - the CI job matrix        -> `comfy-test platforms --matrix-json`
+  - common/config_file.py    -> valid `[test.lanes] lanes = [...]` tokens
+  - common/config.py         -> get_lane_config() lookup
+  - reporting/html_report.py -> the results-gallery LANES (id/label)
+  - the CI job matrix        -> `comfy-test lanes --matrix-json`
 
-A platform is an (os x backend x kind) target. `backend` names the accelerator
+A lane is an (os x backend x install_method) combination. `backend` names the accelerator
 concretely -- cpu / cuda / rocm (rocm reserved, no runner wired yet); there is
-no "gpu". Users select targets by `id` (or an accepted alias) in comfy-test.toml.
+no "gpu". Users select lanes by `id` (or an accepted alias) in comfy-test.toml.
 
 Design rule (per review): store only irreducible facts; compute everything
 derivable. Five stored fields; the rest are @property.
@@ -24,18 +24,18 @@ _HOSTED_IMAGE = {"linux": "ubuntu-latest", "windows": "windows-latest", "macos":
 
 
 @dataclass(frozen=True)
-class Platform:
+class Lane:
     # --- stored facts (the only things that can't be derived) ---
     id: str                 # canonical hyphenated id, e.g. "windows-cuda"
     os: str                 # "linux" | "windows" | "macos"
     backend: str            # "cpu" | "cuda" | "rocm"
-    kind: str               # "server" | "portable" | "desktop"
+    install_method: str               # "gitcloned" | "portable" | "desktop"
     label: str              # human label for the results gallery
 
     # --- everything below is computed, never stored ---
     @property
     def config_key(self) -> str:
-        """Underscore key used by TestConfig fields / get_platform_config.
+        """Underscore key used by TestConfig fields / get_lane_config.
 
         The cpu variant is the bare name (drop the redundant `-cpu` suffix):
         `linux-cpu`->`linux`, `windows-portable-cpu`->`windows_portable`,
@@ -49,8 +49,8 @@ class Platform:
 
     @property
     def hosted(self) -> bool:
-        """cpu platforms run on GitHub-hosted runners (test-matrix.yml);
-        accelerator platforms are self-hosted / dispatch-test.yml."""
+        """cpu lanes run on GitHub-hosted runners (test-matrix.yml);
+        accelerator lanes are self-hosted / dispatch-test.yml."""
         return self.backend == "cpu"
 
     @property
@@ -70,24 +70,24 @@ class Platform:
     def venv_bindir(self) -> str | None:
         """Subdir holding the venv python. None for kinds with no venv of their
         own (portable uses ComfyUI's embedded python; desktop is the Electron app)."""
-        if self.kind != "server":
+        if self.install_method != "gitcloned":
             return None
         return "Scripts" if self.os == "windows" else "bin"
 
     @property
     def runner_labels(self):
-        """`runs-on` for this platform: a hosted image string, or the self-hosted
+        """`runs-on` for this lane: a hosted image string, or the self-hosted
         tag set for accelerator/desktop jobs."""
         if self.hosted:
             return _HOSTED_IMAGE[self.os]
         tags = ["self-hosted", self.os, self.backend]
-        if self.kind == "desktop":
+        if self.install_method == "desktop":
             tags.append("vm")
         return tags
 
     @property
     def aliases(self) -> tuple[str, ...]:
-        """Every token accepted for this platform in `[test.platforms]`
+        """Every token accepted for this lane in `[test.lanes]`
         (id and config_key, in both hyphen and underscore spellings)."""
         toks = set()
         for base in {self.id, self.config_key}:
@@ -97,32 +97,32 @@ class Platform:
         return tuple(sorted(toks))
 
 
-# The full os x backend x kind product comfy-test supports. (No macos-cuda:
+# The full os x backend x install_method product comfy-test supports. (No macos-cuda:
 # Apple Silicon has no CUDA. No linux-desktop / portable-desktop: not a thing.)
-PLATFORMS: list[Platform] = [
-    Platform("linux-cpu",             "linux",   "cpu",  "server",   "Linux CPU"),
-    Platform("linux-cuda",            "linux",   "cuda", "server",   "Linux CUDA"),
-    Platform("windows-cpu",           "windows", "cpu",  "server",   "Windows CPU"),
-    Platform("windows-cuda",          "windows", "cuda", "server",   "Windows CUDA"),
-    Platform("windows-portable-cpu",  "windows", "cpu",  "portable", "Win Portable CPU"),
-    Platform("windows-portable-cuda", "windows", "cuda", "portable", "Win Portable CUDA"),
-    Platform("macos-cpu",             "macos",   "cpu",  "server",   "macOS CPU"),
-    Platform("macos-desktop",         "macos",   "cpu",  "desktop",  "macOS Desktop"),
-    Platform("windows-desktop",       "windows", "cpu",  "desktop",  "Windows Desktop"),
-    Platform("windows-desktop-cuda",  "windows", "cuda", "desktop",  "Windows Desktop CUDA"),
+LANES: list[Lane] = [
+    Lane("linux-cpu",             "linux",   "cpu",  "gitcloned",   "Linux CPU"),
+    Lane("linux-cuda",            "linux",   "cuda", "gitcloned",   "Linux CUDA"),
+    Lane("windows-cpu",           "windows", "cpu",  "gitcloned",   "Windows CPU"),
+    Lane("windows-cuda",          "windows", "cuda", "gitcloned",   "Windows CUDA"),
+    Lane("windows-portable-cpu",  "windows", "cpu",  "portable", "Win Portable CPU"),
+    Lane("windows-portable-cuda", "windows", "cuda", "portable", "Win Portable CUDA"),
+    Lane("macos-cpu",             "macos",   "cpu",  "gitcloned",   "macOS CPU"),
+    Lane("macos-desktop",         "macos",   "cpu",  "desktop",  "macOS Desktop"),
+    Lane("windows-desktop",       "windows", "cpu",  "desktop",  "Windows Desktop"),
+    Lane("windows-desktop-cuda",  "windows", "cuda", "desktop",  "Windows Desktop CUDA"),
 ]
 
 
 def _validate() -> None:
-    ids = [p.id for p in PLATFORMS]
+    ids = [p.id for p in LANES]
     if len(ids) != len(set(ids)):
-        raise ValueError("duplicate platform id in registry")
+        raise ValueError("duplicate lane id in registry")
     alias_owner: dict[str, str] = {}
-    for p in PLATFORMS:
+    for p in LANES:
         if p.backend not in ("cpu", "cuda", "rocm"):
             raise ValueError(f"{p.id}: bad backend {p.backend!r}")
-        if p.kind not in ("server", "portable", "desktop"):
-            raise ValueError(f"{p.id}: bad kind {p.kind!r}")
+        if p.install_method not in ("gitcloned", "portable", "desktop"):
+            raise ValueError(f"{p.id}: bad install_method {p.install_method!r}")
         for a in p.aliases:
             if a in alias_owner and alias_owner[a] != p.id:
                 raise ValueError(f"alias {a!r} maps to both {alias_owner[a]} and {p.id}")
@@ -131,32 +131,32 @@ def _validate() -> None:
 
 _validate()
 
-# id -> Platform, and alias -> Platform (both hyphen and underscore forms).
-BY_ID: dict[str, Platform] = {p.id: p for p in PLATFORMS}
-_BY_ALIAS: dict[str, Platform] = {a: p for p in PLATFORMS for a in p.aliases}
+# id -> Lane, and alias -> Lane (both hyphen and underscore forms).
+BY_ID: dict[str, Lane] = {p.id: p for p in LANES}
+_BY_ALIAS: dict[str, Lane] = {a: p for p in LANES for a in p.aliases}
 
 
-def resolve(token: str) -> Platform | None:
-    """Resolve an allowlist token (id or alias, hyphen or underscore) to a Platform."""
+def resolve(token: str) -> Lane | None:
+    """Resolve an allowlist token (id or alias, hyphen or underscore) to a Lane."""
     return _BY_ALIAS.get(token) or _BY_ALIAS.get(token.replace("-", "_"))
 
 
 def allowed_tokens() -> set[str]:
-    """Every token accepted in `[test.platforms] platforms = [...]`."""
+    """Every token accepted in `[test.lanes] lanes = [...]`."""
     return set(_BY_ALIAS)
 
 
-def gallery_platforms() -> list[dict]:
+def gallery_lanes() -> list[dict]:
     """The {id, label} rows the results gallery (html_report) renders."""
-    return [{"id": p.id, "label": p.label} for p in PLATFORMS]
+    return [{"id": p.id, "label": p.label} for p in LANES]
 
 
 def matrix() -> dict:
-    """Job matrix for the CI workflows: hosted platforms (GitHub runners) and
-    dispatch-only platforms (self-hosted), each with its runs-on labels."""
+    """Job matrix for the CI workflows: hosted lanes (GitHub runners) and
+    dispatch-only lanes (self-hosted), each with its runs-on labels."""
     return {
         "hosted": [{"id": p.id, "config_key": p.config_key, "runs_on": p.runner_labels}
-                   for p in PLATFORMS if p.hosted],
+                   for p in LANES if p.hosted],
         "dispatch": [{"id": p.id, "config_key": p.config_key, "runs_on": p.runner_labels}
-                     for p in PLATFORMS if p.is_dispatch_only],
+                     for p in LANES if p.is_dispatch_only],
     }

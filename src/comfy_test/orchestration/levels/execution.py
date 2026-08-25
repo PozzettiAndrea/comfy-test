@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from ...common.errors import TestError, WorkflowError, WorkflowExecutionError, TestTimeoutError
 from ...common.resource_monitor import ResourceMonitor
-from ..context import LevelContext
+from ..context import LevelContext, resolve_lane_id
 from ..results import get_hardware_info, get_workflow_timeout
 
 
@@ -357,7 +357,7 @@ def run(ctx: LevelContext) -> LevelContext:
 
     results_data = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "platform": ctx.platform_name,
+        "lane": resolve_lane_id(ctx),
         "hardware": hardware,
         "comfyui_version": ctx.comfyui_version,
         # SHA of the PACK under test (kept under the legacy name the dashboard
