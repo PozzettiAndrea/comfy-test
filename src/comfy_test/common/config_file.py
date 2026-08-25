@@ -65,6 +65,36 @@ EXAMPLE_WORKFLOW_DIRS = [
 CANONICAL_WORKFLOW_DIR = EXAMPLE_WORKFLOW_DIRS[0]
 
 
+def validate_comfyui_version(ref: str) -> str:
+    """Reject a `comfyui_version` that git could only fail on later.
+
+    "latest", a tag, a branch and a **full 40-character** commit SHA are all
+    fetchable. An *abbreviated* SHA is not: git expands abbreviations against
+    local objects, and a fresh clone has none, so the remote is asked for a
+    ref literally named "37ac9ff" and answers that no such ref exists. Caught
+    here, that is one line; caught by git, it is a "couldn't find remote ref"
+    twenty minutes into building a venv.
+    """
+    if not isinstance(ref, str) or not ref.strip():
+        raise ConfigError(
+            "[test] comfyui_version must be a non-empty string",
+            'Use "latest", a tag ("v0.3.60"), a branch, or a full 40-character '
+            "commit SHA."
+        )
+    ref = ref.strip()
+
+    looks_hex = all(c in "0123456789abcdefABCDEF" for c in ref)
+    if looks_hex and 7 <= len(ref) < 40:
+        raise ConfigError(
+            f"[test] comfyui_version = {ref!r} looks like an abbreviated commit SHA",
+            f"Git cannot fetch an abbreviated SHA from a remote -- it resolves "
+            f"abbreviations against objects it already has, and a fresh clone "
+            f"has none.\n"
+            f"Use the full 40-character SHA, or a tag or branch name instead."
+        )
+    return ref
+
+
 def load_config(
     path: Path | str,
     base_dir: Optional[Path] = None,
@@ -209,7 +239,8 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
 
     # Get basic test config
     name = base_dir.name  # Always use directory name
-    comfyui_version = test_section.get("comfyui_version", "latest")
+    comfyui_version = validate_comfyui_version(
+        test_section.get("comfyui_version", "latest"))
     # str pins, list draws one at random per run, None = DEFAULT_PYTHON_VERSION
     python_version = test_section.get("python_version")
 
@@ -439,14 +470,33 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
 
     def _resolve_in_dirs(filename: str) -> Path:
         """Resolve a filename against every folder name ComfyUI recognises,
-        consumer folders first, then their tests/ subfolders."""
+        consumer folders first, then their tests/ subfolders.
+
+        A name that resolves to nothing is a hard error. It used to return a
+        path under `workflows_dir` regardless, which never matched a discovered
+        workflow -- so `cpu = ["basci"]` (typo) recorded every workflow as
+        "skipped", and a run that executed nothing reported `success: true`
+        with `passed: 0`. Naming a workflow is an assertion that it exists.
+        """
         name = filename if filename.endswith(".json") else filename + ".json"
         for d in (*consumer_dirs, *dev_tests_dirs):
             candidate = d / name
             if candidate.exists():
                 return candidate
-        # Fall back to workflows_dir (preserves old behaviour for missing files)
-        return workflows_dir / name
+        available = sorted({w.name for w in _discover_all()})
+        if not available:
+            # The pack ships no workflows at all. That is a different problem
+            # with a better message, raised at run time by require_workflows
+            # once we know whether a workflow-driven level was even enabled --
+            # and config examples get parsed against empty directories.
+            return workflows_dir / name
+        raise ConfigError(
+            f"[test.workflows] names a workflow that does not exist: {filename!r}",
+            (f"Looked for {name} under {base_dir.name}/ in: "
+             f"{', '.join(dict.fromkeys(d.name for d in consumer_dirs))} "
+             f"(and their tests/ subfolders).\n"
+             f"Available: {', '.join(available)}"),
+        )
 
     # Helper to resolve "all" or list of paths
     def _all_except(excludes, filtered):
