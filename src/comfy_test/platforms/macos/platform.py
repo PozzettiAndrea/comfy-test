@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from ..venv_server import VenvServerPlatform, COMFYUI_REPO
+from ..venv_server import VenvServerPlatform, comfyui_clone_commands
 from ...common.base_platform import TestPaths
 from ...common.config import resolve_torch_triple
 
@@ -49,11 +49,8 @@ class MacOSPlatform(VenvServerPlatform):
         self._log(f"Cloning ComfyUI ({config.comfyui_version})...")
         if comfyui_dir.exists():
             shutil.rmtree(comfyui_dir)
-        clone_args = ["git", "clone", "--depth", "1"]
-        if config.comfyui_version != "latest":
-            clone_args.extend(["--branch", config.comfyui_version])
-        clone_args.extend([COMFYUI_REPO, str(comfyui_dir)])
-        self._run_command(clone_args, cwd=work_dir)
+        for cmd in comfyui_clone_commands(config.comfyui_version, str(comfyui_dir)):
+            self._run_command(cmd, cwd=work_dir)
 
         custom_nodes_dir = comfyui_dir / "custom_nodes"
         custom_nodes_dir.mkdir(exist_ok=True)

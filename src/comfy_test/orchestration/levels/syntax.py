@@ -2,7 +2,6 @@
 
 import re
 import unicodedata
-from pathlib import Path
 
 from ...common.errors import TestError
 from ..context import LevelContext

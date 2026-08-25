@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, Callable, Protocol, TYPE_CHECKING
+from typing import Optional, Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..common.config import TestConfig
@@ -93,3 +93,37 @@ def resolve_lane_id(ctx) -> str:
         return ctx.lane_id
     from ..backends import active_backend_name
     return f"{ctx.platform_name.replace('_', '-')}-{active_backend_name()}"
+
+
+def require_workflows(ctx, level_name: str) -> None:
+    """Hard-fail a runtime level when the pack ships no workflows at all.
+
+    Asking for `execution` and shipping zero workflows used to log one line and
+    return green: the level that is supposed to prove your nodes run had
+    nothing to run, and the badge said pass. A level you listed is a level you
+    asserted; if it cannot execute, that is a red.
+
+    `workflow.workflows` is every auto-discovered file, not the per-accelerator
+    selection -- so this fires only when the pack has no workflows anywhere,
+    never because a lane's `cpu`/`cuda` list happens to be empty.
+
+    `skip_workflow` remains the one supported way to say "run the pipeline but
+    not the workflows" on a lane.
+    """
+    from ..common.errors import ConfigError
+
+    if ctx.config.workflow.workflows:
+        return
+    if ctx.config.get_platform_config(ctx.platform_name).skip_workflow:
+        return
+    raise ConfigError(
+        f"level '{level_name}' is enabled but this pack ships no workflows.\n"
+        f"comfy-test auto-discovers them from the folders ComfyUI recognises "
+        f"(example_workflows/, example/, examples/, workflow/, workflows/); "
+        f"none were found.\n"
+        f"Fix it one of three ways:\n"
+        f"  - add a workflow .json to example_workflows/\n"
+        f"  - drop '{level_name}' from [test] levels in comfy-test.toml\n"
+        f"  - set skip_workflow = true under [test.{ctx.platform_name}] "
+        f"to skip workflows on this lane only"
+    )

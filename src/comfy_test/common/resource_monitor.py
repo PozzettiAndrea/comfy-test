@@ -4,7 +4,6 @@ Tracks RAM and VRAM usage during workflow execution.
 """
 
 import platform
-import subprocess
 import threading
 import time
 from dataclasses import dataclass

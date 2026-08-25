@@ -20,6 +20,19 @@ from .docker import add_docker_parser
 from .sandbox import add_sandbox_parser
 from .vm import add_vm_parser
 
+# The cmd_* handlers are re-exported deliberately: `main` reaches them through
+# `parsed_args.func`, so nothing here calls them by name, but they are this
+# package's public surface and other entry points import them from here.
+__all__ = [
+    "main",
+    "cmd_run",
+    "cmd_publish",
+    "cmd_paths",
+    "cmd_coverage",
+    "cmd_lint",
+    "cmd_generate_index",
+]
+
 
 def main(args=None) -> int:
     """Main CLI entry point."""

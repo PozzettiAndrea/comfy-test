@@ -7,9 +7,8 @@ Adapted for comfy-test to use object_info from /object_info API endpoint
 instead of direct nodes.NODE_CLASS_MAPPINGS access.
 """
 
-import json
 import logging
-from typing import Dict, Any, List, Tuple, Optional, Union
+from typing import Dict, Any, List, Tuple, Optional
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -649,7 +648,6 @@ class WorkflowConverter:
             for node in workflow_nodes:
                 # Convert to string for comparison (source_node_id is string, node.get('id') is int)
                 if str(node.get('id')) == str(source_node_id):
-                    node_type = node.get('type', 'unknown')
                     # Look for the input that should be passed through
                     node_inputs = node.get('inputs', [])
                     node_outputs = node.get('outputs', [])

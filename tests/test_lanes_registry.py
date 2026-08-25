@@ -2,7 +2,7 @@
 
 Everything lane-related derives from comfy_test.lanes.registry; these
 tests fail fast if a consumer drifts out of sync with it. Runs under pytest or
-as a plain script (`python tests/test_platforms_registry.py`).
+as a plain script (`python tests/test_lanes_registry.py`).
 """
 
 import comfy_test.lanes as P

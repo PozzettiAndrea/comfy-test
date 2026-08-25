@@ -1,6 +1,5 @@
 """Download utilities for Windows Portable ComfyUI."""
 
-import os
 import shutil
 import subprocess
 import sys

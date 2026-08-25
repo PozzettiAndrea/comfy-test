@@ -1,6 +1,5 @@
 """Publish commands for comfy-test CLI."""
 
-import os
 import re
 import shutil
 import subprocess

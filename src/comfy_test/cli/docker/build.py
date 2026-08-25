@@ -224,7 +224,6 @@ def _download(url: str, dest: Path) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     t0 = time.time()
-    name = dest.name
     try:
         with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as fh:
             try:

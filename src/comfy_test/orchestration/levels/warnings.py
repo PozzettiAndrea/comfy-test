@@ -22,7 +22,6 @@ allowlist -- do not lower the bar by leaving noise in.
 import hashlib
 import re
 from collections import defaultdict
-from pathlib import Path
 
 from ..context import LevelContext
 

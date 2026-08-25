@@ -1,10 +1,12 @@
-"""Guard: the hosted platforms wired into test-matrix.yml must match the registry.
+"""Guard: the hosted lanes wired into test-matrix.yml must match the registry.
 
-test-matrix.yml still enumerates the GitHub-hosted platforms by hand (as `run-*`
+test-matrix.yml still enumerates the GitHub-hosted lanes by hand (as `run-*`
 setup outputs + one job each). This test fails if that set drifts from
-`registry.matrix()['hosted']`, so adding/removing a hosted platform in the
-registry forces the workflow to be updated too. (Phase 2 replaces this with
-`comfy-test platforms --matrix-json`; until then, this is the seatbelt.)
+`registry.matrix()['hosted']`, so adding/removing a hosted lane in the
+registry forces the workflow to be updated too.
+
+Generating the matrix from the registry instead would remove the duplication
+outright; no such command exists today, so this is the seatbelt.
 
 Skips gracefully if pyyaml isn't installed.
 """

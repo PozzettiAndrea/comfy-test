@@ -15,7 +15,6 @@ Usage (manual):
 """
 
 import importlib
-import os
 import sys
 
 _TAG = "[VRAM]"
