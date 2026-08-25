@@ -8,7 +8,44 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Nothing used to run the test suite. 15 test files, zero CI execution, and a
+  # push to main tagged a release and shipped it to PyPI unverified. This job
+  # gates that.
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from requires-python, and the version runs default to.
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - run: pip install -e ".[dev]"
+
+      # Hermetic. The live-contract file skips itself without COMFY_TEST_LIVE.
+      - name: Unit tests
+        run: python -m pytest tests/ -q
+
+      # Talks to download.pytorch.org, PyPI and GitHub: catches upstream
+      # changing shape under us, which no stubbed test can. Kept a separate
+      # step so a red here is legible as "upstream moved", not "we broke it".
+      # Unreachable hosts skip rather than fail, so a blip cannot block a
+      # release -- only a reachable host giving a wrong answer does.
+      - name: Live upstream contract
+        if: matrix.python == '3.13'
+        env:
+          COMFY_TEST_LIVE: '1'
+        run: python -m pytest tests/test_live_contract.py -v
+
   check-and-publish:
+    needs: test
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'push' && 'pypi' || '' }}
     permissions:
