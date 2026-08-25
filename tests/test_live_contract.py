@@ -38,7 +38,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from comfy_test.common import torch_triple as tt
-from comfy_test.platforms.venv_server import COMFYUI_REPO, comfyui_clone_commands
+# Deliberately only COMFYUI_REPO. How the clone is spelled is being reworked
+# (clone --branch -> init+fetch+checkout); the URL is the part that is stable
+# across both, and it is the part upstream can break under us.
+from comfy_test.platforms.venv_server import COMFYUI_REPO
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("COMFY_TEST_LIVE") != "1",
@@ -214,16 +217,17 @@ def test_the_comfyui_repo_url_still_resolves():
     assert p.stdout.strip(), f"{COMFYUI_REPO} returned no HEAD"
 
 
-def test_latest_asks_for_a_ref_the_remote_has():
-    """`comfyui_version = "latest"` fetches HEAD. Assert HEAD is really there."""
-    ref = None
-    for cmd in comfyui_clone_commands("latest", "/tmp/unused"):
-        if "fetch" in cmd:
-            ref = cmd[-1]
-    assert ref == "HEAD", f"'latest' now fetches {ref!r}; update this test"
+def test_latest_resolves_to_a_real_default_branch():
+    """`comfyui_version = "latest"` takes whatever the remote's default is.
 
-    p = _ls_remote(COMFYUI_REPO, "HEAD")
-    assert p.stdout.strip(), "remote has no HEAD"
+    Asserted through HEAD rather than through the clone command, because the
+    clone spelling is in flux and the remote's answer is the actual contract.
+    """
+    p = _ls_remote("--symref", COMFYUI_REPO, "HEAD")
+    assert p.returncode == 0, f"cannot resolve HEAD: {p.stderr.strip()[:200]}"
+    assert "refs/heads/" in p.stdout, (
+        f"remote reports no default branch for HEAD:\n{p.stdout[:300]}"
+    )
 
 
 def test_a_real_release_tag_is_fetchable():
