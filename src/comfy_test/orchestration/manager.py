@@ -89,6 +89,9 @@ class TestManager:
         self._chapters: List[dict] = []
         self._session_start_time: float = 0
         self._session_log_file: Optional[Path] = None
+        # Held open across the run; see _append_session_line.
+        self._session_log_handle = None
+        self._last_session_sync: float = 0.0
         self._level_index = 0
         self._total_levels = 0
 
@@ -121,13 +124,48 @@ class TestManager:
             self._chapters.append({"t": round(elapsed, 3), "name": msg.strip("= ")})
 
         if self._session_log_file:
+            self._append_session_line(timestamped_msg, force_sync=(stream == "chapter"))
+
+    # session.log is the only forensic artifact when a run is OOM-killed or hits
+    # the job ceiling, so it has to be on disk -- but this runs on ComfyUI's
+    # stdout reader thread (comfyui/server.py routes every line through it).
+    # Re-opening and fsyncing per line measured ~2.5 ms against ~0.2 us held
+    # open, which backs the pipe up and blocks ComfyUI's own write() -- the
+    # logger throttling the process under test. Hold the handle open and sync on
+    # a time budget instead: durability within _SYNC_INTERVAL, not per line.
+    _SYNC_INTERVAL = 0.5
+
+    def _append_session_line(self, line: str, force_sync: bool = False) -> None:
+        try:
+            f = self._session_log_handle
+            if f is None or f.closed:
+                f = open(self._session_log_file, "a", encoding="utf-8")
+                self._session_log_handle = f
+            f.write(line + "\n")
+            f.flush()
+            now = time.time()
+            if force_sync or now - self._last_session_sync >= self._SYNC_INTERVAL:
+                os.fsync(f.fileno())
+                self._last_session_sync = now
+        except Exception:
+            pass
+
+    def _close_session_log(self) -> None:
+        """Flush and sync the session log. Safe to call more than once."""
+        f = getattr(self, "_session_log_handle", None)
+        if f is None or f.closed:
+            return
+        try:
+            f.flush()
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+        finally:
             try:
-                with open(self._session_log_file, "a", encoding="utf-8") as f:
-                    f.write(timestamped_msg + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())
+                f.close()
             except Exception:
                 pass
+            self._session_log_handle = None
 
     def _mark_chapter(self, name: str) -> None:
         """Record a jump target for the replay player."""
@@ -158,6 +196,9 @@ class TestManager:
 
     def _save_session_log(self) -> None:
         """Finalise the run's log artifacts."""
+        # Unconditional sync at teardown: everything buffered since the last
+        # budgeted fsync has to reach disk before the process can exit.
+        self._close_session_log()
         self._write_replay()
         if self._session_log_file and self._session_log_file.exists():
             self._original_log(f"Session log: {self._session_log_file}")
@@ -283,6 +324,8 @@ class TestManager:
         output_base.mkdir(parents=True, exist_ok=True)
         self._session_log_file = output_base / "session.log"
         self._session_log_file.write_text("", encoding="utf-8")
+        self._close_session_log()          # a re-run must not append to the old handle
+        self._last_session_sync = 0.0
 
         # Copy the config that produced this run alongside its output, so it's
         # easy to see what config was used without checking the source repo.
