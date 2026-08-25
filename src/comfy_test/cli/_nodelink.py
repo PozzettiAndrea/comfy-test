@@ -38,6 +38,35 @@ def node_name_from_url(nodelink: str) -> str:
     return expanded.rstrip("/").split("/")[-1].removesuffix(".git")
 
 
+def check_is_node_pack(node_dir: Path, log=print) -> Optional[str]:
+    """Is this directory a ComfyUI node pack? Returns an error string, or None.
+
+    The predicate is `__init__.py`, and only that. It is derived from
+    upstream's loader rather than guessed: `nodes.py` does
+    `spec_from_file_location(name, module_path/"__init__.py")` for every
+    directory under custom_nodes/, so a directory without one cannot load, on
+    any layout. Zero false positives by construction.
+
+    Deliberately NOT also accepting pyproject.toml / requirements.txt: those
+    are evidence of *packaging*, not of nodehood. A directory with a stray
+    pyproject and no __init__.py would pass such a gate and then fail
+    identically several minutes later, which is a gate that buys nothing.
+
+    A missing dependency file is a warning, not an error -- a pack with no
+    dependencies is perfectly legal to ComfyUI.
+    """
+    if not (node_dir / "__init__.py").is_file():
+        return (f"{node_dir} is not a ComfyUI node pack: no __init__.py.\n"
+                f"ComfyUI loads a custom node by importing <pack>/__init__.py; "
+                f"without it the directory cannot register any nodes.")
+    if not (node_dir / "pyproject.toml").is_file() and \
+       not (node_dir / "requirements.txt").is_file():
+        log(f"[comfy-test] Note: {node_dir.name} has neither pyproject.toml nor "
+            f"requirements.txt. That is legal, but it cannot be published to the "
+            f"Comfy Registry as-is.")
+    return None
+
+
 def clone_node(nodelink: str, branch: Optional[str], dest: Path,
                log_prefix: str = "[nodelink]") -> str:
     """Shallow-clone nodelink into dest/<name>, return the name. Raises on failure."""
@@ -58,6 +87,12 @@ def clone_node(nodelink: str, branch: Optional[str], dest: Path,
     r = subprocess.run(cmd, capture_output=True, text=True, env=git_env())
     if r.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{r.stderr}")
+
+    # Validate what we just cloned. Without this, any repository on earth
+    # clones successfully and the run proceeds to build an environment for it.
+    problem = check_is_node_pack(target, log=lambda m: print(f"{log_prefix} {m}"))
+    if problem:
+        raise RuntimeError(problem)
     sha = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"],
                          capture_output=True, text=True)
     if sha.returncode == 0:

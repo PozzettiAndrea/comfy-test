@@ -184,6 +184,27 @@ def cmd_run(args) -> int:
 
     node_dir = Path.cwd()
 
+    # --branch is a CLONE argument. On a local checkout nothing is checked out,
+    # but the value still becomes the branch segment of the output tree
+    # (ADR-0016) -- so `--branch dev` on a checkout sitting on main files the
+    # results under dev/, and publishing then overwrites the real dev results
+    # with a run of different code. Refuse rather than silently mislabel.
+    if getattr(args, "branch", None) and not _clone_tmpdir:
+        detected = _detect_branch(node_dir)
+        print(f"[comfy-test] --branch only applies when cloning; this is a local "
+              f"checkout on '{detected}'.\n"
+              f"[comfy-test] Results would be filed under '{args.branch}/' while "
+              f"containing '{detected}' code. Drop --branch (it is detected "
+              f"automatically), or point at a repo to clone.", file=sys.stderr)
+        return 1
+
+    # Cheap up-front gate. Without it, pointing at any directory builds a venv,
+    # pins torch and clones ComfyUI before failing minutes later.
+    problem = _nodelink.check_is_node_pack(node_dir)
+    if problem:
+        print(f"[comfy-test] {problem}", file=sys.stderr)
+        return 1
+
     print(f"[comfy-test] Testing: {node_dir.name}")
 
     attach_mode = bool(getattr(args, "server_url", None))
@@ -439,7 +460,7 @@ def add_run_parser(subparsers):
     )
     run_parser.add_argument(
         "--branch", "-b",
-        help="Git branch name (adds branch folder to output path)",
+        help="Branch to clone (remote nodelinks only). Also names the branch folder in the output path. On a local checkout the branch is detected automatically and passing this is an error.",
     )
     run_parser.add_argument(
         "--force",

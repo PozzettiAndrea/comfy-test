@@ -30,7 +30,6 @@ DEFAULT_PYTHON_VERSION = "3.13"
 # "latest" via CLI flag, env var, or comfy-test.toml. To override the auto-
 # derived auxiliary versions, pass a slash-separated triple like
 # "2.13.0/0.28.0/2.13.0".
-DEFAULT_TORCH_VERSION = "2.10.0"
 
 # Known-good torch / torchvision / torchaudio triples available on PyPI as
 # cp310/cp311/cp312/cp313 manylinux + win + macos wheels. Verify wheel
@@ -42,6 +41,16 @@ TORCH_TRIPLES: dict = {
     "2.9.0":  ("0.24.0", "2.9.0"),
     "2.8.0":  ("0.23.0", "2.8.0"),
 }
+
+# The newest torch in the table above, computed rather than frozen. A
+# hand-written default is a decision nobody revisits, and it ages silently --
+# every run then pins a torch no user installs. Refreshing TORCH_TRIPLES moves
+# this on its own.
+#
+# Note this is the newest COMPLETE triple, not the newest torch: torchaudio
+# trails torch by a release or two, so the newest torch is routinely not
+# installable as a set.
+DEFAULT_TORCH_VERSION = max(TORCH_TRIPLES, key=lambda v: [int(x) for x in v.split(".")])
 
 
 def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str]]:
@@ -65,13 +74,8 @@ def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str
                 f"torch_version slash-form must have 3 parts (torch/torchvision/torchaudio), got {version!r}"
             )
         return (parts[0], parts[1], parts[2])
-    if version not in TORCH_TRIPLES:
-        raise ValueError(
-            f"torch_version {version!r} not in TORCH_TRIPLES. Known: {sorted(TORCH_TRIPLES)}. "
-            f"Pass a slash-separated triple ('2.13.0/0.28.0/2.13.0') to override."
-        )
-    tv, ta = TORCH_TRIPLES[version]
-    return (version, tv, ta)
+    from .torch_triple import resolve as _resolve_triple
+    return _resolve_triple(version, TORCH_TRIPLES)
 
 
 def resolve_python_version(requested=None) -> str:

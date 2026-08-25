@@ -212,6 +212,21 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     comfyui_version = test_section.get("comfyui_version", "latest")
     # str pins, list draws one at random per run, None = DEFAULT_PYTHON_VERSION
     python_version = test_section.get("python_version")
+
+    # Resolve the torch triple NOW, not at install time. torchvision and
+    # torchaudio are ABI-locked to an exact torch, and they do not release
+    # together -- so an unavailable triple must fail while the user is still
+    # looking at their config, not twenty minutes into building a venv.
+    torch_version = test_section.get("torch_version")
+    if torch_version is not None:
+        from .config import resolve_torch_triple
+        from .torch_triple import TorchTripleError
+        try:
+            resolve_torch_triple(torch_version)
+        except TorchTripleError as e:
+            raise ConfigError(f"[test] torch_version = {torch_version!r}", str(e))
+        except ValueError as e:
+            raise ConfigError(f"[test] torch_version = {torch_version!r}", str(e))
     timeout = 600  # Fixed timeout for setup operations
 
     # Parse levels. Default + "all" derive from the single source of truth
@@ -320,6 +335,8 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
         }
         if python_version is not None:
             kwargs["python_version"] = resolve_python_version(python_version)
+        if torch_version is not None:
+            kwargs["torch_version"] = torch_version
         if "res" in test_section:
             kwargs["res"] = test_section["res"]
         if "extra_pip_indices" in test_section:
