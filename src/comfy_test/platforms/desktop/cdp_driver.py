@@ -911,37 +911,13 @@ def _hide_install_console(page):
 
 
 def _find_active_comfy_install():
-    """Read Comfy Desktop's installations.json and return
-    (install_path, comfy_root, custom_nodes, venv_python) for the active
-    standalone install. Raises RuntimeError if not found.
+    """(install_path, comfy_root, custom_nodes, venv_python), or RuntimeError.
 
-    installations.json path:
-      - macOS:   ~/Library/Application Support/Comfy Desktop/installations.json
-      - Windows: %APPDATA%\\Comfy Desktop\\installations.json
+    Body lives in install_paths.py so other code can import it without
+    executing this script.
     """
-    if sys.platform == 'win32':
-        appdata = Path(os.environ.get('APPDATA') or (Path.home() / 'AppData' / 'Roaming'))
-        installations_json = appdata / 'Comfy Desktop' / 'installations.json'
-    else:
-        installations_json = (Path.home() / 'Library' / 'Application Support' /
-                              'Comfy Desktop' / 'installations.json')
-    try:
-        for inst in json.loads(installations_json.read_text()):
-            if inst.get('sourceId') == 'standalone' and inst.get('installPath'):
-                install_path = Path(inst['installPath'])
-                break
-        else:
-            raise RuntimeError('no standalone install in installations.json')
-    except FileNotFoundError:
-        raise RuntimeError(f'{installations_json} not found (Comfy Desktop not launched?)')
-    comfy_root = install_path / 'ComfyUI'
-    custom_nodes = comfy_root / 'custom_nodes'
-    _venv_bin = 'Scripts' if sys.platform == 'win32' else 'bin'
-    _venv_exe = 'python.exe' if sys.platform == 'win32' else 'python'
-    venv_python = comfy_root / '.venv' / _venv_bin / _venv_exe
-    if not venv_python.exists():
-        venv_python = install_path / 'standalone-env' / _venv_bin / _venv_exe
-    return install_path, comfy_root, custom_nodes, venv_python
+    from comfy_test.platforms.desktop.install_paths import find_active_comfy_install
+    return find_active_comfy_install()
 
 
 # Cross-run guard so multiple call sites don't spawn duplicate tail

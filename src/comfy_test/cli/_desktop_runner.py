@@ -1068,8 +1068,11 @@ def _collect_logs(desktop_mode: str, dest: Path) -> None:
     # Ask installations.json for the authoritative slot rather than
     # guessing -- that's how cdp_driver's live-tailer resolves it too.
     try:
-        from comfy_test.platforms.desktop.cdp_driver import _find_active_comfy_install
-        _install_path, _comfy_root, _, _ = _find_active_comfy_install()
+        # install_paths, NOT cdp_driver: importing that script runs the whole
+        # desktop test (a 1200s wizard walk, then sys.exit) and SystemExit is
+        # not an Exception, so the except below would not catch it.
+        from comfy_test.platforms.desktop.install_paths import find_active_comfy_install
+        _install_path, _comfy_root, _, _ = find_active_comfy_install()
         sources.append(_install_path / "logs")
         sources.append(_comfy_root / "user")
     except Exception:
@@ -1098,7 +1101,6 @@ def _generate_index(logs_dir: Path, node_repo: str, desktop_mode: str,
     ignored -- --desktop and --desktop --dev share the same platform id;
     branch separation happens at the run-dir level (branch subdir).
     """
-    platform_id = desktop_lane_id(desktop_mode)
     try:
         from comfy_test.reporting.html_report import generate_html_report
         generate_html_report(logs_dir, repo_name=node_repo)
