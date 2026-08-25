@@ -1,3 +1,4 @@
+import re
 """ComfyUI server management."""
 
 import subprocess
@@ -256,10 +257,17 @@ class ComfyUIServer:
 
             time.sleep(1)
 
-        # Timeout reached
+        # Timeout reached. `last_error` is the only clue why the server never
+        # answered -- it was captured and then dropped, so every startup
+        # timeout looked identical regardless of cause.
         api.close()
+        detail = f"Last error contacting {api.base_url}: {last_error!r}" if last_error else (
+            f"{api.base_url} never answered /system_stats and raised nothing -- "
+            f"the process is up but not serving. Check the tail of the server log."
+        )
         raise TestTimeoutError(
             f"Server did not become ready within {timeout} seconds",
+            detail,
             timeout_seconds=timeout,
         )
 
@@ -296,7 +304,7 @@ class ComfyUIServer:
             raise ServerError("Server is not running")
         return self._api
 
-    def get_import_errors(self) -> List[str]:
+    def get_import_errors(self, pack_name: Optional[str] = None) -> List[str]:
         """Get list of import errors from server startup logs.
 
         Parses server output for "Cannot import" error messages that indicate
@@ -305,7 +313,7 @@ class ComfyUIServer:
         Returns:
             List of error messages (empty if no errors)
         """
-        return scan_import_errors(self._output_lines)
+        return scan_import_errors(self._output_lines, pack_name)
 
     def __enter__(self) -> "ComfyUIServer":
         self.start()
@@ -315,19 +323,46 @@ class ComfyUIServer:
         self.stop()
 
 
-def scan_import_errors(lines) -> List[str]:
-    """Scan server-output lines for custom-node import failures.
+#: Upstream subsystems that log "IMPORT FAILED" about themselves, not about a
+#: custom node. `comfy_extras/nodes_glsl.py` does `ctypes.CDLL(libEGL)` at
+#: module scope, which fails on any headless runner; `comfy_api_nodes` fails
+#: whenever an optional dependency is absent. Neither is the pack's fault.
+_UPSTREAM_OWN = ("comfy_extras", "comfy_api_nodes")
+
+#: `nodes.py:2385` prints "  12.3 seconds (IMPORT FAILED): <path>" in its
+#: import-times summary for every custom node that already produced a
+#: "Cannot import" line. Counting both double-reports one failure.
+_IMPORT_TIMES = re.compile(r"^\s*\d+\.\d+\s+seconds")
+
+
+def scan_import_errors(lines, pack_name: Optional[str] = None) -> List[str]:
+    """Server-output lines reporting an import failure **of the pack under test**.
+
+    ComfyUI logs "IMPORT FAILED" from three places and only one of them is
+    about a custom node (`nodes.py:2385`, `:2576`, `:2587`). Matching the bare
+    substring failed a pack because ComfyUI's own `comfy_extras` could not load
+    -- routine on a headless runner, and nothing the pack author can fix.
+
+    `pack_name` scopes the result to that pack's directory. Without it, every
+    custom-node failure is reported (the old behaviour, minus upstream's own).
 
     Shared by ComfyUIServer (in-memory output) and AttachedServer (log file).
     """
     errors = []
     for line in lines:
-        # ComfyUI logs import errors like:
         # "Cannot import <module_path> module for custom nodes: <error>"
-        if "Cannot import" in line and "module for custom nodes" in line:
-            errors.append(line)
-        elif "IMPORT FAILED" in line:
-            errors.append(line)
+        is_cannot_import = "Cannot import" in line and "module for custom nodes" in line
+        is_import_failed = "IMPORT FAILED" in line
+        if not (is_cannot_import or is_import_failed):
+            continue
+        if is_import_failed:
+            if _IMPORT_TIMES.match(line):
+                continue  # duplicate of the "Cannot import" line for the same node
+            if any(mod in line for mod in _UPSTREAM_OWN):
+                continue  # ComfyUI's own subsystem, not a custom node
+        if pack_name and pack_name not in line:
+            continue
+        errors.append(line)
     return errors
 
 
@@ -393,8 +428,8 @@ class AttachedServer:
     def get_api(self) -> ComfyUIAPI:
         return ComfyUIAPI(self.base_url)
 
-    def get_import_errors(self) -> List[str]:
-        return scan_import_errors(self._output_lines)
+    def get_import_errors(self, pack_name: Optional[str] = None) -> List[str]:
+        return scan_import_errors(self._output_lines, pack_name)
 
     def stop(self) -> None:
         self._stop_tail = True

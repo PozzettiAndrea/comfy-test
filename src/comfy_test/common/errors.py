@@ -60,11 +60,20 @@ class WorkflowError(TestError):
 
 
 class TestTimeoutError(TestError):
-    """Operation timed out."""
+    """Operation timed out.
 
-    def __init__(self, message: str, timeout_seconds: int):
+    `details` carried only a restatement of the timeout, which the message
+    already gives. Callers that know *why* the wait failed can pass it, and
+    that is the part an author can act on.
+    """
+
+    def __init__(self, message: str, details: str | None = None,
+                 timeout_seconds: int | None = None):
         self.timeout_seconds = timeout_seconds
-        details = f"Timeout: {timeout_seconds} seconds"
+        if not details:
+            details = f"Timeout: {timeout_seconds} seconds"
+        elif timeout_seconds is not None:
+            details = f"Timeout: {timeout_seconds} seconds\n{details}"
         super().__init__(message, details)
 
 

@@ -12,6 +12,45 @@ from ..common.errors import ServerError, TestTimeoutError, VerificationError
 from .models import WorkflowExecution
 
 
+def _history_failure(history: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return error details if a finished prompt ended in failure, else None.
+
+    Both completion fallbacks below infer "done" from the mere presence of a
+    history entry -- but ComfyUI files errored runs in history too
+    (``task_done``, execution.py:1286), so "history exists" is not "it worked".
+    The record carries an explicit verdict: ``status.status_str`` is
+    ``'success'`` or ``'error'`` (execution.py:1282).
+
+    ``get_history`` already unwraps the prompt-id level (:206), so this reads
+    ``history["status"]``, not ``history[prompt_id]["status"]``.
+
+    A missing ``status`` means the server did not record one; that is unknown,
+    not failed, so it is not reported as an error.
+    """
+    status = history.get("status")
+    if not isinstance(status, dict):
+        return None
+    if status.get("status_str") != "error" and status.get("completed") is not False:
+        return None
+
+    # `status.messages` replays the same events the websocket would have
+    # delivered, as [event_name, payload] pairs -- so the execution_error
+    # payload here is the identical dict the ws handler assigns to
+    # `execution.error`. Prefer it, so a failure reported via history is
+    # indistinguishable downstream from one reported live.
+    for entry in status.get("messages") or []:
+        if (isinstance(entry, (list, tuple)) and len(entry) == 2
+                and entry[0] == "execution_error" and isinstance(entry[1], dict)):
+            return entry[1]
+
+    return {
+        "exception_type": "ExecutionError",
+        "exception_message": "workflow reported failure in history "
+                             "with no execution_error message",
+        "status": status,
+    }
+
+
 class ComfyUIAPI:
     """Client for ComfyUI REST API.
 
@@ -139,11 +178,20 @@ class ComfyUIAPI:
                     )
             raise ServerError("Failed to validate prompt", str(e))
 
-    def queue_prompt(self, workflow: Dict[str, Any]) -> str:
+    def queue_prompt(self, workflow: Dict[str, Any],
+                     client_id: Optional[str] = None) -> str:
         """Queue a workflow for execution.
 
         Args:
             workflow: Workflow definition (the "prompt" part of a workflow JSON)
+            client_id: The websocket client id to address events to. Omitting
+                it is not neutral: ComfyUI copies this into
+                ``extra_data["client_id"]`` (server.py:1117) and
+                ``PromptExecutor.add_message`` only sends an event when
+                ``client_id is not None or broadcast`` (execution.py:683).
+                ``execution_start``, ``execution_error`` and
+                ``execution_success`` are all ``broadcast=False``, so an
+                anonymous prompt never reports how it ended.
 
         Returns:
             Prompt ID for tracking execution
@@ -152,9 +200,12 @@ class ComfyUIAPI:
             ServerError: If request fails
         """
         try:
+            payload: Dict[str, Any] = {"prompt": workflow}
+            if client_id is not None:
+                payload["client_id"] = client_id
             response = self.session.post(
                 f"{self.base_url}/prompt",
-                json={"prompt": workflow},
+                json=payload,
                 timeout=self.timeout,
             )
             response.raise_for_status()
@@ -311,7 +362,7 @@ class ComfyUIAPI:
 
         try:
             # Queue the prompt
-            prompt_id = self.queue_prompt(workflow)
+            prompt_id = self.queue_prompt(workflow, client_id=client_id)
             execution = WorkflowExecution(prompt_id=prompt_id)
             log(f"Queued with ID: {prompt_id}")
 
@@ -337,9 +388,15 @@ class ComfyUIAPI:
                     log(f"[DEBUG] WS recv timeout at {elapsed:.1f}s, checking history fallback...")
                     history = self.get_history(prompt_id)
                     if history:
-                        log(f"[DEBUG] History found during timeout - workflow completed!")
-                        log("Execution complete (detected via history fallback)")
+                        log(f"[DEBUG] History found during timeout - workflow finished")
                         execution.outputs = history.get("outputs", {})
+                        failure = _history_failure(history)
+                        if failure:
+                            execution.error = failure
+                            log(f"  Execution error (via history): "
+                                f"{failure['exception_message']}")
+                        else:
+                            log("Execution complete (detected via history fallback)")
                         break
                     continue
 
@@ -402,8 +459,14 @@ class ComfyUIAPI:
                     if queue_remaining == 0:
                         history = self.get_history(prompt_id)
                         if history:
-                            log("Execution complete (queue empty)")
                             execution.outputs = history.get("outputs", {})
+                            failure = _history_failure(history)
+                            if failure:
+                                execution.error = failure
+                                log(f"  Execution error (queue empty): "
+                                    f"{failure['exception_message']}")
+                            else:
+                                log("Execution complete (queue empty)")
                             break
 
                 else:
@@ -413,6 +476,8 @@ class ComfyUIAPI:
             history = self.get_history(prompt_id)
             if history:
                 execution.outputs = history.get("outputs", {})
+                if execution.error is None:
+                    execution.error = _history_failure(history)
 
             return execution
 
