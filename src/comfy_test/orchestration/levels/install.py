@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ...common.base_platform import TestPaths
 from ...common.comfy_env import get_cuda_packages, get_env_vars, get_node_packs
 from ...common.errors import TestError
+from ...common.torch_verify import verify_torch_stack
 from ..context import LevelContext
 
 if TYPE_CHECKING:
@@ -83,6 +84,21 @@ def run(ctx: LevelContext) -> LevelContext:
             "PozzettiAndrea/ComfyUI-validate-endpoint",
             "ComfyUI-validate-endpoint"
         )
+
+    # Prove the torch stack imports before anything is allowed to depend on it.
+    #
+    # Deliberately outside the if/else, so it covers attach lanes too -- those
+    # inherit a cached environment nobody rebuilt, and the cache key is only
+    # (lane, python version), so it can hold a torch stack from months ago.
+    # An unverified cache is if anything the likelier place for a mismatch than
+    # a fresh install.
+    #
+    # This is the difference between failing here, naming the versions, and
+    # failing three levels later inside the pack's own code with an
+    # undefined-symbol traceback that reads like the author's bug.
+    _python = getattr(paths, "python", None)
+    if _python:
+        verify_torch_stack(Path(_python), ctx.log)
 
     # Get CUDA packages from comfy-env.toml. Whether we mock them depends on
     # whether the per-node pixi env actually has them installed -- not on the
