@@ -30,7 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "mypy"]
+# pyyaml is a TEST dependency, not a runtime one: tests/test_lanes_matrix_yaml.py
+# parses .github/workflows/test-matrix.yml to prove the CI matrix still matches
+# the lane registry. Without it that test skips, and it skipped in every CI run
+# -- the drift guard on the lane matrix was unreachable from any install path.
+dev = ["pytest", "ruff", "mypy", "pyyaml"]
 screenshot = ["playwright>=1.40.0", "Pillow>=10.0.0", "imageio-ffmpeg>=0.4.0"]
 
 [project.urls]

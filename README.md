@@ -94,8 +94,8 @@ packages = ["nvdiffrast", "flash-attn"]
 cpu = "all"
 
 [test.lanes]
-# Explicit opt-in allowlist — only listed platforms run.
-platforms = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
+# Explicit opt-in allowlist — only listed lanes run.
+lanes = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 ```
 
 ### Full Config Example
@@ -130,7 +130,7 @@ lanes = ["linux-cpu", "macos-cpu", "windows-cpu", "windows-portable-cpu"]
 # Workflow configuration — accelerator is named by backend: cpu / cuda / rocm.
 [test.workflows]
 # Workflows to run on CPU runners (GitHub-hosted)
-cpu = "all"  # or a list: ["test_basic.json"], or all-except: ["!heavy.json"]
+cpu = "all"  # or a list: ["test_basic.json"], or all-except: { exclude = ["heavy.json"] }
 
 # Workflows to run on CUDA runners (self-hosted); rocm reserved for later
 cuda = ["test_cuda.json"]
@@ -153,7 +153,7 @@ Workflows are auto-discovered from the `workflows/` folder:
 - Use `cpu = "all"` to run all discovered workflows on CPU
 - Use `cuda = "all"` to run all discovered workflows on CUDA runners
 - Or specify individual files: `cpu = ["basic.json", "advanced.json"]`
-- Or exclude: `cpu = ["!heavy.json"]` runs everything except `heavy.json`
+- Or exclude: `cpu = { exclude = ["heavy.json"] }` runs everything except `heavy.json`
 
 ## CLI
 

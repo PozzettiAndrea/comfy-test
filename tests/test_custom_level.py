@@ -14,7 +14,7 @@ from comfy_test.common.errors import TestError
 def _node(toml: str, hook: str | None = None) -> Path:
     d = Path(tempfile.mkdtemp())
     (d / "comfy-test.toml").write_text(
-        toml + '\n[test.platforms]\nplatforms = ["linux-cpu"]\n')
+        toml + '\n[test.lanes]\nlanes = ["linux-cpu"]\n')
     if hook is not None:
         (d / "tests").mkdir(exist_ok=True)
         (d / "tests" / "hook.py").write_text(hook)

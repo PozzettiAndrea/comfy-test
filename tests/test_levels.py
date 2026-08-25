@@ -14,7 +14,7 @@ from comfy_test.common.config_file import load_config
 def _cfg(body: str) -> Path:
     d = Path(tempfile.mkdtemp())
     (d / "comfy-test.toml").write_text(
-        body + '\n[test.platforms]\nplatforms = ["linux-cpu"]\n')
+        body + '\n[test.lanes]\nlanes = ["linux-cpu"]\n')
     return d / "comfy-test.toml"
 
 
