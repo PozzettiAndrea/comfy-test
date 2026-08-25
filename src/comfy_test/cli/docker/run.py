@@ -137,6 +137,21 @@ def _node_name_from_url(nodelink: str) -> str:
     return expanded.rstrip("/").split("/")[-1].removesuffix(".git")
 
 
+def _redacted_cmd(cmd: list) -> str:
+    """The command line with any github token masked.
+
+    `docker_cmd` carries `-e NODE_PAT=<value>` so the in-container run can
+    clone private repos, and this is echoed to stdout -- which on a CI runner
+    is the job log. GitHub masks secrets it issued to that job; a token
+    forwarded from a self-hosted runner's environment is not one of them.
+    """
+    from .._git_auth import tokens_to_redact
+    line = " ".join(cmd)
+    for token in tokens_to_redact():
+        line = line.replace(token, "***")
+    return line
+
+
 def _copy_local_node(nodelink: str, dest: Path) -> str:
     """Copy a local node directory into dest. Returns the node folder name.
 
@@ -314,7 +329,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, cuda: bool,
             docker_cmd += ["-e", f"{_var}={_val}"]
     docker_cmd += [DOCKER_IMAGE_WINDOWS] + ct_args
 
-    print(f"[docker run] Running: {' '.join(docker_cmd)}")
+    print(f"[docker run] Running: {_redacted_cmd(docker_cmd)}")
     result = subprocess.run(docker_cmd)
 
     # Copy staged logs back to logs_dir
@@ -426,7 +441,7 @@ def _run_linux(args, docker_exe: str, cuda: bool,
             docker_cmd += ["-e", f"{_var}={_val}"]
     docker_cmd += [DOCKER_IMAGE_LINUX] + ct_args
 
-    print(f"[docker run] Running: {' '.join(docker_cmd)}")
+    print(f"[docker run] Running: {_redacted_cmd(docker_cmd)}")
     result = subprocess.run(docker_cmd)
 
     if workspace_dir is not None:

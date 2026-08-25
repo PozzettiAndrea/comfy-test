@@ -84,7 +84,18 @@ def clone_node(nodelink: str, branch: Optional[str], dest: Path,
     if branch:
         cmd.extend(["--branch", branch])
     cmd.extend([fetch_url, str(target)])
-    r = subprocess.run(cmd, capture_output=True, text=True, env=git_env())
+    # A network stall would otherwise hang until the CI job's own ceiling --
+    # five hours on the hosted lanes, with no results.json and no explanation.
+    # git_env() sets GIT_TERMINAL_PROMPT=0, which covers the credential-prompt
+    # hang; this covers the silent one.
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, env=git_env(),
+                           timeout=600)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"git clone of {expanded} timed out after 600s.\n"
+            f"The remote stopped responding mid-transfer. Retry, or clone it "
+            f"yourself and pass the local path instead.") from None
     if r.returncode != 0:
         raise RuntimeError(f"git clone failed:\n{r.stderr}")
 
