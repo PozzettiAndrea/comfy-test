@@ -1,3 +1,20 @@
+# SUPERSEDED -- nothing calls this file, deliberately.
+#
+# The windows-desktop-cuda lane is real and runs, but from dispatch-test.yml's
+# inline `desktop_cuda` job, not from here. That job runs INSIDE a Hyper-V
+# baseline VM (`runs-on: [self-hosted, windows, cuda, vm]`, 300 min); this file
+# predates it and targets a bare CUDA runner (`[self-hosted, windows, cuda]`,
+# 60 min) with no snapshot isolation. See the comment above `desktop_cuda` in
+# dispatch-test.yml for why Electron + CUDA needs a VM rather than a container.
+#
+# Kept, not deleted: it is the only record of the pre-VM lane configuration,
+# and deleting a lane's workflow to silence an "unreferenced file" check is
+# how a build grid quietly shrinks. Delete it only when the VM path has been
+# green long enough that the fallback is genuinely worthless.
+#
+# tests/test_workflow_wiring.py asserts every unreferenced workflow carries a
+# note like this one.
+
 name: Test Windows Desktop (CUDA)
 
 on:

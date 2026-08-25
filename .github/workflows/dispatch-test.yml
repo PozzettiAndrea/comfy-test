@@ -52,11 +52,11 @@ jobs:
   # CPU on hosted runners (linux-cpu, windows-cpu, windows-portable-cpu, macos-cpu)
   # =========================================================================
   cpu:
-    if: ${{ !contains(inputs.platform, 'cuda') && !contains(inputs.platform, 'desktop') }}
+    if: ${{ !contains((inputs.lane || inputs.platform), 'cuda') && !contains((inputs.lane || inputs.platform), 'desktop') }}
     name: ${{ inputs.lane || inputs.platform }}
     runs-on: >-
-      ${{ (startsWith(inputs.platform, 'linux') && 'ubuntu-latest')
-          || (startsWith(inputs.platform, 'macos') && 'macos-latest')
+      ${{ (startsWith((inputs.lane || inputs.platform), 'linux') && 'ubuntu-latest')
+          || (startsWith((inputs.lane || inputs.platform), 'macos') && 'macos-latest')
           || 'windows-latest' }}
     timeout-minutes: 300
     env:
@@ -329,10 +329,10 @@ jobs:
   # GPU on self-hosted cluster runners (linux-cuda, windows-cuda, windows-portable-cuda)
   # =========================================================================
   cuda:
-    if: ${{ contains(inputs.platform, 'cuda') && !contains(inputs.platform, 'desktop') }}
+    if: ${{ contains((inputs.lane || inputs.platform), 'cuda') && !contains((inputs.lane || inputs.platform), 'desktop') }}
     name: ${{ inputs.lane || inputs.platform }}
     runs-on: >-
-      ${{ contains(inputs.platform, 'linux')
+      ${{ contains((inputs.lane || inputs.platform), 'linux')
           && fromJson('["self-hosted","linux","cuda"]')
           || fromJson('["self-hosted","windows","cuda"]') }}
     timeout-minutes: 300
@@ -474,10 +474,10 @@ jobs:
   # See `comfy-test vm --help` for the VM lifecycle commands.
   # =========================================================================
   desktop:
-    if: ${{ contains(inputs.platform, 'desktop') && inputs.platform != 'windows-desktop-cuda' }}
+    if: ${{ contains((inputs.lane || inputs.platform), 'desktop') && (inputs.lane || inputs.platform) != 'windows-desktop-cuda' }}
     name: ${{ inputs.lane || inputs.platform }}
     runs-on: >-
-      ${{ startsWith(inputs.platform, 'macos') && 'macos-latest' || 'windows-latest' }}
+      ${{ startsWith((inputs.lane || inputs.platform), 'macos') && 'macos-latest' || 'windows-latest' }}
     timeout-minutes: 300
     env:
       COMFY_TEST_LOGS_DIR: ${{ github.workspace }}/comfy-test-logs
@@ -664,7 +664,7 @@ jobs:
           Set-Content -Path "${{ github.workspace }}\run-as-stduser.ps1" -Value $helper
 
       - name: Run desktop test (Windows as stduser)
-        if: ${{ runner.os == 'Windows' && inputs.platform == 'windows-desktop' }}
+        if: ${{ runner.os == 'Windows' && (inputs.lane || inputs.platform) == 'windows-desktop' }}
         shell: powershell
         run: |
           $exe = (Get-Command comfy-test).Source
@@ -710,7 +710,7 @@ jobs:
           & "${{ github.workspace }}\run-as-stduser.ps1" -Command $cmd
 
       - name: Run desktop test (macOS)
-        if: ${{ runner.os != 'Windows' && inputs.platform == 'macos-desktop' }}
+        if: ${{ runner.os != 'Windows' && (inputs.lane || inputs.platform) == 'macos-desktop' }}
         shell: bash
         # Forward NODE_PAT so comfy-test's git clones can auth against private
         # node repos (cli/_git_auth.authenticated_github_url reads this).
@@ -739,7 +739,7 @@ jobs:
   # See `comfy-test vm --help` for the lifecycle commands.
   # =========================================================================
   desktop_cuda:
-    if: ${{ inputs.platform == 'windows-desktop-cuda' }}
+    if: ${{ (inputs.lane || inputs.platform) == 'windows-desktop-cuda' }}
     name: ${{ inputs.lane || inputs.platform }}
     # Self-hosted runner registered INSIDE the baseline VM (under the
     # autologon user, NOT SYSTEM). The "vm" label is set by the runner
