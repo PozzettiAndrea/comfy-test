@@ -3,7 +3,7 @@
 Runs the two STATIC levels -- SYNTAX and JAVASCRIPT -- against a pack directory
 without building an environment or booting a ComfyUI server. Both levels are
 pure source analysis, so there is nothing for the rest of the ladder to
-contribute; ``comfy-test run --level javascript`` only drags in INSTALL and
+contribute; ``comfy-test run`` drags in INSTALL and
 REGISTRATION because levels run in order, not because the lint needs them.
 
 The levels themselves are reused verbatim (``orchestration.levels.syntax`` and

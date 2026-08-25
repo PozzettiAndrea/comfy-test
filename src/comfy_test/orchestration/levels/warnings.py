@@ -10,7 +10,9 @@ Report-only, deliberately. A gate that fails on a judgement call teaches people
 to ignore it, and once ignored it stops catching the cases where it was right.
 Run it when you want the report:
 
-    comfy-test --levels warnings
+    # comfy-test.toml
+    [test]
+    levels = [..., "warnings"]
 
 Adding a check: keep it cheap, static, and honest about false positives. If a
 check cannot be written without an allowlist of legitimate exceptions, write the

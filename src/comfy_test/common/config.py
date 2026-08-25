@@ -34,6 +34,23 @@ DEFAULT_PYTHON_VERSION = "3.13"
 # No table. The triple is derived from what PyPI publishes and cached on disk
 # (see common/torch_triple.py) -- there is nothing here to update when torch
 # ships a new release.
+def _index_variant() -> str:
+    """Which wheel index this run installs from -- `cpu` or e.g. `cu128`.
+
+    The triple must be resolved against THIS index, not PyPI: a version can be
+    complete on PyPI and absent from the CUDA index, and the install would then
+    silently fall through to plain PyPI wheels on a CUDA lane.
+    """
+    import os
+    if not (os.environ.get("COMFY_TEST_CUDA") or "").strip():
+        return "cpu"
+    try:
+        from ..backends import active_backend
+        return active_backend().torch_index().rstrip("/").rsplit("/", 1)[-1]
+    except Exception:
+        return "cpu"
+
+
 def _default_torch_version() -> str:
     """Newest torch with BOTH companions published.
 
@@ -41,7 +58,7 @@ def _default_torch_version() -> str:
     torch is routinely not installable as a set.
     """
     from .torch_triple import newest_complete
-    return newest_complete()
+    return newest_complete(_index_variant()) or ""
 
 
 
@@ -67,7 +84,7 @@ def resolve_torch_triple(version: Optional[str]) -> Optional[Tuple[str, str, str
             )
         return (parts[0], parts[1], parts[2])
     from .torch_triple import resolve as _resolve_triple
-    return _resolve_triple(version)
+    return _resolve_triple(version, _index_variant())
 
 
 def resolve_python_version(requested=None) -> str:

@@ -296,7 +296,6 @@ def cmd_run(args) -> int:
         manager = TestManager(config, node_dir=node_dir, output_dir=output_dir)
 
         # Run tests
-        level = TestLevel(args.level) if args.level else None
         workflow_filter = getattr(args, 'workflow', None)
 
         novram = getattr(args, 'novram', False)
@@ -304,7 +303,6 @@ def cmd_run(args) -> int:
 
         results = [manager.run_platform(
             platform,
-            level,
             workflow_filter,
             work_dir=work_dir,
             novram=novram,
@@ -332,8 +330,6 @@ def cmd_run(args) -> int:
             flags.append("--vram-debug")
         if getattr(args, 'portable', False):
             flags.append("--portable")
-        if level:
-            flags.append(f"--level={level}")
         if workflow_filter:
             flags.append(f"--workflow={workflow_filter}")
         flag_suffix = f" ({', '.join(flags)})" if flags else ""
@@ -412,11 +408,6 @@ def add_run_parser(subparsers):
     run_parser.add_argument(
         "--config", "-c",
         help="Path to config file (default: auto-discover)",
-    )
-    run_parser.add_argument(
-        "--level", "-l",
-        choices=[l.value for l in TestLevel],
-        help="Run only up to this level (overrides config)",
     )
     run_parser.add_argument(
         "--cuda",

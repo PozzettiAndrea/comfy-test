@@ -185,7 +185,6 @@ class TestManager:
 
     def run_all(
         self,
-        level: Optional[TestLevel] = None,
         workflow_filter: Optional[str] = None,
         novram: bool = False,
         vram_debug: bool = False,
@@ -193,7 +192,6 @@ class TestManager:
         """Run tests on all enabled platforms.
 
         Args:
-            level: Maximum test level to run
             workflow_filter: If specified, only run this workflow
 
         Returns:
@@ -214,7 +212,7 @@ class TestManager:
                 continue
 
             result = self.run_platform(
-                platform_name, level, workflow_filter,
+                platform_name, workflow_filter,
                 novram=novram,
                 vram_debug=vram_debug,
             )
@@ -225,7 +223,6 @@ class TestManager:
     def run_platform(
         self,
         platform_name: str,
-        level: Optional[TestLevel] = None,
         workflow_filter: Optional[str] = None,
         work_dir: Optional[Path] = None,
         novram: bool = False,
@@ -236,7 +233,6 @@ class TestManager:
 
         Args:
             platform_name: Platform to test
-            level: Maximum test level to run
             workflow_filter: If specified, only run this workflow
             work_dir: Use this directory for work
 
@@ -247,28 +243,13 @@ class TestManager:
         platform_name = platform_name.lower().replace("-", "_")
 
         # Determine which levels to run.
-        # Without --level: use the config's levels list as-is.
-        # With --level X: swap terminal levels (STATIC_CAPTURE / VALIDATION /
-        #   EXECUTION_LIGHT / EXECUTION) for X. This is how per-platform CI
-        #   workflows pick a different "runtime" level (e.g. macos passes
-        #   execution_light because of the headless-Chromium pipe issue;
-        #   linux/windows pass execution for the full capture). Other levels
-        #   in the config (syntax/install/registration/instantiation) are
-        #   preserved untouched. Doesn't pull in unrelated terminals.
-        TERMINAL_LEVELS = {
-            TestLevel.STATIC_CAPTURE,
-            TestLevel.VALIDATION,
-            TestLevel.EXECUTION_LIGHT,
-            TestLevel.EXECUTION,
-        }
+        # Levels come from comfy-test.toml, full stop. The old `--level` flag
+        # let a lane override the config at the command line, which meant the
+        # levels that actually ran were a function of the YAML rather than of
+        # the pack's own config -- and its truncation silently dropped any
+        # level above the flag (`--level execution` cancelled `custom`).
+        # Static checks that need no env are reachable via `comfy-test lint`.
         requested_levels = list(self.config.levels)
-        if level:
-            if level in TERMINAL_LEVELS:
-                requested_levels = [l for l in requested_levels if l not in TERMINAL_LEVELS]
-            if level not in requested_levels:
-                requested_levels.append(level)
-            max_idx = ALL_LEVELS.index(level)
-            requested_levels = [l for l in requested_levels if ALL_LEVELS.index(l) <= max_idx]
 
         # Resolve dependencies
         config_levels = TestLevel.resolve_dependencies(requested_levels)

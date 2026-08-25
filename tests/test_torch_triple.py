@@ -20,36 +20,37 @@ _spec = importlib.util.spec_from_file_location(
 tt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tt)
 
-TABLE = None  # there is no table -- everything is derived
+def _stub(derived, raises=None, audio_pin=None):
+    """Replace the index/PyPI lookups for one test. No network, no disk cache.
 
-
-def _stub(derived, raises=None):
-    """Replace the PyPI lookup for one test. No network, no disk cache."""
-    tt._memo = None
-    tt._stale_cache = lambda: None
+    `audio_pin` is what torchaudio claims to require, for the cross-check.
+    """
+    tt._memo = {}
+    tt._stale_cache = lambda variant="cpu": None
+    tt._declared_torch_pin = lambda pkg, v: audio_pin
     if raises is not None:
-        def boom(refresh=False):
+        def boom(variant="cpu", refresh=False):
             raise raises
         tt.triples = boom
     else:
-        tt.triples = lambda refresh=False: derived
+        tt.triples = lambda variant="cpu", refresh=False: derived
 
 
 def test_resolves_a_complete_triple():
     _stub({"2.12.0": {"torchvision": "0.27.0", "torchaudio": "2.12.0"}})
-    assert tt.resolve("2.12.0", TABLE) == ("2.12.0", "0.27.0", "2.12.0")
+    assert tt.resolve("2.12.0") == ("2.12.0", "0.27.0", "2.12.0")
 
 
 def test_unreachable_with_no_cache_says_so():
     """Must not claim a version does not exist when we simply could not look."""
     _stub({}, raises=OSError("network unreachable"))
     try:
-        tt.resolve("2.12.0", TABLE)
+        tt.resolve("2.12.0")
         raise AssertionError("expected TorchTripleError")
     except tt.TorchTripleError as e:
         msg = str(e)
         assert "unreachable" in msg, msg
-        assert "does not exist" not in msg, msg
+        assert "not published" not in msg, msg
 
 
 def test_incomplete_triple_names_the_missing_package():
@@ -59,7 +60,7 @@ def test_incomplete_triple_names_the_missing_package():
         "2.13.0": {"torchvision": "0.28.0"},                          # no torchaudio
     })
     try:
-        tt.resolve("2.13.0", TABLE)
+        tt.resolve("2.13.0")
         raise AssertionError("expected TorchTripleError")
     except tt.TorchTripleError as e:
         msg = str(e)
@@ -73,19 +74,19 @@ def test_unknown_version_is_distinguished_from_unreachable():
     """'Checked, not there' and 'could not check' must not read the same."""
     _stub({"2.12.0": {"torchvision": "0.27.0", "torchaudio": "2.12.0"}})
     try:
-        tt.resolve("9.9.9", TABLE)
+        tt.resolve("9.9.9")
         raise AssertionError("expected TorchTripleError")
     except tt.TorchTripleError as e:
-        assert "does not exist" in str(e)
+        assert "not published" in str(e)
 
     _stub({}, raises=OSError("network unreachable"))
     try:
-        tt.resolve("9.9.9", TABLE)
+        tt.resolve("9.9.9")
         raise AssertionError("expected TorchTripleError")
     except tt.TorchTripleError as e:
         msg = str(e)
         assert "unreachable" in msg, msg
-        assert "does not exist" not in msg, msg
+        assert "not published" not in msg, msg
 
 
 def test_newest_complete_ignores_partial_entries():
@@ -93,7 +94,7 @@ def test_newest_complete_ignores_partial_entries():
         "2.12.0": {"torchvision": "0.27.0", "torchaudio": "2.12.0"},
         "2.13.0": {"torchvision": "0.28.0"},           # partial -- must not win
     })
-    assert tt.newest_complete(TABLE) == "2.12.0"
+    assert tt.newest_complete() == "2.12.0"
 
 
 def test_no_hand_maintained_table_reappears():
@@ -106,6 +107,49 @@ def test_no_hand_maintained_table_reappears():
     src = (_SRC / "common" / "config.py").read_text()
     for banned in ("TORCH_TRIPLES", "DEFAULT_TORCH_VERSION ="):
         assert banned not in src, f"{banned} is back in config.py"
+
+
+
+
+def test_refuses_a_torchaudio_that_declares_a_different_torch():
+    """torchaudio 2.0.1 requires torch==2.0.0 -- equality is a guess, not a law.
+
+    Pairing by version number and shipping it unverified would emit a pin that
+    conflicts on install.
+    """
+    _stub({"2.0.1": {"torchvision": "0.15.2", "torchaudio": "2.0.1"}},
+          audio_pin="2.0.0")
+    try:
+        tt.resolve("2.0.1")
+        raise AssertionError("expected TorchTripleError")
+    except tt.TorchTripleError as e:
+        msg = str(e)
+        assert "2.0.0" in msg and "not 2.0.1" in msg, msg
+
+
+def test_accepts_a_torchaudio_that_declares_nothing():
+    """torchaudio 2.11.0 declares no torch dep at all -- that is not a failure."""
+    _stub({"2.11.0": {"torchvision": "0.26.0", "torchaudio": "2.11.0"}},
+          audio_pin=None)
+    assert tt.resolve("2.11.0") == ("2.11.0", "0.26.0", "2.11.0")
+
+
+def test_legacy_parenthesised_metadata_is_parsed():
+    """Everything up to torchvision 0.17.1 spells it `torch (==2.2.1)`."""
+    assert tt._TORCH_PIN.match("torch (==2.1.0)").group(1) == "2.1.0"
+    assert tt._TORCH_PIN.match("torch==2.13.0").group(1) == "2.13.0"
+    assert tt._TORCH_PIN.match("torch (==2.0.0+cu117)").group(1).split("+")[0] == "2.0.0"
+    assert tt._TORCH_PIN.match("torchvision==0.1") is None
+
+
+def test_version_sort_rejects_garbage():
+    """`"2..0".replace(".","").isdigit()` was True and then exploded downstream."""
+    for bad in ("2..0", "2.0.0rc1", ""):
+        try:
+            tt._sortable(bad)
+            raise AssertionError(f"accepted {bad!r}")
+        except ValueError:
+            pass
 
 
 if __name__ == "__main__":

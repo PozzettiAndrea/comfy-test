@@ -20,7 +20,9 @@ the band is printed with every finding and the order never changes.
 Adding a check: put it in the band you can defend, not the band you want. If you
 cannot say what a hit proves, it belongs in D or nowhere.
 
-    comfy-test --levels hazards
+    # comfy-test.toml
+    [test]
+    levels = [..., "hazards"]
 """
 
 import ast
