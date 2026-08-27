@@ -32,6 +32,25 @@ FLAGGED = [
     "self.u = nn.ConvTranspose2d(8, 3, 2)",
 ]
 
+FLAGGED_HUB = [
+    'self.model = torch.hub.load("facebookresearch/dinov2", model_type)',
+    "torch.hub.download_url_to_file(url, dst)",
+    "sd = torch.hub.load_state_dict_from_url(u)",
+    "torch.hub.set_dir(cache)",
+]
+
+
+def test_torch_hub_is_forbidden():
+    for line in FLAGGED_HUB:
+        assert _hits(line), f"should flag: {line}"
+
+
+def test_hub_named_things_are_not_flagged():
+    # an attribute or module merely named hub is not torch.hub
+    for line in ("y = myhub.load(x)", "from hub import thing", "self.hub.load(x)"):
+        assert not _hits(line), f"false positive: {line}"
+
+
 NOT_FLAGGED = [
     # different library, no comfy.ops equivalent
     "self.conv = torchsparse.nn.Conv3d(a, b, k, s, 0, d, bias)",

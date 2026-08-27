@@ -37,6 +37,12 @@ FORBIDDEN_PATTERNS = [
     (re.compile(_NN + r'LayerNorm\s*\('), 'nn.LayerNorm() -- use operations.LayerNorm()'),
     (re.compile(_NN + r'GroupNorm\s*\('), 'nn.GroupNorm() -- use operations.GroupNorm()'),
     (re.compile(_NN + r'Embedding\s*\('), 'nn.Embedding() -- use operations.Embedding()'),
+    # Runtime downloads -- torch.hub pulls CODE from GitHub and weights into
+    # ~/.cache/torch/hub at node-execution time: a network dependency at
+    # inference, weights outside models/ that no manager can see or clean,
+    # and remote code the pack never vendored or pinned. Ship weights via
+    # install.py into folder_paths' models dir, and vendor the model code.
+    (re.compile(r'torch\.hub\.'), 'torch.hub -- downloads code/weights at runtime; vendor the code, ship weights via install.py into the models dir'),
 ]
 
 # Patterns that print a warning but do not fail the test.
