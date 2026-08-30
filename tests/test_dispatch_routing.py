@@ -63,3 +63,58 @@ def test_every_registry_lane_routes_somewhere_sane():
                        else "macos-latest" if lane.id.startswith("macos")
                        else "windows-latest")
         assert runs == expected_os, f"{lane.id} -> {runs}"
+
+
+# --- `comfy-test docker run` shape -------------------------------------------
+# The container's entrypoint re-invokes `comfy-test`, so what it installs is
+# the harness that actually ran. Both entrypoints honour COMFY_TEST_VERSION and
+# fall back to `uv tool install --reinstall comfy-test` -- PyPI latest -- when
+# it is unset, and nothing ever set it. A docker run therefore tested a
+# different harness than the one invoked, silently.
+
+def _docker_run_src():
+    return (Path(__file__).resolve().parent.parent
+            / "src/comfy_test/cli/docker/run.py").read_text(encoding="utf-8")
+
+
+def test_harness_version_is_forwarded_on_both_paths():
+    src = _docker_run_src()
+    assert src.count("_harness_version_env()") == 3, (
+        "expected one definition plus a call on each of the linux and windows "
+        "paths; a container that resolves its own comfy-test version is not "
+        "running the harness you invoked")
+
+
+def test_an_explicit_pin_wins(monkeypatch):
+    from comfy_test.cli.docker import run as dr
+    monkeypatch.setenv("COMFY_TEST_VERSION", "0.3.5")
+    assert dr._harness_version_env() == ["-e", "COMFY_TEST_VERSION=0.3.5"]
+
+
+def test_entrypoints_still_read_the_variable():
+    """If an entrypoint stops honouring it, forwarding it is theatre."""
+    root = Path(__file__).resolve().parent.parent / "src/comfy_test/_docker"
+    for rel in ("linux-cuda/entrypoint.sh", "windows-cuda/entrypoint.ps1"):
+        assert "COMFY_TEST_VERSION" in (root / rel).read_text(encoding="utf-8"), rel
+
+
+def test_desktop_flags_are_not_duplicated_onto_docker_run():
+    """`run --desktop` is the spelling; the copies here used no docker at all.
+
+    Reads the built parser rather than the source text, so a comment recording
+    why they were removed does not trip the guard against their return.
+    """
+    import argparse
+
+    from comfy_test.cli.docker.run import add_docker_run_parser
+
+    sub = argparse.ArgumentParser().add_subparsers()
+    add_docker_run_parser(sub)
+    flags = {opt for p in sub.choices.values() for a in p._actions
+             for opt in a.option_strings}
+    for flag in ("--desktop_mac", "--desktop_windows", "--desktop_windows_cuda",
+                 "--cdp-port", "--monitor-progress"):
+        assert flag not in flags, f"{flag} is back on `docker run`"
+    # The genuinely docker-specific ones must stay.
+    for flag in ("--persist", "--keep-clone", "--no-defender-warn"):
+        assert flag in flags, f"{flag} went missing"

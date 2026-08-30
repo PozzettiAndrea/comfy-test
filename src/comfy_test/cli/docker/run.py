@@ -8,6 +8,7 @@ Standalone: no cds, no CDS_ROOT, no YAML config. Everything is driven by the
 nodelink URL + optional flags.
 """
 
+import json
 import os
 import platform
 import shutil
@@ -135,6 +136,43 @@ def _node_name_from_url(nodelink: str) -> str:
     """Derive the node directory name from a URL (or owner/repo shorthand)."""
     expanded = _expand_nodelink(nodelink)
     return expanded.rstrip("/").split("/")[-1].removesuffix(".git")
+
+
+def _harness_version_env() -> list:
+    """`-e COMFY_TEST_VERSION=<ours>`, so the container runs THIS comfy-test.
+
+    Both entrypoints honour the variable and fall back to
+    `uv tool install --reinstall comfy-test` -- i.e. PyPI latest -- when it is
+    unset, and nothing ever set it. So `comfy-test docker run` from a working
+    checkout silently tested whatever PyPI shipped that morning rather than the
+    code being invoked, and a bisect across the harness was impossible.
+
+    An explicit COMFY_TEST_VERSION in the environment still wins, which is how
+    you deliberately pin to a published release.
+    """
+    pinned = os.environ.get("COMFY_TEST_VERSION", "").strip()
+    if pinned:
+        return ["-e", f"COMFY_TEST_VERSION={pinned}"]
+    try:
+        from importlib.metadata import Distribution, version
+        pinned = version("comfy-test")
+    except Exception:
+        return []              # unpackaged: let the image resolve it
+    # An editable install reports a version whose code is NOT what PyPI ships
+    # under it, so pinning the number is honest about the release and silently
+    # wrong about the source. Say so rather than implying the container is
+    # running the checkout.
+    try:
+        direct = Distribution.from_name("comfy-test").read_text("direct_url.json")
+        editable = bool(direct) and json.loads(direct).get("dir_info", {}).get("editable")
+        if editable:
+            print(f"[docker run] NOTE: comfy-test {pinned} is installed editable; "
+                  f"the container will install the published {pinned} from PyPI, "
+                  f"not your working tree. Build and mount a wheel to test local "
+                  f"harness changes.")
+    except Exception:
+        pass
+    return ["-e", f"COMFY_TEST_VERSION={pinned}"]
 
 
 def _redacted_cmd(cmd: list) -> str:
@@ -321,6 +359,7 @@ def _run_windows(args, docker_exe: str, target_platform: str, cuda: bool,
     run_url = os.environ.get("COMFY_TEST_RUN_URL", "").strip()
     if run_url:
         docker_cmd += ["-e", f"COMFY_TEST_RUN_URL={run_url}"]
+    docker_cmd += _harness_version_env()
     # Forward github auth tokens so the in-container `comfy-test run` can clone
     # private node repos. cli/_git_auth.authenticated_github_url reads these.
     for _var in ("NODE_PAT", "GH_TOKEN", "GITHUB_TOKEN"):
@@ -433,6 +472,7 @@ def _run_linux(args, docker_exe: str, cuda: bool,
     run_url = os.environ.get("COMFY_TEST_RUN_URL", "").strip()
     if run_url:
         docker_cmd += ["-e", f"COMFY_TEST_RUN_URL={run_url}"]
+    docker_cmd += _harness_version_env()
     # Forward github auth tokens so the in-container `comfy-test run` can clone
     # private node repos. cli/_git_auth.authenticated_github_url reads these.
     for _var in ("NODE_PAT", "GH_TOKEN", "GITHUB_TOKEN"):
@@ -477,25 +517,14 @@ def _patch_null_commit_hash(node_path: Path, logs_dir: Path) -> None:
 def cmd_docker_run(args) -> int:
     """Clone a node from a URL (or local path) and run comfy-test in Docker.
 
-    With --desktop_mac / --desktop_windows / --desktop_windows_cuda, bypass
-    the Docker path entirely and drive ComfyUI Desktop on the local host
-    via cdp_driver.py. That mode mirrors what the
-    `_test-{macos,windows}-desktop.yml` workflows do on a GHA runner --
-    used to iterate on cdp_driver behavior without round-tripping CI.
+    Docker only. Driving ComfyUI Desktop on the local host is
+    `comfy-test run --desktop [--cuda]`, which reaches the same runner -- this
+    parser used to carry duplicate --desktop_* flags whose own help said they
+    used no docker.
     """
     if sys.platform == "win32":
         from . import _defender
         _defender.warn_if_needed(args)
-    desktop_mode = getattr(args, "desktop_mode", None)
-    if desktop_mode:
-        # Desktop modes don't use docker. --portable has no meaning here.
-        if getattr(args, "portable", None):
-            print(f"[docker run] --portable conflicts with --desktop_{desktop_mode}",
-                  file=sys.stderr)
-            return 1
-        from comfy_test.cli._desktop_runner import run_desktop  # local: keep optional dep cost low
-        return run_desktop(args, desktop_mode)
-
     # Platform is always derived from the host OS -- no cross-platform tests.
     host_platform = _detect_host_platform()
     if host_platform == "macos":
@@ -609,31 +638,10 @@ def add_docker_run_parser(subparsers):
                         ".venv, and pixi envs survive after the container exits. "
                         "Saved to ~/comfy-test-workspaces/<node>-<HHMM>/. Implies --keep-clone.")
 
-    # Local-Electron Desktop modes: mutually exclusive with each other and
-    # with the docker flags. Each picks a host-platform-specific path:
-    # macOS opens /Applications/ComfyUI.app, Windows runs the NSIS setup
-    # under %LOCALAPPDATA%\Programs\ComfyUI. The runner mirrors the
-    # `_test-{macos,windows}-desktop.yml` workflows on the local host so
-    # we can iterate on cdp_driver.py without dispatching CI.
-    desktop_group = p.add_mutually_exclusive_group()
-    desktop_group.add_argument("--desktop_mac", action="store_const",
-                               const="mac", dest="desktop_mode",
-                               help="Drive ComfyUI Desktop locally on macOS (no docker)")
-    desktop_group.add_argument("--desktop_windows", action="store_const",
-                               const="windows", dest="desktop_mode",
-                               help="Drive ComfyUI Desktop locally on Windows CPU (no docker)")
-    desktop_group.add_argument("--desktop_windows_cuda", action="store_const",
-                               const="windows_cuda", dest="desktop_mode",
-                               help="Drive ComfyUI Desktop locally on Windows with GPU (no docker)")
-    p.add_argument("--monitor-progress", type=int, default=None, metavar="PORT",
-                   help="Desktop only: serve a live viewer on http://localhost:<PORT>/ "
-                        "showing the most recent driver frame + session.log tail. "
-                        "Useful while iterating on cdp_driver.py.")
-    p.add_argument("--cdp-port", type=int, default=9222, metavar="PORT",
-                   help="Desktop only: chromium remote-debugging port the driver "
-                        "connects to (default 9222). Bump if the default is held by "
-                        "a stale socket from a prior killed run that Windows hasn't "
-                        "released yet.")
+    # No Desktop modes here. `comfy-test run --desktop [--cuda]` reaches the
+    # same run_desktop() and is the correct spelling; the copies that lived on
+    # this parser used no docker at all, and --cdp-port was never read (the
+    # port is discovered by _desktop_runner._wait_for_cdp).
     p.add_argument("--no-defender-warn", action="store_true",
                    help="Windows: skip the Defender-exclusion check + warning at startup")
-    p.set_defaults(func=cmd_docker_run, desktop_mode=None)
+    p.set_defaults(func=cmd_docker_run)
