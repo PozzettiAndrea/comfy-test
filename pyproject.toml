@@ -24,6 +24,8 @@ dependencies = [
     "websocket-client",      # ComfyUI WebSocket for workflow monitoring
     "py7zr>=0.20.0",         # Extract portable 7z archives
     "psutil>=5.9.0",         # Resource monitoring (CPU/RAM)
+    "pillow>=10.0.0",        # Render the install video's terminal frames
+    "imageio-ffmpeg>=0.4.9", # Static ffmpeg binary; no system install needed
     "uv>=0.4.0",             # `uv venv` / `uv pip` are shelled out for venv setup + installs
     "tree-sitter>=0.21",         # AST parse of pack frontend JS (javascript level)
     "tree-sitter-javascript>=0.21",  # JS grammar for the collision lint

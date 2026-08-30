@@ -36,6 +36,11 @@ GENERAL_DEFAULTS = {
     "COMFY_TEST_VRAM_DEBUG": False,
 }
 
+# Not in GENERAL_SETTINGS: that tab is a boolean toggle list, and this one has
+# three values (off | terminal | x11), so a checkbox could never express "off".
+# reporting/install_video.mode() reads it directly.
+INSTALL_VIDEO_VAR = "COMFY_TEST_INSTALL_VIDEO"
+
 # Debug settings: (env_var, label)
 DEBUG_SETTINGS = [
     ("COMFY_TEST_DBG_WORKER", "Debug worker subprocess IPC"),

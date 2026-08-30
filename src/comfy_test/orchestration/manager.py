@@ -200,6 +200,55 @@ class TestManager:
         # budgeted fsync has to reach disk before the process can exit.
         self._close_session_log()
         self._write_replay()
+        self._render_install_video()
+
+    def _start_x11_recorder(self, output_base) -> None:
+        """Begin an X11 screen recording of the install, if that backend is on.
+
+        Unlike the terminal renderer this cannot run after the fact -- it films
+        a live desktop -- so it starts here, before the first level, and is
+        stopped in _save_session_log.
+        """
+        self._x11_recorder = None
+        try:
+            from ..reporting.install_video import X11Recorder, mode
+            if mode() != "x11":
+                return
+            rec = X11Recorder(self._session_log_file,
+                              output_base / "videos" / "install",
+                              self._original_log)
+            if rec.start():
+                self._x11_recorder = rec
+        except Exception as e:
+            self._original_log(f"Install video (x11) not started: {e}")
+
+    def _render_install_video(self) -> None:
+        """Turn install.jsonl into videos/install/, beside the workflow videos.
+
+        After _write_replay, because it reads the file that writes. Never
+        fatal: a run that could not film its install is not a failed run.
+        """
+        if not self._session_log_file:
+            return
+        rec = getattr(self, "_x11_recorder", None)
+        if rec is not None:
+            try:
+                rec.stop()
+            except Exception as e:
+                self._original_log(f"Install video (x11) stop failed: {e}")
+            self._x11_recorder = None
+        try:
+            from ..reporting.install_video import render_after_run
+            output_base = self._session_log_file.parent
+            made = render_after_run(output_base, self._original_log)
+            if made or (output_base / "videos" / "install" / "driver.mp4").exists():
+                # The report was rendered before install.jsonl existed, so it
+                # has no card for this video yet.
+                from ..reporting.html_report import generate_html_report
+                if (output_base / "results.json").exists():
+                    generate_html_report(output_base, self.node_dir.name)
+        except Exception as e:
+            self._original_log(f"Install video skipped: {e}")
         if self._session_log_file and self._session_log_file.exists():
             self._original_log(f"Session log: {self._session_log_file}")
 
@@ -326,6 +375,7 @@ class TestManager:
         self._session_log_file.write_text("", encoding="utf-8")
         self._close_session_log()          # a re-run must not append to the old handle
         self._last_session_sync = 0.0
+        self._start_x11_recorder(output_base)
 
         # Copy the config that produced this run alongside its output, so it's
         # easy to see what config was used without checking the source repo.
