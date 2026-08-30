@@ -301,14 +301,9 @@ class VenvServerPlatform(TestPlatform):
         if install_py.exists():
             self._chapter("python install.py")
             self._log("\nRunning install.py...")
-            install_env = {
-                "COMFY_ENV_CUDA_VERSION": "12.8",
-                "COMFY_ENV_CACHE_DIR": str(paths.work_dir / ".comfy-env"),
-            }
             result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
-                env=install_env,
                 check=False,
                 verbose=True,  # install.py prints structured progress; stream live
             )
@@ -396,7 +391,6 @@ class VenvServerPlatform(TestPlatform):
             result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
-                env={"COMFY_ENV_CUDA_VERSION": "12.8"},
                 check=False,
             )
             if result.returncode != 0:

@@ -326,11 +326,9 @@ class WindowsPortablePlatform(TestPlatform):
         install_py = target_dir / "install.py"
         if install_py.exists():
             self._log("\nRunning install.py...")
-            install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
             result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
-                env=install_env,
                 check=False,
                 verbose=True,  # install.py prints structured progress; stream live
             )
@@ -458,11 +456,9 @@ class WindowsPortablePlatform(TestPlatform):
         install_py = target_dir / "install.py"
         if install_py.exists():
             self._log(f"  Running {name} install.py...")
-            install_env = {"COMFY_ENV_CUDA_VERSION": "12.8"}
             result = self._run_command(
                 [str(paths.python), str(install_py)],
                 cwd=target_dir,
-                env=install_env,
                 check=False,
             )
             if result.returncode != 0:

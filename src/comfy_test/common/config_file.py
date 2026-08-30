@@ -430,10 +430,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     # so example_workflows is canonical and the rest are tolerated. Discovering
     # only "workflows" made a pack following core's recommendation contribute
     # zero workflows, which the execution level then passed vacuously.
-    consumer_dirs = [base_dir / name for name in EXAMPLE_WORKFLOW_DIRS]
-    # comfy-test's own convention, not core's: core's glob is one level deep,
-    # so a nested tests/ is never a template folder upstream.
-    dev_tests_dirs = [d / "tests" for d in consumer_dirs]
+    workflow_dirs = [base_dir / name for name in EXAMPLE_WORKFLOW_DIRS]
 
     # Kept for _resolve_in_dirs' fallback and error messages: the canonical
     # location to point an author at when a named workflow is missing.
@@ -453,24 +450,11 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
         return found
 
     def _discover_all() -> list:
-        """Discover every workflow JSON from all folder names ComfyUI recognises."""
-        return sorted(_glob_dirs(consumer_dirs + dev_tests_dirs))
-
-    def _discover_filtered() -> list:
-        """Discover workflows filtered by COMFY_TEST_RUN_CONSUMER / COMFY_TEST_RUN_DEV settings."""
-        from ..settings import _is_on, GENERAL_DEFAULTS
-        run_consumer = _is_on("COMFY_TEST_RUN_CONSUMER", GENERAL_DEFAULTS["COMFY_TEST_RUN_CONSUMER"])
-        run_dev = _is_on("COMFY_TEST_RUN_DEV", GENERAL_DEFAULTS["COMFY_TEST_RUN_DEV"])
-        dirs = []
-        if run_consumer:
-            dirs.extend(consumer_dirs)
-        if run_dev:
-            dirs.extend(dev_tests_dirs)
-        return sorted(_glob_dirs(dirs))
+        """Every workflow JSON, from the folder names ComfyUI itself recognises."""
+        return sorted(_glob_dirs(workflow_dirs))
 
     def _resolve_in_dirs(filename: str) -> Path:
-        """Resolve a filename against every folder name ComfyUI recognises,
-        consumer folders first, then their tests/ subfolders.
+        """Resolve a filename against every folder name ComfyUI recognises.
 
         A name that resolves to nothing is a hard error. It used to return a
         path under `workflows_dir` regardless, which never matched a discovered
@@ -479,7 +463,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
         with `passed: 0`. Naming a workflow is an assertion that it exists.
         """
         name = filename if filename.endswith(".json") else filename + ".json"
-        for d in (*consumer_dirs, *dev_tests_dirs):
+        for d in workflow_dirs:
             candidate = d / name
             if candidate.exists():
                 return candidate
@@ -493,19 +477,18 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
         raise ConfigError(
             f"[test.workflows] names a workflow that does not exist: {filename!r}",
             (f"Looked for {name} under {base_dir.name}/ in: "
-             f"{', '.join(dict.fromkeys(d.name for d in consumer_dirs))} "
-             f"(and their tests/ subfolders).\n"
+             f"{', '.join(dict.fromkeys(d.name for d in workflow_dirs))}.\n"
              f"Available: {', '.join(available)}"),
         )
 
     # Helper to resolve "all" or list of paths
-    def _all_except(excludes, filtered):
+    def _all_except(excludes):
         """Everything discovered, minus the named workflows."""
-        all_wf = _discover_filtered() if filtered else _discover_all()
+        all_wf = _discover_all()
         exclude_names = {(f if f.endswith(".json") else f + ".json") for f in excludes}
         return [w for w in all_wf if w.name not in exclude_names]
 
-    def resolve_workflows(value, filtered=False, key="workflows"):
+    def resolve_workflows(value, key="workflows"):
         """Resolve one accelerator's selection. Exactly three forms:
 
             cuda = "all"                          everything discovered
@@ -519,7 +502,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
         A table cannot express that mistake.
         """
         if value == "all":
-            return _discover_filtered() if filtered else _discover_all()
+            return _discover_all()
 
         if isinstance(value, dict):
             unknown = sorted(set(value) - {"exclude"})
@@ -536,7 +519,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
                     f"[test.workflows] {key}.exclude is empty",
                     f'Name at least one workflow to exclude, or use {key} = "all".',
                 )
-            return _all_except(excludes, filtered)
+            return _all_except(excludes)
 
         bangs = [f for f in value if f.startswith("!")]
         if bangs:
@@ -553,8 +536,7 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
             )
         return [_resolve_in_dirs(f) for f in value]
 
-    # Auto-discover workflows (filtered by consumer/dev settings)
-    workflows = resolve_workflows("all", filtered=True)
+    workflows = resolve_workflows("all")
 
     # Parse accelerator workflow lists - supports "all" or list (with "!exclude").
     # Accelerator is named by backend: cpu / cuda / rocm. There is no "gpu".
@@ -562,11 +544,11 @@ def _parse_workflow_config(data: Dict[str, Any], base_dir: Path) -> WorkflowConf
     cuda = []
     rocm = []
     if "cpu" in data:
-        cpu = resolve_workflows(data["cpu"], filtered=True, key="cpu")
+        cpu = resolve_workflows(data["cpu"], key="cpu")
     if "cuda" in data:
-        cuda = resolve_workflows(data["cuda"], filtered=True, key="cuda")
+        cuda = resolve_workflows(data["cuda"], key="cuda")
     if "rocm" in data:
-        rocm = resolve_workflows(data["rocm"], filtered=True, key="rocm")
+        rocm = resolve_workflows(data["rocm"], key="rocm")
 
     # Legacy format support (backwards compatibility)
     run = []

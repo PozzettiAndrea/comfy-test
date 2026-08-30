@@ -502,22 +502,20 @@ class WorkflowScreenshot:
         self._page.on("console", self._handle_console)
 
     def _handle_console(self, msg) -> None:
-        """Capture browser console messages."""
+        """Capture a message from the page's JS console.
+
+        Everything is captured to `<workflow>_console.log` regardless; this
+        only decides whether errors and warnings are ALSO echoed into the run
+        output. One switch, not one per severity: nobody wants the warnings
+        and not the errors, and two knobs meant a JS error could be hidden
+        while its warning showed.
+        """
         log_entry = f"[Console-{msg.type}] {msg.text}"
         self._console_logs.append(log_entry)
-        # Only log to stdout if the corresponding show setting is on
-        if msg.type in ("error", "warning"):
-            from ..settings import _is_on, GENERAL_DEFAULTS
-            if msg.type == "error" and not _is_on(
-                "COMFY_TEST_SHOW_CONSOLE_ERRORS",
-                GENERAL_DEFAULTS["COMFY_TEST_SHOW_CONSOLE_ERRORS"],
-            ):
-                return
-            if msg.type == "warning" and not _is_on(
-                "COMFY_TEST_SHOW_CONSOLE_WARNINGS",
-                GENERAL_DEFAULTS["COMFY_TEST_SHOW_CONSOLE_WARNINGS"],
-            ):
-                return
+        if msg.type not in ("error", "warning"):
+            return
+        from ..settings import _is_on, GENERAL_DEFAULTS
+        if _is_on("COMFY_TEST_SHOW_CONSOLE", GENERAL_DEFAULTS["COMFY_TEST_SHOW_CONSOLE"]):
             self._log(f"  {log_entry}")
 
     def save_console_logs(self, output_path: Path) -> None:

@@ -25,19 +25,13 @@ if SETTINGS_FILE.exists():
 
 # General settings: (env_var, label)
 GENERAL_SETTINGS = [
-    ("COMFY_TEST_RUN_CONSUMER", "Run consumer workflows (example_workflows/ and aliases)"),
-    ("COMFY_TEST_RUN_DEV", "Run dev workflows (the tests/ subfolder of any of them)"),
-    ("COMFY_TEST_SHOW_CONSOLE_ERRORS", "Show browser console errors in output"),
-    ("COMFY_TEST_SHOW_CONSOLE_WARNINGS", "Show browser console warnings in output"),
+    ("COMFY_TEST_SHOW_CONSOLE", "Show the browser's JS console (errors + warnings)"),
     ("COMFY_TEST_VERBOSE", "Verbose output (show all ComfyUI server lines)"),
     ("COMFY_TEST_VRAM_DEBUG", "Enable VRAM debug logging"),
 ]
 
 GENERAL_DEFAULTS = {
-    "COMFY_TEST_RUN_CONSUMER": True,
-    "COMFY_TEST_RUN_DEV": True,
-    "COMFY_TEST_SHOW_CONSOLE_ERRORS": False,
-    "COMFY_TEST_SHOW_CONSOLE_WARNINGS": False,
+    "COMFY_TEST_SHOW_CONSOLE": False,
     "COMFY_TEST_VERBOSE": False,
     "COMFY_TEST_VRAM_DEBUG": False,
 }
