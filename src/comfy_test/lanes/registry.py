@@ -29,7 +29,7 @@ class Lane:
     id: str                 # canonical hyphenated id, e.g. "windows-cuda"
     os: str                 # "linux" | "windows" | "macos"
     backend: str            # "cpu" | "cuda" | "rocm"
-    install_method: str               # "gitcloned" | "portable" | "desktop"
+    install_method: str     # "manual" | "portable" | "desktop"
     label: str              # human label for the results gallery
 
     # --- everything below is computed, never stored ---
@@ -67,14 +67,6 @@ class Lane:
         return ".exe" if self.os == "windows" else ""
 
     @property
-    def venv_bindir(self) -> str | None:
-        """Subdir holding the venv python. None for kinds with no venv of their
-        own (portable uses ComfyUI's embedded python; desktop is the Electron app)."""
-        if self.install_method != "gitcloned":
-            return None
-        return "Scripts" if self.os == "windows" else "bin"
-
-    @property
     def runner_labels(self):
         """`runs-on` for this lane: a hosted image string, or the self-hosted
         tag set for accelerator/desktop jobs."""
@@ -100,13 +92,13 @@ class Lane:
 # The full os x backend x install_method product comfy-test supports. (No macos-cuda:
 # Apple Silicon has no CUDA. No linux-desktop / portable-desktop: not a thing.)
 LANES: list[Lane] = [
-    Lane("linux-cpu",             "linux",   "cpu",  "gitcloned",   "Linux CPU"),
-    Lane("linux-cuda",            "linux",   "cuda", "gitcloned",   "Linux CUDA"),
-    Lane("windows-cpu",           "windows", "cpu",  "gitcloned",   "Windows CPU"),
-    Lane("windows-cuda",          "windows", "cuda", "gitcloned",   "Windows CUDA"),
+    Lane("linux-cpu",             "linux",   "cpu",  "manual",      "Linux CPU"),
+    Lane("linux-cuda",            "linux",   "cuda", "manual",      "Linux CUDA"),
+    Lane("windows-cpu",           "windows", "cpu",  "manual",      "Windows CPU"),
+    Lane("windows-cuda",          "windows", "cuda", "manual",      "Windows CUDA"),
     Lane("windows-portable-cpu",  "windows", "cpu",  "portable", "Win Portable CPU"),
     Lane("windows-portable-cuda", "windows", "cuda", "portable", "Win Portable CUDA"),
-    Lane("macos-cpu",             "macos",   "cpu",  "gitcloned",   "macOS CPU"),
+    Lane("macos-cpu",             "macos",   "cpu",  "manual",      "macOS CPU"),
     Lane("macos-desktop",         "macos",   "cpu",  "desktop",  "macOS Desktop"),
     Lane("windows-desktop",       "windows", "cpu",  "desktop",  "Windows Desktop"),
     Lane("windows-desktop-cuda",  "windows", "cuda", "desktop",  "Windows Desktop CUDA"),
@@ -121,7 +113,7 @@ def _validate() -> None:
     for p in LANES:
         if p.backend not in ("cpu", "cuda", "rocm"):
             raise ValueError(f"{p.id}: bad backend {p.backend!r}")
-        if p.install_method not in ("gitcloned", "portable", "desktop"):
+        if p.install_method not in ("manual", "portable", "desktop"):
             raise ValueError(f"{p.id}: bad install_method {p.install_method!r}")
         for a in p.aliases:
             if a in alias_owner and alias_owner[a] != p.id:

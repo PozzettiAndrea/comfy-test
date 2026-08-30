@@ -280,7 +280,7 @@ def _parse_config(data: Dict[str, Any], base_dir: Path) -> TestConfig:
     # Platforms are an explicit opt-in allowlist, validated against the platform
     # registry (comfy_test.lanes). Tokens are lane ids or aliases, e.g.:
     #   [test.lanes] lanes = ["linux-cpu", "windows-cuda", "macos-desktop"]
-    # (bare "linux"/"macos"/"windows" are accepted as the cpu-gitcloned variant).
+    # (bare "linux"/"macos"/"windows" are accepted as the cpu-manual variant).
     # Only listed lanes run; an unknown token is an error.
     lanes = test_section.get("lanes", {})
     if not lanes and "platforms" in test_section:
